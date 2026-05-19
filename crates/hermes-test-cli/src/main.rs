@@ -7,6 +7,25 @@ use std::path::PathBuf;
 use std::sync::mpsc;
 use std::time::{Duration, Instant};
 
+/// Suppress Hermes's internal "[hermes-compile]" debug output by redirecting
+/// stderr to /dev/null during bytecode compilation. Console.log from tests
+/// is collected via JSI host functions and stored in a buffer, not via stderr.
+fn suppress_hermes_stderr<F, R>(f: F) -> R
+where F: FnOnce() -> R {
+    use std::os::unix::io::AsRawFd;
+    let dev_null = match std::fs::File::open("/dev/null") {
+        Ok(f) => f,
+        Err(_) => return f(),
+    };
+    let saved_fd = unsafe { libc::dup(2) };
+    unsafe { libc::dup2(dev_null.as_raw_fd(), 2); }
+    let result = f();
+    if saved_fd >= 0 {
+        unsafe { libc::dup2(saved_fd, 2); libc::close(saved_fd); }
+    }
+    result
+}
+
 // Embed the harness bundle at compile time
 const HARNESS_JS: &str = include_str!("../../../packages/hermes-test/dist/harness.bundle.js");
 
@@ -236,10 +255,12 @@ fn run_tests(files: &[PathBuf], root: &PathBuf, no_bundle: bool, bundler: Option
         std::process::exit(1);
     });
 
-    // Inject the harness
-    rt.eval(HARNESS_JS, "hermes-test/harness.js").unwrap_or_else(|e| {
-        eprintln!("Failed to load harness: {e}");
-        std::process::exit(1);
+    // Inject the harness (suppress Hermes debug output)
+    suppress_hermes_stderr(|| {
+        rt.eval(HARNESS_JS, "hermes-test/harness.js").unwrap_or_else(|e| {
+            eprintln!("Failed to load harness: {e}");
+            std::process::exit(1);
+        });
     });
 
     if no_bundle {
@@ -320,11 +341,17 @@ JSON.stringify({
 
         let _ = std::fs::remove_file(&entry_path);
 
-        // Eval the bundle (registers and runs tests, stashes results on global)
-        if let Err(e) = rt.eval(&bundle, "bundle.js") {
-            eprintln!("Test execution failed: {e}");
-            std::process::exit(1);
-        }
+        // Eval the bundle — suppress Hermes [hermes-compile] noise on stderr.
+        // console.log is now collected in globalThis.__consoleLogs (not stderr).
+        suppress_hermes_stderr(|| {
+            if let Err(e) = rt.eval(&bundle, "bundle.js") {
+                eprintln!("Test execution failed: {e}");
+                std::process::exit(1);
+            }
+        });
+
+        // Print any console.log output from tests
+        print_console_logs(&rt);
 
         // Read back the results from the global
         match rt.eval("globalThis.__metroTestResults", "results") {
@@ -570,26 +597,42 @@ fn run_cycle_with_depgraph(
     depgraph
 }
 
+/// Print console.log/warn/error output that was collected during test execution.
+fn print_console_logs(rt: &hermes::Runtime) {
+    let logs_js = r#"(function() {
+        var logs = globalThis.__consoleLogs;
+        if (!logs || !logs.length) return '[]';
+        var out = [];
+        for (var i = 0; i < logs.length; i++) {
+            out.push({ level: logs[i].level, message: logs[i].message });
+        }
+        return JSON.stringify(out);
+    })()"#;
+
+    if let Ok(json) = rt.eval(logs_js, "console-logs") {
+        let inner: String = serde_json::from_str(&json).unwrap_or(json.clone());
+        if let Ok(entries) = serde_json::from_str::<Vec<serde_json::Value>>(&inner) {
+            for entry in &entries {
+                let level = entry["level"].as_str().unwrap_or("log");
+                let msg = entry["message"].as_str().unwrap_or("");
+                match level {
+                    "warn" => eprintln!("\x1b[33m⚠ {msg}\x1b[0m"),
+                    "error" => eprintln!("\x1b[31m✗ {msg}\x1b[0m"),
+                    _ => eprintln!("  {msg}"),
+                }
+            }
+        }
+    }
+}
+
 fn print_results(json: &str) -> bool {
-    // Returns true if all tests passed, false if any failed
-    // The result is double-quoted JSON (JSON.stringify returns a string, which hermes_eval
-    // wraps in another JSON.stringify). Parse accordingly.
     let inner: String = match serde_json::from_str(json) {
         Ok(s) => s,
-        Err(_) => {
-            // Already raw JSON
-            println!("{json}");
-            return false;
-        }
+        Err(_) => { println!("{json}"); return false; }
     };
-
-    // Parse the test results
     let results: serde_json::Value = match serde_json::from_str(&inner) {
         Ok(v) => v,
-        Err(_) => {
-            println!("{inner}");
-            return false;
-        }
+        Err(_) => { println!("{inner}"); return false; }
     };
 
     let passed = results["passed"].as_u64().unwrap_or(0);
@@ -597,41 +640,67 @@ fn print_results(json: &str) -> bool {
     let skipped = results["skipped"].as_u64().unwrap_or(0);
     let total = results["total"].as_u64().unwrap_or(0);
 
-    // Print each test result
     if let Some(tests) = results["tests"].as_array() {
+        // Group tests by their top-level group (text before first " > ")
+        let mut groups: Vec<(String, Vec<&serde_json::Value>)> = Vec::new();
         for test in tests {
             let name = test["name"].as_str().unwrap_or("?");
-            let status = test["status"].as_str().unwrap_or("?");
-            let icon = match status {
-                "pass" => "\x1b[32m✓\x1b[0m",
-                "fail" => "\x1b[31m✗\x1b[0m",
-                "skip" => "\x1b[33m○\x1b[0m",
-                _ => "?",
+            let group_name = if let Some(idx) = name.find(" > ") {
+                &name[..idx]
+            } else {
+                name
             };
-            eprintln!("  {icon} {name}");
-            if status == "fail" {
-                if let Some(error) = test["error"].as_str() {
-                    eprintln!("    \x1b[31m{error}\x1b[0m");
+            if let Some(g) = groups.iter_mut().find(|(n, _)| n == group_name) {
+                g.1.push(test);
+            } else {
+                groups.push((group_name.to_string(), vec![test]));
+            }
+        }
+
+        for (group_name, group_tests) in &groups {
+            let group_passed = group_tests.iter().filter(|t| t["status"].as_str() == Some("pass")).count();
+            let group_failed = group_tests.iter().filter(|t| t["status"].as_str() == Some("fail")).count();
+            let group_skipped = group_tests.iter().filter(|t| t["status"].as_str() == Some("skip")).count();
+            let group_total = group_tests.len();
+            let group_duration: u64 = group_tests.iter().map(|t| t["duration"].as_u64().unwrap_or(0)).sum();
+
+            if group_failed == 0 {
+                // Collapsed: single line for passing group
+                let time_str = if group_duration > 0 { format!(" \x1b[2m{group_duration}ms\x1b[0m") } else { String::new() };
+                let skip_str = if group_skipped > 0 { format!(", {group_skipped} skipped") } else { String::new() };
+                eprintln!(" \x1b[32m✓\x1b[0m {group_name} \x1b[2m({group_passed} tests{skip_str})\x1b[0m{time_str}");
+            } else {
+                // Expanded: show group header + each failing test
+                eprintln!(" \x1b[31m✗\x1b[0m {group_name} \x1b[2m({group_passed} passed, \x1b[31m{group_failed} failed\x1b[0m\x1b[2m)\x1b[0m");
+                for test in group_tests {
+                    let name = test["name"].as_str().unwrap_or("?");
+                    let short_name = if let Some(idx) = name.find(" > ") { &name[idx + 3..] } else { name };
+                    let status = test["status"].as_str().unwrap_or("?");
+                    match status {
+                        "fail" => {
+                            eprintln!("   \x1b[31m✗\x1b[0m {short_name}");
+                            if let Some(error) = test["error"].as_str() {
+                                eprintln!("     \x1b[31m{error}\x1b[0m");
+                            }
+                        }
+                        "pass" => {} // hide passing tests in failing group
+                        "skip" => {
+                            eprintln!("   \x1b[33m○\x1b[0m {short_name} \x1b[2m(skipped)\x1b[0m");
+                        }
+                        _ => {}
+                    }
                 }
             }
         }
     }
 
+    // Summary
     eprintln!();
-    let status_line = format!(
-        "{passed} passed{}{}, {total} total",
-        if failed > 0 {
-            format!(", \x1b[31m{failed} failed\x1b[0m")
-        } else {
-            String::new()
-        },
-        if skipped > 0 {
-            format!(", {skipped} skipped")
-        } else {
-            String::new()
-        }
-    );
-    eprintln!("{status_line}");
+    if failed == 0 {
+        eprintln!(" \x1b[32m✓ {passed} tests passed\x1b[0m{}", if skipped > 0 { format!(" \x1b[2m({skipped} skipped)\x1b[0m") } else { String::new() });
+    } else {
+        eprintln!(" \x1b[32m{passed} passed\x1b[0m, \x1b[31m{failed} failed\x1b[0m{}, {total} total", if skipped > 0 { format!(", {skipped} skipped") } else { String::new() });
+    }
 
     failed == 0
 }

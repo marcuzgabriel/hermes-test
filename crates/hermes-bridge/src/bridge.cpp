@@ -49,31 +49,48 @@ static std::string valueToString(jsi::Runtime& runtime, const jsi::Value& val) {
 }
 
 static void installConsole(jsi::Runtime& runtime) {
+  // Store logs in a JS array — avoids mixing with Hermes's internal stderr output.
+  // Rust reads globalThis.__consoleLogs after eval and prints them cleanly.
+  auto logs = jsi::Array(runtime, 0);
+  runtime.global().setProperty(runtime, "__consoleLogs", std::move(logs));
+
   auto console = jsi::Object(runtime);
-  auto makeLogger = [](FILE* stream) {
-    return [stream](jsi::Runtime& rt, const jsi::Value&,
+  auto makeLogger = [](const char* level) {
+    return [level](jsi::Runtime& rt, const jsi::Value&,
                      const jsi::Value* args, size_t count) -> jsi::Value {
-      for (size_t i = 0; i < count; i++) {
-        if (i > 0) fprintf(stream, " ");
-        fprintf(stream, "%s", valueToString(rt, args[i]).c_str());
+      try {
+        std::string msg;
+        for (size_t i = 0; i < count; i++) {
+          if (i > 0) msg += " ";
+          msg += valueToString(rt, args[i]);
+        }
+        auto logsVal = rt.global().getProperty(rt, "__consoleLogs");
+        if (logsVal.isObject()) {
+          auto logsArr = logsVal.getObject(rt).getArray(rt);
+          auto len = logsArr.size(rt);
+          auto entry = jsi::Object(rt);
+          entry.setProperty(rt, "level", jsi::String::createFromUtf8(rt, level));
+          entry.setProperty(rt, "message", jsi::String::createFromUtf8(rt, msg));
+          logsArr.setValueAtIndex(rt, len, std::move(entry));
+        }
+      } catch (...) {
+        // Silently drop logs that fail to serialize (e.g. circular refs)
       }
-      fprintf(stream, "\n");
-      fflush(stream);
       return jsi::Value::undefined();
     };
   };
   console.setProperty(runtime, "log",
     jsi::Function::createFromHostFunction(runtime,
-      jsi::PropNameID::forAscii(runtime, "log"), 0, makeLogger(stderr)));
+      jsi::PropNameID::forAscii(runtime, "log"), 0, makeLogger("log")));
   console.setProperty(runtime, "warn",
     jsi::Function::createFromHostFunction(runtime,
-      jsi::PropNameID::forAscii(runtime, "warn"), 0, makeLogger(stderr)));
+      jsi::PropNameID::forAscii(runtime, "warn"), 0, makeLogger("warn")));
   console.setProperty(runtime, "error",
     jsi::Function::createFromHostFunction(runtime,
-      jsi::PropNameID::forAscii(runtime, "error"), 0, makeLogger(stderr)));
+      jsi::PropNameID::forAscii(runtime, "error"), 0, makeLogger("error")));
   console.setProperty(runtime, "info",
     jsi::Function::createFromHostFunction(runtime,
-      jsi::PropNameID::forAscii(runtime, "info"), 0, makeLogger(stderr)));
+      jsi::PropNameID::forAscii(runtime, "info"), 0, makeLogger("info")));
   runtime.global().setProperty(runtime, "console", console);
 
   // Install __drainMicrotasks — calls Hermes's real microtask queue drain.
