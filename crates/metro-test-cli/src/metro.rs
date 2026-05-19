@@ -403,11 +403,79 @@ fn patch_esbuild_for_hermes(code: &str) -> String {
         return r;
       };"#).to_string();
 
-    if code.len() == original_len {
+    // Patch 4: Generic class-extends desugar for non-Array subclasses (Error, etc.)
+    // Hermes class-extends is broken for all base classes, not just Array.
+    // Replace: `Foo = class [_Name] extends Bar { constructor(args) { super(x); body } };`
+    // With:    `Foo = function(args) { var _this = Bar.call(this, x) || this; body2 };
+    //           Foo.prototype = Object.create(Bar.prototype);`
+    // Skip Tuple (already handled above) and skip if no extends.
+    let extends_re = regex::Regex::new(
+        r"(\w+)\s*=\s*class\s+(?:_?\w+\s+)?extends\s+(\w+)\s*\{"
+    ).unwrap();
+    let mut code_str = code.to_string();
+    // Iterate from the end to preserve offsets
+    let matches: Vec<_> = extends_re.captures_iter(&code).collect();
+    for cap in matches.iter().rev() {
+        let full = cap.get(0).unwrap();
+        let var_name = &cap[1];
+        let parent = &cap[2];
+
+        // Skip Tuple (already replaced) and Array subclasses
+        if var_name == "Tuple" || parent == "Array" {
+            continue;
+        }
+
+        // Find constructor
+        let after_class = &code[full.end()..];
+        let ctor_re = regex::Regex::new(r"constructor\s*\(([^)]*)\)\s*\{").unwrap();
+        if let Some(ctor) = ctor_re.captures(after_class) {
+            let params = ctor.get(1).map_or("", |m| m.as_str());
+            let ctor_body_start = full.end() + ctor.get(0).unwrap().end();
+
+            // Find matching brace
+            let mut depth = 1;
+            let mut ctor_end = ctor_body_start;
+            for (i, ch) in code[ctor_body_start..].char_indices() {
+                match ch {
+                    '{' => depth += 1,
+                    '}' => { depth -= 1; if depth == 0 { ctor_end = ctor_body_start + i; break; } }
+                    _ => {}
+                }
+            }
+
+            let mut body = code[ctor_body_start..ctor_end].to_string();
+            // Replace super(...) with Parent.call(this, ...)
+            let super_re = regex::Regex::new(r"super\(([^)]*)\)").unwrap();
+            body = super_re.replace_all(&body, &format!("{parent}.call(this, $1)")).to_string();
+
+            // Find end of class
+            let mut class_depth = 1;
+            let mut class_end = full.end();
+            for (i, ch) in code[full.end()..].char_indices() {
+                match ch {
+                    '{' => class_depth += 1,
+                    '}' => { class_depth -= 1; if class_depth == 0 { class_end = full.end() + i + 1; break; } }
+                    _ => {}
+                }
+            }
+            // Include trailing semicolon
+            if class_end < code.len() && code.as_bytes()[class_end] == b';' {
+                class_end += 1;
+            }
+
+            let replacement = format!(
+                "{var_name} = function({params}) {{{body}}};\n      Object.setPrototypeOf({var_name}.prototype, {parent}.prototype);\n      Object.setPrototypeOf({var_name}, {parent});",
+            );
+
+            code_str = format!("{}{}{}", &code_str[..full.start()], replacement, &code_str[class_end..]);
+        }
+    }
+
+    if code_str.len() == original_len {
         eprintln!("WARNING: esbuild patches did not match — Hermes for-let-of bug may cause failures");
     }
 
-    code
+    code_str
 }
 
 /// Bundle test files via Metro's programmatic API (one-shot mode).
