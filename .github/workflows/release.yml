@@ -62,7 +62,7 @@ jobs:
             -DHERMES_STATIC_LINK=OFF \
             -DBUILD_SHARED_LIBS=OFF \
             -DCMAKE_BUILD_TYPE=Release
-          cmake --build build --target hermesVMRuntime hermes-engine-cdp
+          cmake --build build
 
       - name: Bundle harness
         run: |

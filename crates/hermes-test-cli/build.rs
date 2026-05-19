@@ -118,8 +118,14 @@ fn main() {
     }
 
     // System libraries
-    println!("cargo:rustc-link-lib=c++");
-    println!("cargo:rustc-link-lib=framework=Foundation");
+    if cfg!(target_os = "macos") {
+        println!("cargo:rustc-link-lib=c++");
+        println!("cargo:rustc-link-lib=framework=Foundation");
+    } else {
+        println!("cargo:rustc-link-lib=stdc++");
+        println!("cargo:rustc-link-lib=m");
+        println!("cargo:rustc-link-lib=pthread");
+    }
 
     println!("cargo:rerun-if-changed={}", bridge_dir.join("src/bridge.cpp").display());
     println!("cargo:rerun-if-changed={}", bridge_dir.join("src/vm_eval.cpp").display());
