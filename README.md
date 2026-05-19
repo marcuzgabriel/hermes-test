@@ -1,13 +1,44 @@
 # hermes-test
 
-75x faster than Jest. A test runner for React Native that runs your tests in Hermes — the same engine your app uses.
+**75x faster than Jest.** A test runner for React Native that executes your tests in Hermes — the same JavaScript engine your app ships with.
+
+No Babel transforms. No `transformIgnorePatterns`. No `jest-expo` mock layer. No 20-second test runs. Just your code, running in the real engine, at native speed.
+
+```
+245 tests — 300ms
+```
+
+---
+
+### The problem
+
+Every React Native project tests in Node. Your app runs in Hermes. These are different JavaScript engines with different behaviors. That gap is where bugs hide — and Jest can't find them because it's running in the wrong engine entirely.
+
+On top of that, Jest in React Native is slow by design. Every test file spawns a worker, runs Babel transforms, resolves `transformIgnorePatterns` for every `node_modules` import, and coordinates results over IPC. For a mid-size app, that's 20-60 seconds per run. Developers stop running tests. Tests rot. Coverage drops.
+
+### The fix
+
+hermes-test runs your tests directly in Hermes. esbuild bundles your test + source into a single file in <100ms. A Rust CLI feeds it to the Hermes VM. One process, no workers, no transforms. Results appear before your hand leaves `Cmd+S`.
+
+Real-world benchmark — 20 production test suites from a Danish insurance app (Topdanmark):
+
+| | Jest | hermes-test | Speedup |
+|---|------|-------------|---------|
+| Wall clock | **22.5s** | **0.3s** | **75x** |
+| CPU time | 86.3s | 0.28s | **308x** |
+
+Same tests, same assertions, same business logic. The difference is everything around the tests.
+
+---
+
+### Quick start
 
 ```bash
 bun add -D hermes-test
 ```
 
 ```ts
-import { test, renderHook, act, expect } from 'hermes-test';
+import { test, renderHook, act } from 'hermes-test';
 
 test('useCounter increments', ({ expect }) => {
   const { current } = renderHook(() => useCounter(0));
@@ -18,17 +49,7 @@ test('useCounter increments', ({ expect }) => {
 
 ```bash
 hermes-test --watch
-# 245 tests in 300ms
 ```
-
-## Why
-
-| Problem | Jest | hermes-test |
-|---------|------|-------------|
-| Engine mismatch | Tests run in Node, app runs in Hermes | Tests run in Hermes |
-| Transform overhead | Babel + Metro transforms every import | esbuild bundles in <100ms |
-| Mock complexity | `transformIgnorePatterns`, `jest-expo`, auto-mocking | `mockModule()` — explicit, no magic |
-| Speed | 20s+ for 200 tests | 300ms for 245 tests |
 
 ## Benchmarks
 
