@@ -69,8 +69,9 @@ jobs:
       - name: Bundle harness
         run: |
           cd packages/hermes-test
-          bun install
+          bun install --no-save
           node bundle.mjs
+          ls -la dist/harness.bundle.js
 
       - name: Build CLI
         run: cargo build --release --target ${{ matrix.target }}
