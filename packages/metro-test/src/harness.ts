@@ -2,10 +2,11 @@
 // to ensure they run before any bundled dependency (React checks process.env.NODE_ENV at load time)
 
 import { expect } from './expect';
-import { spy } from './spy';
+import { spy, spyOn } from './spy';
 import { renderHook, act, waitFor } from './hooks';
 import { useMock, mockModule, resetMocks } from './mock';
 import { mockFetch, mockFetchUse, mockFetchReset, mockFetchClear, http, HttpResponse } from './fetch';
+import { useFakeTimers, useRealTimers, advanceTimersByTime, runAllTimers, getTimerCount, advanceTimersToNextTimer } from './timers';
 
 type TestFn = (ctx: TestContext) => void | Promise<void>;
 type TestContext = {
@@ -190,6 +191,7 @@ function runTests(): TestResult[] {
   test,
   expect,
   spy,
+  spyOn,
   group,
   beforeEach,
   afterEach,
@@ -208,6 +210,13 @@ function runTests(): TestResult[] {
   http,
   HttpResponse,
   flushAsync,
+  // Timer control
+  useFakeTimers,
+  useRealTimers,
+  advanceTimersByTime,
+  runAllTimers,
+  getTimerCount,
+  advanceTimersToNextTimer,
 };
 
-export { test, expect, spy, group, beforeEach, afterEach, beforeAll, afterAll, renderHook, act, waitFor, useMock, mockModule, mockFetch, mockFetchUse, mockFetchReset, mockFetchClear, http, HttpResponse, flushAsync };
+export { test, expect, spy, spyOn, group, beforeEach, afterEach, beforeAll, afterAll, renderHook, act, waitFor, useMock, mockModule, mockFetch, mockFetchUse, mockFetchReset, mockFetchClear, http, HttpResponse, flushAsync, useFakeTimers, useRealTimers, advanceTimersByTime, runAllTimers, getTimerCount, advanceTimersToNextTimer };

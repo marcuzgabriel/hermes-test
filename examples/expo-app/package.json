@@ -11,6 +11,8 @@
     "metro-resolver": "^0.82.0",
     "metro-runtime": "^0.82.0",
     "metro-transform-worker": "^0.82.0",
+    "moment": "^2.30.1",
+    "moment-timezone": "^0.6.2",
     "react": "18",
     "react-redux": "^9.3.0",
     "react-test-renderer": "18"

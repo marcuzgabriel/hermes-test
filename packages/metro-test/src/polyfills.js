@@ -137,14 +137,14 @@ if (typeof globalThis.process === 'undefined') {
     globalThis.Headers = Headers;
   }
 
-  // URL
-  if (typeof globalThis.URL === 'undefined') {
+  // URL — always install: Hermes has a built-in URL that doesn't parse searchParams correctly
+  {
     function URL(url, base) {
       if (base && url.indexOf('://') === -1) {
         url = base.replace(/\/$/, '') + '/' + url.replace(/^\//, '');
       }
       this.href = url;
-      var match = url.match(/^(https?:)\/\/([^/:]+)(:\d+)?(\/[^?#]*)(\?[^#]*)?(#.*)?$/);
+      var match = url.match(/^(https?:)\/\/([^/:?#]+)(:\d+)?(\/[^?#]*)?(\?[^#]*)?(#.*)?$/);
       if (match) {
         this.protocol = match[1];
         this.hostname = match[2];
@@ -165,8 +165,8 @@ if (typeof globalThis.process === 'undefined') {
     globalThis.URL = URL;
   }
 
-  // URLSearchParams
-  if (typeof globalThis.URLSearchParams === 'undefined') {
+  // URLSearchParams — always install: native Hermes version may not parse correctly
+  {
     function URLSearchParams(init) {
       this._params = [];
       if (typeof init === 'string') {

@@ -58,7 +58,7 @@ export function act(fn: () => void | Promise<void>): void {
 
 export function renderHook<T>(
   hookFn: (props?: any) => T,
-  options?: { initialProps?: any }
+  options?: { initialProps?: any; wrapper?: any }
 ): HookResult<T> {
   const history: T[] = [];
   let currentValue: T;
@@ -74,10 +74,16 @@ export function renderHook<T>(
     return null;
   }
 
+  function createTree(props?: any) {
+    const testEl = React.createElement(TestComponent, { hookProps: props });
+    if (options?.wrapper) {
+      return React.createElement(options.wrapper, null, testEl);
+    }
+    return testEl;
+  }
+
   act(() => {
-    renderer = TR.create(
-      React.createElement(TestComponent, { hookProps: options?.initialProps })
-    );
+    renderer = TR.create(createTree(options?.initialProps));
   });
 
   return {
@@ -92,9 +98,7 @@ export function renderHook<T>(
     },
     rerender(props?: any) {
       act(() => {
-        renderer!.update(
-          React.createElement(TestComponent, { hookProps: props })
-        );
+        renderer!.update(createTree(props));
       });
     },
     unmount() {

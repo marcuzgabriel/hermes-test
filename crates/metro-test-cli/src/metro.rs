@@ -55,11 +55,100 @@ fn find_esbuild(project_root: &Path) -> Result<PathBuf, ()> {
     Err(())
 }
 
+/// Read path aliases from tsconfig.json "compilerOptions.paths" and metro-test.config.json.
+/// Returns Vec<(alias, target_path)> for esbuild --alias flags.
+fn read_path_aliases(project_root: &Path) -> Vec<(String, String)> {
+    let mut aliases = Vec::new();
+
+    // Read tsconfig.json paths
+    for name in ["tsconfig.json", "tsconfig.app.json"] {
+        let tsconfig_path = project_root.join(name);
+        if let Ok(content) = std::fs::read_to_string(&tsconfig_path) {
+            // Simple JSON parse for paths — avoid adding serde dependency
+            // Look for "paths": { "@foo/*": ["./src/*"] }
+            if let Some(paths_start) = content.find("\"paths\"") {
+                if let Some(brace_start) = content[paths_start..].find('{') {
+                    let rest = &content[paths_start + brace_start..];
+                    let mut depth = 0;
+                    let mut end = 0;
+                    for (i, ch) in rest.char_indices() {
+                        match ch {
+                            '{' => depth += 1,
+                            '}' => {
+                                depth -= 1;
+                                if depth == 0 { end = i + 1; break; }
+                            }
+                            _ => {}
+                        }
+                    }
+                    let paths_block = &rest[..end];
+                    // Parse each "alias": ["target"] pair
+                    let mut i = 0;
+                    while let Some(key_start) = paths_block[i..].find('"') {
+                        let ks = i + key_start + 1;
+                        if let Some(key_end) = paths_block[ks..].find('"') {
+                            let key = &paths_block[ks..ks + key_end];
+                            let after_key = ks + key_end + 1;
+                            if let Some(val_start) = paths_block[after_key..].find('"') {
+                                let vs = after_key + val_start + 1;
+                                if let Some(val_end) = paths_block[vs..].find('"') {
+                                    let val = &paths_block[vs..vs + val_end];
+                                    // Convert "alias/*" → "alias" and "./src/*" → "./src"
+                                    let alias = key.trim_end_matches("/*").trim_end_matches('*');
+                                    let mut target = val.trim_end_matches("/*").trim_end_matches('*');
+                                    if !alias.is_empty() && !target.is_empty() {
+                                        // Resolve relative target against baseUrl or project root
+                                        let target_path = if target.starts_with("./") || target.starts_with("../") {
+                                            project_root.join(target).to_string_lossy().to_string()
+                                        } else {
+                                            target.to_string()
+                                        };
+                                        aliases.push((alias.to_string(), target_path));
+                                    }
+                                    i = vs + val_end + 1;
+                                    continue;
+                                }
+                            }
+                        }
+                        i += key_start + 1;
+                    }
+                }
+            }
+            break; // Only read first tsconfig found
+        }
+    }
+
+    // Read metro-test.config.json for nativeModuleStubs
+    let config_path = project_root.join("metro-test.config.json");
+    if let Ok(content) = std::fs::read_to_string(&config_path) {
+        // Look for "nativeModuleStubs": ["expo-web-browser", ...]
+        if let Some(stubs_start) = content.find("\"nativeModuleStubs\"") {
+            if let Some(arr_start) = content[stubs_start..].find('[') {
+                if let Some(arr_end) = content[stubs_start + arr_start..].find(']') {
+                    let arr = &content[stubs_start + arr_start + 1..stubs_start + arr_start + arr_end];
+                    for item in arr.split(',') {
+                        let module = item.trim().trim_matches('"').trim_matches('\'');
+                        if !module.is_empty() {
+                            // These get externalized — the __require shim returns empty objects
+                            // (handled by inject_mock_require_shim)
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    aliases
+}
+
 fn bundle_esbuild(
     entry_file: &Path,
     esbuild_path: &Path,
     external_modules: &[String],
 ) -> Result<String, String> {
+    let project_root = entry_file.parent().unwrap_or(Path::new("."));
+    let aliases = read_path_aliases(project_root);
+
     let mut cmd = Command::new(esbuild_path);
     cmd.arg(entry_file)
         .arg("--bundle")
@@ -68,6 +157,11 @@ fn bundle_esbuild(
         .arg("--supported:async-await=false")
         .arg("--define:process.env.NODE_ENV=\"test\"")
         .arg("--define:global=globalThis");
+
+    // Apply path aliases from tsconfig.json
+    for (alias, target) in &aliases {
+        cmd.arg(format!("--alias:{alias}={target}"));
+    }
 
     // Externalize mocked modules so they resolve through __require → __mockRegistry
     for ext in external_modules {
