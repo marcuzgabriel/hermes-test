@@ -27,8 +27,12 @@ jobs:
 
     steps:
       - uses: actions/checkout@v4
-        with:
-          submodules: recursive
+
+      - name: Clone Hermes
+        run: |
+          git clone --depth 1 --branch rn/0.84-stable https://github.com/facebook/hermes.git vendor/hermes
+          cd vendor/hermes
+          sed -i.bak 's/FATAL_ERROR "Host compiler/WARNING "Host compiler/g' external/llvh/cmake/modules/CheckAtomic.cmake
 
       - name: Install Rust
         uses: dtolnay/rust-toolchain@stable
