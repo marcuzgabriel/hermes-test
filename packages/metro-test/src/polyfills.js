@@ -56,3 +56,153 @@ if (typeof globalThis.process === 'undefined') {
     };
   }
 })();
+
+// Web API polyfills — needed for RTK Query's fetchBaseQuery
+(function() {
+  // AbortController / AbortSignal
+  if (typeof globalThis.AbortController === 'undefined') {
+    function AbortSignal() { this.aborted = false; this._listeners = []; }
+    AbortSignal.prototype.addEventListener = function(type, fn) { this._listeners.push(fn); };
+    AbortSignal.prototype.removeEventListener = function(type, fn) {
+      this._listeners = this._listeners.filter(function(f) { return f !== fn; });
+    };
+
+    function AbortController() { this.signal = new AbortSignal(); }
+    AbortController.prototype.abort = function() {
+      this.signal.aborted = true;
+      for (var i = 0; i < this.signal._listeners.length; i++) {
+        try { this.signal._listeners[i](); } catch(e) {}
+      }
+    };
+
+    globalThis.AbortController = AbortController;
+    globalThis.AbortSignal = AbortSignal;
+  }
+
+  // Headers
+  if (typeof globalThis.Headers === 'undefined') {
+    function Headers(init) {
+      this._map = {};
+      if (init) {
+        if (typeof init.forEach === 'function') {
+          init.forEach(function(v, k) { this._map[k.toLowerCase()] = v; }.bind(this));
+        } else {
+          var keys = Object.keys(init);
+          for (var i = 0; i < keys.length; i++) {
+            this._map[keys[i].toLowerCase()] = init[keys[i]];
+          }
+        }
+      }
+    }
+    Headers.prototype.get = function(k) { return this._map[k.toLowerCase()] || null; };
+    Headers.prototype.has = function(k) { return k.toLowerCase() in this._map; };
+    Headers.prototype.set = function(k, v) { this._map[k.toLowerCase()] = v; };
+    Headers.prototype.append = function(k, v) {
+      k = k.toLowerCase();
+      this._map[k] = this._map[k] ? this._map[k] + ', ' + v : v;
+    };
+    Headers.prototype.delete = function(k) { delete this._map[k.toLowerCase()]; };
+    Headers.prototype.forEach = function(fn) {
+      var keys = Object.keys(this._map);
+      for (var i = 0; i < keys.length; i++) fn(this._map[keys[i]], keys[i], this);
+    };
+    Headers.prototype.entries = function() { return Object.entries(this._map); };
+    globalThis.Headers = Headers;
+  }
+
+  // URL
+  if (typeof globalThis.URL === 'undefined') {
+    function URL(url, base) {
+      if (base && url.indexOf('://') === -1) {
+        url = base.replace(/\/$/, '') + '/' + url.replace(/^\//, '');
+      }
+      this.href = url;
+      var match = url.match(/^(https?:)\/\/([^/:]+)(:\d+)?(\/[^?#]*)(\?[^#]*)?(#.*)?$/);
+      if (match) {
+        this.protocol = match[1];
+        this.hostname = match[2];
+        this.port = match[3] ? match[3].slice(1) : '';
+        this.pathname = match[4] || '/';
+        this.search = match[5] || '';
+        this.hash = match[6] || '';
+        this.host = this.hostname + (this.port ? ':' + this.port : '');
+        this.origin = this.protocol + '//' + this.host;
+      } else {
+        this.protocol = ''; this.hostname = ''; this.port = '';
+        this.pathname = url; this.search = ''; this.hash = '';
+        this.host = ''; this.origin = '';
+      }
+      this.searchParams = new URLSearchParams(this.search);
+    }
+    URL.prototype.toString = function() { return this.href; };
+    globalThis.URL = URL;
+  }
+
+  // URLSearchParams
+  if (typeof globalThis.URLSearchParams === 'undefined') {
+    function URLSearchParams(init) {
+      this._params = [];
+      if (typeof init === 'string') {
+        init = init.replace(/^\?/, '');
+        var pairs = init.split('&');
+        for (var i = 0; i < pairs.length; i++) {
+          if (!pairs[i]) continue;
+          var kv = pairs[i].split('=');
+          this._params.push([decodeURIComponent(kv[0]), decodeURIComponent(kv.slice(1).join('='))]);
+        }
+      }
+    }
+    URLSearchParams.prototype.get = function(k) {
+      for (var i = 0; i < this._params.length; i++) {
+        if (this._params[i][0] === k) return this._params[i][1];
+      }
+      return null;
+    };
+    URLSearchParams.prototype.has = function(k) {
+      for (var i = 0; i < this._params.length; i++) {
+        if (this._params[i][0] === k) return true;
+      }
+      return false;
+    };
+    URLSearchParams.prototype.set = function(k, v) {
+      for (var i = 0; i < this._params.length; i++) {
+        if (this._params[i][0] === k) { this._params[i][1] = v; return; }
+      }
+      this._params.push([k, v]);
+    };
+    URLSearchParams.prototype.append = function(k, v) { this._params.push([k, v]); };
+    URLSearchParams.prototype.toString = function() {
+      return this._params.map(function(p) { return encodeURIComponent(p[0]) + '=' + encodeURIComponent(p[1]); }).join('&');
+    };
+    globalThis.URLSearchParams = URLSearchParams;
+  }
+
+  // Request (minimal — RTK Query checks typeof Request)
+  if (typeof globalThis.Request === 'undefined') {
+    globalThis.Request = function Request(url, init) {
+      this.url = typeof url === 'string' ? url : url.href;
+      this.method = (init && init.method) || 'GET';
+      this.headers = new globalThis.Headers(init && init.headers);
+      this.body = init && init.body;
+    };
+  }
+
+  // Stub fetch (mockFetch will override with handler-based implementation)
+  if (typeof globalThis.fetch === 'undefined') {
+    globalThis.fetch = function() {
+      return Promise.reject(new Error('fetch not configured — use mockFetch() to register handlers'));
+    };
+  }
+
+  // Response (minimal)
+  if (typeof globalThis.Response === 'undefined') {
+    globalThis.Response = function Response(body, init) {
+      this.body = body;
+      this.status = (init && init.status) || 200;
+      this.ok = this.status >= 200 && this.status < 300;
+      this.headers = new globalThis.Headers(init && init.headers);
+    };
+    globalThis.Response.prototype.json = function() { return Promise.resolve(JSON.parse(this.body)); };
+    globalThis.Response.prototype.text = function() { return Promise.resolve(String(this.body)); };
+  }
+})();

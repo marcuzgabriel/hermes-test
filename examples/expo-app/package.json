@@ -5,15 +5,19 @@
   "dependencies": {
     "@react-native/babel-preset": "^0.82.0",
     "@react-native/metro-babel-transformer": "^0.82.0",
+    "@reduxjs/toolkit": "^2.12.0",
     "metro": "^0.82.0",
     "metro-config": "^0.82.0",
     "metro-resolver": "^0.82.0",
     "metro-runtime": "^0.82.0",
     "metro-transform-worker": "^0.82.0",
     "react": "18",
+    "react-redux": "^9.3.0",
     "react-test-renderer": "18"
   },
   "devDependencies": {
+    "@swc/cli": "^0.8.1",
+    "@swc/core": "^1.15.33",
     "@types/react": "18",
     "esbuild": "^0.28.0"
   }

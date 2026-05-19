@@ -60,9 +60,9 @@ fn main() {
     }
 
     // Link order matters: dependents before dependencies
-    // libhermes contains hermes.cpp (makeHermesRuntime) and links jsi
+    // Hermes V1 (rn/0.84): libhermesvm replaces libhermes
     let libs = [
-        "hermes",
+        "hermesvm",
         "hermesVMRuntime",
         "hermesFrontend",
         "hermesOptimizer",

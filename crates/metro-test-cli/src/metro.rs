@@ -95,7 +95,92 @@ fn bundle_esbuild(
         code = inject_mock_require_shim(&code);
     }
 
+    // Transpile ES6 classes to ES5 via SWC (Hermes class support is buggy)
+    code = transpile_with_swc(&code, entry_file)?;
+
     Ok(code)
+}
+
+/// Transpile ES6+ classes to ES5 via SWC.
+/// Hermes has buggy class support even with ES6Class enabled — class expressions
+/// in __esm lazy init blocks fail with "Cannot read property 'prototype' of undefined".
+fn transpile_with_swc(code: &str, context_path: &Path) -> Result<String, String> {
+    // Only run SWC when the bundle imports packages with class patterns that break
+    // in Hermes's __esm lazy init (specifically immer's Immer2 class and RTK's Tuple).
+    // React's classes work fine with ES6Class enabled — no need to transpile those.
+    // SWC only needed for bundles importing immer/RTK — their class patterns
+    // break in esbuild's __esm lazy init even with Hermes V1's class support.
+    let needs_swc = code.contains("node_modules/immer/")
+        || code.contains("node_modules/@reduxjs/toolkit/")
+        || code.contains("class _Tuple extends Array");
+
+    if !needs_swc {
+        return Ok(code.to_string());
+    }
+
+    eprintln!("\x1b[2m[swc]\x1b[0m Transpiling classes for Hermes compatibility...");
+
+    // Find SWC binary
+    let swc_path = find_swc(context_path);
+    let swc = match swc_path {
+        Some(p) => p,
+        None => return Ok(code.to_string()), // SWC not installed, skip
+    };
+
+    // Write a temp swcrc
+    let swcrc_path = context_path.parent().unwrap_or(context_path).join(".metro-test-swcrc.json");
+    let _ = std::fs::write(&swcrc_path, r#"{"jsc":{"target":"es5"},"module":{"type":"es6"}}"#);
+
+    let mut child = Command::new(&swc)
+        .arg("--filename")
+        .arg("bundle.js")
+        .arg("--config-file")
+        .arg(&swcrc_path)
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .map_err(|e| format!("Failed to spawn SWC: {e}"))?;
+
+    use std::io::Write;
+    if let Some(stdin) = child.stdin.as_mut() {
+        stdin.write_all(code.as_bytes()).map_err(|e| format!("SWC stdin write failed: {e}"))?;
+    }
+    drop(child.stdin.take());
+
+    let output = child.wait_with_output().map_err(|e| format!("SWC failed: {e}"))?;
+    let _ = std::fs::remove_file(&swcrc_path);
+
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        eprintln!("SWC transpile warning: {stderr}");
+        // Fall back to original code if SWC fails
+        return Ok(code.to_string());
+    }
+
+    String::from_utf8(output.stdout).map_err(|e| format!("SWC output not UTF-8: {e}"))
+}
+
+fn find_swc(context_path: &Path) -> Option<PathBuf> {
+    // Check local node_modules
+    let local = context_path.join("node_modules/.bin/swc");
+    if local.exists() {
+        return Some(local);
+    }
+    // Walk up
+    let mut dir = context_path.parent();
+    while let Some(d) = dir {
+        let candidate = d.join("node_modules/.bin/swc");
+        if candidate.exists() {
+            return Some(candidate);
+        }
+        dir = d.parent();
+    }
+    // Global
+    if Command::new("swc").arg("--version").output().is_ok() {
+        return Some(PathBuf::from("swc"));
+    }
+    None
 }
 
 /// Patch esbuild's __require to route externalized modules through __mockRegistry.
@@ -136,6 +221,23 @@ fn patch_esbuild_for_hermes(code: &str) -> String {
         "{ get: all[name], enumerable: true, configurable: true }",
         1,
     );
+
+    // Patch 3: Hermes bug — named class expressions in __esm blocks don't bind
+    // the class name correctly. `class _Tuple extends Array { constructor() {
+    // Object.setPrototypeOf(this, _Tuple.prototype) } }` fails because _Tuple
+    // is undefined inside the constructor. Fix: use a regular variable reference.
+    let code = code.replace(
+        "Tuple = class _Tuple extends Array {",
+        "Tuple = class extends Array {",
+    );
+    let code = code.replace(
+        "Object.setPrototypeOf(this, _Tuple.prototype);",
+        "Object.setPrototypeOf(this, Tuple.prototype);",
+    );
+    // Replace all _Tuple references with Tuple
+    let code = code.replace("return _Tuple;", "return Tuple;");
+    let code = code.replace("return new _Tuple(", "return new Tuple(");
+    let code = code.replace("return new _Tuple(", "return new Tuple(");
 
     if code.len() == original_len {
         eprintln!("WARNING: esbuild patches did not match — Hermes for-let-of bug may cause failures");
@@ -417,6 +519,9 @@ pub fn bundle_with_depgraph(
     if !external_modules.is_empty() {
         code = inject_mock_require_shim(&code);
     }
+
+    // Transpile ES6 classes to ES5 via SWC
+    code = transpile_with_swc(&code, entry_file)?;
 
     // Parse the metafile to build a dependency graph
     let depgraph = parse_depgraph(&metafile_path, project_root, test_files);

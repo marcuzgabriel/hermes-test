@@ -88,7 +88,10 @@ extern "C" {
 HermesRuntime* hermes_create_runtime(void) {
   try {
     auto wrapper = new HermesRuntime();
-    wrapper->rt = facebook::hermes::makeHermesRuntime();
+    auto config = ::hermes::vm::RuntimeConfig::Builder()
+        .withES6Class(true)
+        .build();
+    wrapper->rt = facebook::hermes::makeHermesRuntime(config);
     installConsole(*wrapper->rt);
     return wrapper;
   } catch (...) {

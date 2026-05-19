@@ -5,6 +5,7 @@ import { expect } from './expect';
 import { spy } from './spy';
 import { renderHook, act, waitFor } from './hooks';
 import { useMock, mockModule, resetMocks } from './mock';
+import { mockFetch, mockFetchUse, mockFetchReset, mockFetchClear, http, HttpResponse } from './fetch';
 
 type TestFn = (ctx: TestContext) => void | Promise<void>;
 type TestContext = {
@@ -187,6 +188,12 @@ function runTests(): TestResult[] {
   waitFor,
   useMock,
   mockModule,
+  mockFetch,
+  mockFetchUse,
+  mockFetchReset,
+  mockFetchClear,
+  http,
+  HttpResponse,
 };
 
-export { test, expect, spy, group, beforeEach, afterEach, beforeAll, afterAll, renderHook, act, waitFor, useMock, mockModule };
+export { test, expect, spy, group, beforeEach, afterEach, beforeAll, afterAll, renderHook, act, waitFor, useMock, mockModule, mockFetch, mockFetchUse, mockFetchReset, mockFetchClear, http, HttpResponse };
