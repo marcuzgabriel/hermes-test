@@ -24,6 +24,7 @@ type TestEntry = {
   fn: TestFn;
   options: TestOptions;
   group?: string;
+  file?: string;
 };
 
 type TestResult = {
@@ -31,6 +32,7 @@ type TestResult = {
   status: 'pass' | 'fail' | 'skip';
   error?: string;
   duration: number;
+  file?: string;
 };
 
 type LifecycleHook = () => void | Promise<void>;
@@ -49,6 +51,7 @@ function test(name: string, fn: TestFn, options?: TestOptions): void {
     fn,
     options: options ?? {},
     group: currentGroup,
+    file: (globalThis as any).__currentTestFile,
   });
 }
 
@@ -129,7 +132,7 @@ function runTests(): TestResult[] {
 
   for (const entry of tests) {
     if (entry.options.skip || (hasOnly && !entry.options.only)) {
-      results.push({ name: entry.name, status: 'skip', duration: 0 });
+      results.push({ name: entry.name, status: 'skip', duration: 0, file: entry.file });
       continue;
     }
 
@@ -155,6 +158,7 @@ function runTests(): TestResult[] {
         name: entry.name,
         status: 'pass',
         duration: Date.now() - start,
+        file: entry.file,
       });
     } catch (e: any) {
       // Still run afterEach even on failure
@@ -172,6 +176,7 @@ function runTests(): TestResult[] {
         status: 'fail',
         error: e?.message ?? String(e),
         duration: Date.now() - start,
+        file: entry.file,
       });
     }
   }

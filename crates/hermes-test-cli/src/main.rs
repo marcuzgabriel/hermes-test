@@ -640,31 +640,39 @@ fn print_results(json: &str) -> bool {
     let skipped = results["skipped"].as_u64().unwrap_or(0);
     let total = results["total"].as_u64().unwrap_or(0);
 
-    // Only show failures — passing tests are silent
     if let Some(tests) = results["tests"].as_array() {
-        if failed > 0 {
-            let mut groups: Vec<(String, Vec<&serde_json::Value>)> = Vec::new();
-            for test in tests {
-                let name = test["name"].as_str().unwrap_or("?");
-                if test["status"].as_str() != Some("fail") { continue; }
-                let group_name = if let Some(idx) = name.find(" > ") { &name[..idx] } else { name };
-                if let Some(g) = groups.iter_mut().find(|(n, _)| n == group_name) {
-                    g.1.push(test);
-                } else {
-                    groups.push((group_name.to_string(), vec![test]));
-                }
+        // Group tests by source file
+        let mut files: Vec<(String, Vec<&serde_json::Value>)> = Vec::new();
+        for test in tests {
+            let file = test["file"].as_str().unwrap_or("unknown");
+            if let Some(f) = files.iter_mut().find(|(n, _)| n == file) {
+                f.1.push(test);
+            } else {
+                files.push((file.to_string(), vec![test]));
             }
+        }
 
-            eprintln!();
-            for (group_name, failing_tests) in &groups {
-                eprintln!(" \x1b[31mFAIL\x1b[0m {group_name}");
-                for test in failing_tests {
+        // Print per-file results
+        eprintln!();
+        for (file_name, file_tests) in &files {
+            let file_failed = file_tests.iter().filter(|t| t["status"].as_str() == Some("fail")).count();
+            let file_total = file_tests.len();
+            let file_duration: u64 = file_tests.iter().map(|t| t["duration"].as_u64().unwrap_or(0)).sum();
+            let time_str = if file_duration > 0 { format!(" \x1b[2m({file_duration}ms)\x1b[0m") } else { String::new() };
+
+            if file_failed == 0 {
+                eprintln!(" \x1b[32mPASS\x1b[0m  {file_name} \x1b[2m({file_total} tests)\x1b[0m{time_str}");
+            } else {
+                let file_passed = file_total - file_failed;
+                eprintln!(" \x1b[31mFAIL\x1b[0m  {file_name} \x1b[2m({file_passed} passed, {file_failed} failed)\x1b[0m{time_str}");
+                // Show only failing tests
+                for test in file_tests {
+                    if test["status"].as_str() != Some("fail") { continue; }
                     let name = test["name"].as_str().unwrap_or("?");
-                    let short_name = if let Some(idx) = name.find(" > ") { &name[idx + 3..] } else { name };
-                    eprintln!("   \x1b[31m✗ {short_name}\x1b[0m");
+                    eprintln!("       \x1b[31m✗ {name}\x1b[0m");
                     if let Some(error) = test["error"].as_str() {
                         if !error.is_empty() {
-                            eprintln!("     \x1b[2m{error}\x1b[0m");
+                            eprintln!("         \x1b[2m{error}\x1b[0m");
                         }
                     }
                 }
@@ -672,7 +680,7 @@ fn print_results(json: &str) -> bool {
         }
     }
 
-    // Summary table
+    // Summary
     eprintln!();
     if failed == 0 {
         eprintln!(" \x1b[32mTests:\x1b[0m  {passed} passed, {total} total");

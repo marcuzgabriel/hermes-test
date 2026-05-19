@@ -784,7 +784,7 @@ pub fn generate_entry(
         );
     }
 
-    // Import test files
+    // Import test files — tag each with its filename so the harness can track source file
     for file in test_files {
         let path = file.to_string_lossy();
         let require_path = if path.starts_with('/') || path.starts_with("./") {
@@ -792,7 +792,14 @@ pub fn generate_entry(
         } else {
             format!("./{path}")
         };
-        entry.push_str(&format!("require('{}');\n", require_path));
+        // Extract just the filename for display (e.g. "useLogin.test.ts")
+        let display_name = file.file_name()
+            .map(|n| n.to_string_lossy().to_string())
+            .unwrap_or_else(|| path.to_string());
+        entry.push_str(&format!(
+            "globalThis.__currentTestFile = '{}';\nrequire('{}');\n",
+            display_name, require_path
+        ));
     }
 
     // Run all registered tests and stash results on a global
