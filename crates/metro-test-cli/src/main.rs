@@ -247,22 +247,17 @@ fn watch_tests(files: &[PathBuf], root: &PathBuf, bundler: Option<metro::Bundler
         std::process::exit(1);
     });
 
-    // Initial test discovery
-    let test_files = if files.is_empty() {
+    let all_test_files = if files.is_empty() {
         metro::find_test_files(&root)
     } else {
         files.to_vec()
     };
 
-    if test_files.is_empty() {
+    if all_test_files.is_empty() {
         eprintln!("No test files found");
         std::process::exit(1);
     }
 
-    // Determine watch directories: project src dirs (not node_modules)
-    let watch_dir = root.clone();
-
-    // Set up file watcher with 50ms debounce
     let (tx, rx) = mpsc::channel();
     let mut debouncer = new_debouncer(Duration::from_millis(50), tx)
         .unwrap_or_else(|e| {
@@ -273,7 +268,7 @@ fn watch_tests(files: &[PathBuf], root: &PathBuf, bundler: Option<metro::Bundler
     use notify_debouncer_mini::notify::RecursiveMode;
     debouncer
         .watcher()
-        .watch(&watch_dir, RecursiveMode::Recursive)
+        .watch(&root, RecursiveMode::Recursive)
         .unwrap_or_else(|e| {
             eprintln!("Failed to watch directory: {e}");
             std::process::exit(1);
@@ -282,61 +277,111 @@ fn watch_tests(files: &[PathBuf], root: &PathBuf, bundler: Option<metro::Bundler
     eprintln!("\x1b[2m[watch]\x1b[0m Watching for changes in {}", root.display());
     eprintln!("\x1b[2m[watch]\x1b[0m Press Ctrl+C to stop\n");
 
-    // Initial run
-    run_cycle(&test_files, &root, bundler);
+    // Initial run — build full dep graph
+    let depgraph = run_cycle_with_depgraph(&all_test_files, &root, bundler);
 
     // Watch loop
+    let mut current_depgraph = depgraph;
+
     loop {
         match rx.recv() {
             Ok(Ok(events)) => {
-                // Filter: only care about .ts/.tsx/.js/.jsx changes, skip node_modules
-                let relevant = events.iter().any(|e| {
-                    let p = e.path.to_string_lossy();
-                    !p.contains("node_modules")
-                        && !p.contains(".metro-test-")
-                        && !p.contains("/target/")
-                        && (p.ends_with(".ts")
-                            || p.ends_with(".tsx")
-                            || p.ends_with(".js")
-                            || p.ends_with(".jsx"))
-                        && e.kind == DebouncedEventKind::Any
-                });
+                // Collect changed source files
+                let changed_paths: Vec<PathBuf> = events
+                    .iter()
+                    .filter(|e| {
+                        let p = e.path.to_string_lossy();
+                        !p.contains("node_modules")
+                            && !p.contains(".metro-test-")
+                            && !p.contains("/target/")
+                            && (p.ends_with(".ts")
+                                || p.ends_with(".tsx")
+                                || p.ends_with(".js")
+                                || p.ends_with(".jsx"))
+                            && e.kind == DebouncedEventKind::Any
+                    })
+                    .map(|e| e.path.clone())
+                    .collect();
 
-                if !relevant {
+                if changed_paths.is_empty() {
                     continue;
                 }
 
-                // Show which files changed
-                let changed: Vec<String> = events
+                // Show changed files
+                let changed_names: Vec<String> = changed_paths
                     .iter()
-                    .filter_map(|e| {
-                        let p = e.path.to_string_lossy();
-                        if p.contains("node_modules") || p.contains(".metro-test-") {
-                            return None;
-                        }
-                        e.path
-                            .strip_prefix(&root)
+                    .filter_map(|p| {
+                        p.strip_prefix(&root)
                             .ok()
                             .map(|rel| rel.to_string_lossy().to_string())
                     })
                     .collect();
+                eprintln!(
+                    "\n\x1b[2m[watch]\x1b[0m Changed: {}",
+                    changed_names.join(", ")
+                );
 
-                if !changed.is_empty() {
-                    eprintln!(
-                        "\n\x1b[2m[watch]\x1b[0m Changed: {}",
-                        changed.join(", ")
-                    );
+                // Find affected test files from the dep graph
+                let mut affected: Vec<PathBuf> = Vec::new();
+                for changed in &changed_paths {
+                    let canonical = std::fs::canonicalize(changed)
+                        .unwrap_or_else(|_| changed.clone());
+
+                    if let Some(tests) = current_depgraph.get(&canonical) {
+                        for t in tests {
+                            if !affected.contains(t) {
+                                affected.push(t.clone());
+                            }
+                        }
+                    }
+
+                    // If the changed file IS a test file, include it
+                    let name = changed.to_string_lossy();
+                    if (name.ends_with(".test.ts")
+                        || name.ends_with(".test.tsx")
+                        || name.ends_with(".test.js"))
+                        && !affected.contains(&canonical)
+                    {
+                        affected.push(canonical);
+                    }
                 }
 
-                // Re-discover test files (new files may have been added)
-                let test_files = if files.is_empty() {
-                    metro::find_test_files(&root)
+                // If we couldn't determine affected tests, run all
+                if affected.is_empty() {
+                    let all = if files.is_empty() {
+                        metro::find_test_files(&root)
+                    } else {
+                        files.to_vec()
+                    };
+                    eprintln!(
+                        "\x1b[2m[watch]\x1b[0m Could not determine affected tests, running all"
+                    );
+                    current_depgraph = run_cycle_with_depgraph(&all, &root, bundler);
                 } else {
-                    files.to_vec()
-                };
-
-                if !test_files.is_empty() {
-                    run_cycle(&test_files, &root, bundler);
+                    let affected_names: Vec<String> = affected
+                        .iter()
+                        .filter_map(|p| {
+                            p.strip_prefix(&root)
+                                .ok()
+                                .map(|r| r.to_string_lossy().to_string())
+                        })
+                        .collect();
+                    eprintln!(
+                        "\x1b[2m[watch]\x1b[0m Running {} affected test{}: {}",
+                        affected.len(),
+                        if affected.len() == 1 { "" } else { "s" },
+                        affected_names.join(", ")
+                    );
+                    let new_graph = run_cycle_with_depgraph(&affected, &root, bundler);
+                    // Merge: union test file lists (don't lose entries from other test files)
+                    for (k, v) in new_graph {
+                        let entry = current_depgraph.entry(k).or_default();
+                        for test in v {
+                            if !entry.contains(&test) {
+                                entry.push(test);
+                            }
+                        }
+                    }
                 }
             }
             Ok(Err(e)) => {
@@ -350,49 +395,61 @@ fn watch_tests(files: &[PathBuf], root: &PathBuf, bundler: Option<metro::Bundler
     }
 }
 
-/// Run a single test cycle: bundle + eval + print results. Returns true if all passed.
-fn run_cycle(test_files: &[PathBuf], root: &PathBuf, bundler: Option<metro::Bundler>) -> bool {
+/// Run a test cycle and return the updated dependency graph.
+fn run_cycle_with_depgraph(
+    test_files: &[PathBuf],
+    root: &PathBuf,
+    bundler: Option<metro::Bundler>,
+) -> metro::DepGraph {
     let start = Instant::now();
 
     let entry_content = metro::generate_entry(test_files, None);
     let entry_path = root.join(".metro-test-entry.js");
     if std::fs::write(&entry_path, &entry_content).is_err() {
         eprintln!("Failed to write entry file");
-        return false;
+        return std::collections::HashMap::new();
     }
 
-    let bundle = match if let Some(b) = bundler {
-        metro::bundle_with(b, &entry_path, root)
+    // Try to get dep graph via esbuild metafile
+    let (bundle, depgraph) = if bundler == Some(metro::Bundler::Metro) {
+        let b = match metro::bundle_with(metro::Bundler::Metro, &entry_path, root) {
+            Ok(b) => b,
+            Err(e) => {
+                let _ = std::fs::remove_file(&entry_path);
+                eprintln!("\x1b[31mBundle failed: {e}\x1b[0m");
+                return std::collections::HashMap::new();
+            }
+        };
+        (b, std::collections::HashMap::new())
     } else {
-        metro::bundle_auto(&entry_path, root)
-    } {
-        Ok(b) => b,
-        Err(e) => {
-            let _ = std::fs::remove_file(&entry_path);
-            eprintln!("\x1b[31mBundle failed: {e}\x1b[0m");
-            return false;
+        match metro::bundle_with_depgraph(&entry_path, root, test_files) {
+            Ok((b, d)) => (b, d),
+            Err(e) => {
+                let _ = std::fs::remove_file(&entry_path);
+                eprintln!("\x1b[31mBundle failed: {e}\x1b[0m");
+                return std::collections::HashMap::new();
+            }
         }
     };
 
     let _ = std::fs::remove_file(&entry_path);
 
-    // Fresh Hermes runtime for each run (clean state)
     let rt = match hermes::Runtime::new() {
         Ok(rt) => rt,
         Err(e) => {
             eprintln!("Hermes error: {e}");
-            return false;
+            return depgraph;
         }
     };
 
     if rt.eval(HARNESS_JS, "harness.js").is_err() {
         eprintln!("Failed to load harness");
-        return false;
+        return depgraph;
     }
 
     if let Err(e) = rt.eval(&bundle, "bundle.js") {
         eprintln!("\x1b[31mTest execution failed: {e}\x1b[0m");
-        return false;
+        return depgraph;
     }
 
     let elapsed = start.elapsed();
@@ -401,19 +458,13 @@ fn run_cycle(test_files: &[PathBuf], root: &PathBuf, bundler: Option<metro::Bund
         Ok(json) => {
             print_results(&json);
             eprintln!("\x1b[2mRan in {}ms\x1b[0m", elapsed.as_millis());
-            // Check if all passed
-            if let Ok(inner) = serde_json::from_str::<String>(&json) {
-                if let Ok(v) = serde_json::from_str::<serde_json::Value>(&inner) {
-                    return v["failed"].as_u64().unwrap_or(1) == 0;
-                }
-            }
-            false
         }
         Err(e) => {
             eprintln!("Failed to read results: {e}");
-            false
         }
     }
+
+    depgraph
 }
 
 fn print_results(json: &str) {

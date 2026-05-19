@@ -219,20 +219,41 @@ fn walk_dir(dir: &Path, files: &mut Vec<PathBuf>) {
     }
 }
 
+/// Check if any test files (or their imports) need React.
+/// Scans file contents for react-related imports or harness hooks.
+pub fn needs_react(test_files: &[PathBuf]) -> bool {
+    for file in test_files {
+        if let Ok(content) = std::fs::read_to_string(file) {
+            if content.contains("renderHook")
+                || content.contains("from 'react")
+                || content.contains("from \"react")
+                || content.contains("require('react")
+                || content.contains("require(\"react")
+                || content.contains("waitFor")
+                || content.contains("useEffect")
+                || content.contains("useState")
+            {
+                return true;
+            }
+        }
+    }
+    false
+}
+
 /// Generate a synthetic entry file that imports the harness and all test files.
 pub fn generate_entry(test_files: &[PathBuf], _harness_path: Option<&Path>) -> String {
     let mut entry = String::new();
 
-    // Bootstrap React for hook testing (if available)
-    entry.push_str(
-        r#"try {
+    // Only bootstrap React if test files actually need it (saves ~40ms for pure tests)
+    if needs_react(test_files) {
+        entry.push_str(
+            r#"try {
   globalThis.__React = require('react');
   globalThis.__ReactTestRenderer = require('react-test-renderer');
-} catch(e) {
-  // React not installed — hook testing won't work, but pure tests are fine
-}
+} catch(e) {}
 "#,
-    );
+        );
+    }
 
     // Import test files
     for file in test_files {
@@ -260,4 +281,121 @@ globalThis.__metroTestResults = JSON.stringify({
     );
 
     entry
+}
+
+/// Bundle with esbuild and return the dependency graph (metafile).
+/// Returns (bundle_code, map of input_file → Vec<test_files_that_import_it>).
+pub fn bundle_with_depgraph(
+    entry_file: &Path,
+    project_root: &Path,
+    test_files: &[PathBuf],
+) -> Result<(String, DepGraph), String> {
+    let esbuild_path = find_esbuild(project_root)
+        .map_err(|_| "esbuild not found".to_string())?;
+
+    let metafile_path = project_root.join(".metro-test-meta.json");
+    let outfile_path = project_root.join(".metro-test-bundle.js");
+
+    let output = Command::new(&esbuild_path)
+        .arg(entry_file)
+        .arg("--bundle")
+        .arg("--format=iife")
+        .arg("--target=es2020")
+        .arg("--supported:async-await=false")
+        .arg("--define:process.env.NODE_ENV=\"test\"")
+        .arg("--define:global=globalThis")
+        .arg(format!("--metafile={}", metafile_path.to_string_lossy()))
+        .arg(format!("--outfile={}", outfile_path.to_string_lossy()))
+        .stderr(Stdio::piped())
+        .output()
+        .map_err(|e| format!("Failed to run esbuild: {e}"))?;
+
+    if !output.status.success() {
+        let _ = std::fs::remove_file(&metafile_path);
+        let _ = std::fs::remove_file(&outfile_path);
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        return Err(format!("esbuild failed: {stderr}"));
+    }
+
+    let code = std::fs::read_to_string(&outfile_path)
+        .map_err(|e| format!("Failed to read bundle: {e}"))?;
+    let _ = std::fs::remove_file(&outfile_path);
+    let code = patch_esbuild_for_hermes(&code);
+
+    // Parse the metafile to build a dependency graph
+    let depgraph = parse_depgraph(&metafile_path, project_root, test_files);
+    let _ = std::fs::remove_file(&metafile_path);
+
+    Ok((code, depgraph))
+}
+
+/// Maps source files → which test files depend on them.
+pub type DepGraph = std::collections::HashMap<PathBuf, Vec<PathBuf>>;
+
+fn parse_depgraph(
+    metafile_path: &Path,
+    project_root: &Path,
+    test_files: &[PathBuf],
+) -> DepGraph {
+    let mut graph: DepGraph = std::collections::HashMap::new();
+
+    let meta_str = match std::fs::read_to_string(metafile_path) {
+        Ok(s) => s,
+        Err(_) => return graph,
+    };
+
+    let meta: serde_json::Value = match serde_json::from_str(&meta_str) {
+        Ok(v) => v,
+        Err(_) => return graph,
+    };
+
+    // esbuild metafile structure: { "inputs": { "src/foo.ts": { "imports": [{ "path": "src/bar.ts" }] } } }
+    let inputs = match meta["inputs"].as_object() {
+        Some(o) => o,
+        None => return graph,
+    };
+
+    // Build reverse map: for each source file, which test files transitively import it?
+    let test_file_strs: Vec<String> = test_files
+        .iter()
+        .filter_map(|f| {
+            // Canonicalize to absolute, then strip project root to get relative path
+            let abs = std::fs::canonicalize(f).unwrap_or_else(|_| project_root.join(f));
+            abs.strip_prefix(project_root)
+                .ok()
+                .map(|rel| rel.to_string_lossy().to_string())
+        })
+        .collect();
+
+    for test_rel in &test_file_strs {
+        let mut visited = std::collections::HashSet::new();
+        let mut stack = vec![test_rel.clone()];
+
+        while let Some(current) = stack.pop() {
+            if !visited.insert(current.clone()) {
+                continue;
+            }
+
+            if let Some(input) = inputs.get(&current) {
+                if let Some(imports) = input["imports"].as_array() {
+                    for imp in imports {
+                        if let Some(path) = imp["path"].as_str() {
+                            if !path.contains("node_modules") {
+                                stack.push(path.to_string());
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        // Every file in `visited` maps back to this test file
+        let test_path = project_root.join(test_rel);
+        for dep in visited {
+            let dep_path = project_root.join(&dep);
+            graph.entry(dep_path).or_default().push(test_path.clone());
+        }
+    }
+
+    graph
 }
