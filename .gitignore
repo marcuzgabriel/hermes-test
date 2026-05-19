@@ -1,0 +1,9 @@
+node_modules/
+target/
+vendor/
+dist/
+.DS_Store
+.metro-test-entry.js
+.metro-test-cache/
+*.bundle.js.map
+/tmp/

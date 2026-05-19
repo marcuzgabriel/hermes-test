@@ -1,0 +1,20 @@
+{
+  "name": "metro-test-example",
+  "version": "0.0.0",
+  "private": true,
+  "dependencies": {
+    "@react-native/babel-preset": "^0.82.0",
+    "@react-native/metro-babel-transformer": "^0.82.0",
+    "metro": "^0.82.0",
+    "metro-config": "^0.82.0",
+    "metro-resolver": "^0.82.0",
+    "metro-runtime": "^0.82.0",
+    "metro-transform-worker": "^0.82.0",
+    "react": "18",
+    "react-test-renderer": "18"
+  },
+  "devDependencies": {
+    "@types/react": "18",
+    "esbuild": "^0.28.0"
+  }
+}

@@ -1,0 +1,21 @@
+{
+  "name": "metro-test",
+  "version": "0.1.0",
+  "description": "Fast test runner for React Native hooks and pure functions",
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "license": "MIT",
+  "scripts": {
+    "build": "tsc",
+    "bundle": "node bundle.mjs"
+  },
+  "devDependencies": {
+    "typescript": "^5.4.0",
+    "esbuild": "^0.25.0"
+  },
+  "dependencies": {
+    "@react-native/js-polyfills": "^0.85.3",
+    "react": "18",
+    "react-test-renderer": "18"
+  }
+}

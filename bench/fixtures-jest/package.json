@@ -1,0 +1,18 @@
+{
+  "name": "metro-test-jest-bench",
+  "private": true,
+  "devDependencies": {
+    "@swc/core": "^1.11.0",
+    "@swc/jest": "^0.2.37",
+    "@types/jest": "^30.0.0",
+    "jest": "^30.0.0",
+    "ts-jest": "^29.3.0",
+    "typescript": "^5.0.0"
+  },
+  "dependencies": {
+    "@testing-library/react-hooks": "8",
+    "@types/react": "18",
+    "react": "18",
+    "react-test-renderer": "18"
+  }
+}

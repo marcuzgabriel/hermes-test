@@ -1,0 +1,40 @@
+---
+title: metro-test — Execution Flow
+---
+sequenceDiagram
+    participant User as User
+    participant CLI as Rust CLI
+    participant FS as File System
+    participant ESB as esbuild
+    participant Hermes as Hermes Engine
+
+    User->>CLI: metro-test run --root .
+    CLI->>FS: Walk for *.test.ts
+    FS-->>CLI: [auth.test.ts, utils.test.ts]
+
+    Note over CLI: Generate entry file:<br/>require('react') → globalThis.__React<br/>require('./auth.test.ts')<br/>require('./utils.test.ts')<br/>runTests() → globalThis.__metroTestResults
+
+    CLI->>FS: Write .metro-test-entry.js
+    CLI->>ESB: Bundle entry (7ms)
+
+    Note over ESB: Resolves FULL import graph:<br/>• user source files<br/>• node_modules (react, axios, etc.)<br/>• TS → JS transform<br/>• Single IIFE output
+
+    ESB-->>CLI: bundle.js (all deps inlined)
+
+    Note over CLI: Patch for Hermes:<br/>• Fix for-let-of closure bug<br/>• Make exports configurable<br/>• Downlevel async/await
+
+    CLI->>Hermes: Create runtime
+    CLI->>Hermes: Eval harness.bundle.js (16KB, embedded in binary)
+
+    Note over Hermes: globalThis.__metroTest = {<br/>  test, expect, spy,<br/>  renderHook, act, waitFor<br/>}
+
+    CLI->>Hermes: Eval bundle.js
+
+    Note over Hermes: 1. Polyfills run (process, setTimeout)<br/>2. React loaded → globalThis.__React<br/>3. Test files register via test()<br/>4. runTests() executes all tests<br/>5. Results → globalThis.__metroTestResults
+
+    CLI->>Hermes: Eval 'globalThis.__metroTestResults'
+    Hermes-->>CLI: JSON results
+
+    Note over CLI: Parse results,<br/>print to stderr,<br/>exit 0 or 1
+
+    CLI-->>User: ✓ auth tests (3 passed)<br/>✓ utils tests (5 passed)<br/>8 passed, 8 total
