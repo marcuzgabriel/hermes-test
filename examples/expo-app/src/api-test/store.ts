@@ -1,4 +1,3 @@
-// Test store setup — mirrors setupApiStore from the real app's testing package
 import { configureStore, combineReducers } from '@reduxjs/toolkit';
 import appApi from './api';
 

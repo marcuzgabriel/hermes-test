@@ -24,7 +24,6 @@ static char* strdup_alloc(const std::string& s) {
   return out;
 }
 
-// Format a jsi::Value to a string for console output
 static std::string valueToString(jsi::Runtime& runtime, const jsi::Value& val) {
   if (val.isUndefined()) return "undefined";
   if (val.isNull()) return "null";
@@ -49,10 +48,8 @@ static std::string valueToString(jsi::Runtime& runtime, const jsi::Value& val) {
   return "[unknown]";
 }
 
-// Install console.log/warn/error on the global object
 static void installConsole(jsi::Runtime& runtime) {
   auto console = jsi::Object(runtime);
-
   auto makeLogger = [](FILE* stream) {
     return [stream](jsi::Runtime& rt, const jsi::Value&,
                      const jsi::Value* args, size_t count) -> jsi::Value {
@@ -65,7 +62,6 @@ static void installConsole(jsi::Runtime& runtime) {
       return jsi::Value::undefined();
     };
   };
-
   console.setProperty(runtime, "log",
     jsi::Function::createFromHostFunction(runtime,
       jsi::PropNameID::forAscii(runtime, "log"), 0, makeLogger(stderr)));
@@ -78,9 +74,14 @@ static void installConsole(jsi::Runtime& runtime) {
   console.setProperty(runtime, "info",
     jsi::Function::createFromHostFunction(runtime,
       jsi::PropNameID::forAscii(runtime, "info"), 0, makeLogger(stderr)));
-
   runtime.global().setProperty(runtime, "console", console);
 }
+
+// Defined in vm_eval.cpp — direct VM execution for large bundles
+extern "C" int hermes_vm_run(
+    void* vm_runtime_ptr,
+    const char* source, size_t source_len,
+    const char* source_url, char** error_out);
 
 extern "C" {
 
@@ -110,40 +111,45 @@ char* hermes_eval(
     *error_out = nullptr;
   try {
     auto& runtime = *rt->rt;
+
+    // Large bundles (>60KB): use VM Runtime::run() to avoid JSI class bug
+    if (source_len > 60000) {
+      char* vm_error = nullptr;
+      int rc = hermes_vm_run(
+          runtime.getVMRuntimeUnsafe(),
+          source, source_len,
+          source_url ? source_url : "eval",
+          &vm_error);
+      if (rc != 0) {
+        if (error_out && vm_error) *error_out = vm_error;
+        else free(vm_error);
+        return nullptr;
+      }
+      return strdup_alloc("null");
+    }
+
+    // Small scripts: normal JSI path
     auto result = runtime.evaluateJavaScript(
         std::make_shared<jsi::StringBuffer>(
             std::string(source, source_len)),
         source_url ? source_url : "eval");
 
-    // Call JSON.stringify on the result
     auto json = runtime.global().getPropertyAsObject(runtime, "JSON");
     auto stringify = json.getPropertyAsFunction(runtime, "stringify");
     auto jsonStr = stringify.call(runtime, result);
 
-    if (jsonStr.isUndefined()) {
-      return strdup_alloc("null");
-    }
-
+    if (jsonStr.isUndefined()) return strdup_alloc("null");
     return strdup_alloc(jsonStr.getString(runtime).utf8(runtime));
   } catch (const jsi::JSError& e) {
-    if (error_out) {
-      *error_out = strdup_alloc(e.what());
-    }
+    if (error_out) *error_out = strdup_alloc(e.what());
     return nullptr;
   } catch (const std::exception& e) {
-    if (error_out) {
-      *error_out = strdup_alloc(e.what());
-    }
+    if (error_out) *error_out = strdup_alloc(e.what());
     return nullptr;
   }
 }
 
-void hermes_free_string(char* s) {
-  free(s);
-}
-
-void hermes_destroy_runtime(HermesRuntime* rt) {
-  delete rt;
-}
+void hermes_free_string(char* s) { free(s); }
+void hermes_destroy_runtime(HermesRuntime* rt) { delete rt; }
 
 } // extern "C"

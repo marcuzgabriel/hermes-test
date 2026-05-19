@@ -9,6 +9,24 @@ if (typeof globalThis.process === 'undefined') {
   globalThis.process.env = { NODE_ENV: 'test' };
 }
 
+// Fix Array.isArray for class-extends-Array (Hermes doesn't set [[ArrayExoticObject]])
+// RTK's Tuple extends Array but Array.isArray returns false for it.
+(function() {
+  var origIsArray = Array.isArray;
+  Array.isArray = function(arg) {
+    if (origIsArray(arg)) return true;
+    // Check prototype chain for Array subclasses
+    if (arg && typeof arg === 'object' && typeof arg.length === 'number') {
+      var proto = Object.getPrototypeOf(arg);
+      while (proto && proto !== Object.prototype) {
+        if (proto === Array.prototype) return true;
+        proto = Object.getPrototypeOf(proto);
+      }
+    }
+    return false;
+  };
+})();
+
 // Timer polyfills — React scheduler and react-test-renderer need these
 (function() {
   var queue = [];

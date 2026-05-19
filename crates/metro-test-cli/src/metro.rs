@@ -95,8 +95,8 @@ fn bundle_esbuild(
         code = inject_mock_require_shim(&code);
     }
 
-    // SWC transpile for bundles importing immer/RTK (Hermes JSI bug with ES6 classes in large bundles)
-    code = transpile_with_swc(&code, entry_file)?;
+    // No SWC needed — VM Runtime::run() handles classes correctly,
+    // and Array.isArray polyfill handles class-extends-Array.
 
     Ok(code)
 }
@@ -347,22 +347,61 @@ fn patch_esbuild_for_hermes(code: &str) -> String {
         1,
     );
 
-    // Patch 3: Hermes bug — named class expressions in __esm blocks don't bind
-    // the class name correctly. `class _Tuple extends Array { constructor() {
-    // Object.setPrototypeOf(this, _Tuple.prototype) } }` fails because _Tuple
-    // is undefined inside the constructor. Fix: use a regular variable reference.
-    let code = code.replace(
-        "Tuple = class _Tuple extends Array {",
-        "Tuple = class extends Array {",
-    );
-    let code = code.replace(
-        "Object.setPrototypeOf(this, _Tuple.prototype);",
-        "Object.setPrototypeOf(this, Tuple.prototype);",
-    );
-    // Replace all _Tuple references with Tuple
-    let code = code.replace("return _Tuple;", "return Tuple;");
-    let code = code.replace("return new _Tuple(", "return new Tuple(");
-    let code = code.replace("return new _Tuple(", "return new Tuple(");
+    // Patch 3: Replace RTK's Tuple (class extends Array) with a plain Array subtype.
+    // Hermes's class-extends-Array is broken: Array.isArray returns false, concat
+    // corrupts elements, Symbol.species doesn't work. Replace the entire class with
+    // a function-based approach that creates real arrays with extra methods.
+    let tuple_re = regex::Regex::new(
+        r"(?s)Tuple = class _Tuple extends Array \{.*?\n\s*\};"
+    ).unwrap();
+    let code = tuple_re.replace(&code, r#"Tuple = function Tuple() {
+        var arr = Array.prototype.slice.call(arguments);
+        arr.concat = function() {
+          var r = arr.slice();
+          for (var i = 0; i < arguments.length; i++) {
+            var a = arguments[i];
+            if (Array.isArray(a)) { for (var j = 0; j < a.length; j++) r.push(a[j]); }
+            else r.push(a);
+          }
+          return new Tuple(r);
+        };
+        arr.prepend = function() {
+          var args = Array.prototype.slice.call(arguments);
+          if (args.length === 1 && Array.isArray(args[0])) {
+            return new Tuple(args[0].concat(arr));
+          }
+          return new Tuple(args.concat(arr));
+        };
+        if (arguments.length === 1 && Array.isArray(arguments[0])) {
+          arr = arguments[0].slice();
+          arr.concat = Tuple.prototype.concat;
+          arr.prepend = Tuple.prototype.prepend;
+        }
+        return arr;
+      };
+      Tuple.prototype.concat = function() {
+        var r = Array.prototype.slice.call(this);
+        for (var i = 0; i < arguments.length; i++) {
+          var a = arguments[i];
+          if (Array.isArray(a)) { for (var j = 0; j < a.length; j++) r.push(a[j]); }
+          else r.push(a);
+        }
+        r.concat = Tuple.prototype.concat;
+        r.prepend = Tuple.prototype.prepend;
+        return r;
+      };
+      Tuple.prototype.prepend = function() {
+        var args = Array.prototype.slice.call(arguments);
+        var self = Array.prototype.slice.call(this);
+        if (args.length === 1 && Array.isArray(args[0])) {
+          var r = args[0].concat(self);
+        } else {
+          var r = args.concat(self);
+        }
+        r.concat = Tuple.prototype.concat;
+        r.prepend = Tuple.prototype.prepend;
+        return r;
+      };"#).to_string();
 
     if code.len() == original_len {
         eprintln!("WARNING: esbuild patches did not match — Hermes for-let-of bug may cause failures");
@@ -540,6 +579,22 @@ pub fn generate_entry(
     mock_modules: &[String],
 ) -> String {
     let mut entry = String::new();
+
+    // Hermes class-extends-Array is fundamentally broken (isArray, concat, Symbol.species).
+    // Instead of polyfilling each method, replace RTK's Tuple class with a plain Array wrapper
+    // that just adds concat/prepend methods. Injected into the bundle IIFE.
+    entry.push_str(r#"(function(){
+  var o=Array.isArray;
+  Array.isArray=function(a){
+    if(o(a))return true;
+    if(a&&typeof a==='object'&&typeof a.length==='number'){
+      var p=Object.getPrototypeOf(a);
+      while(p&&p!==Object.prototype){if(p===Array.prototype)return true;p=Object.getPrototypeOf(p)}
+    }
+    return false;
+  };
+})();
+"#);
 
     // Pre-register mock module placeholders BEFORE anything loads.
     // mockModule() in the test file will populate these objects with actual spies.
