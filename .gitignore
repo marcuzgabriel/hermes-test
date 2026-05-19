@@ -1,9 +1,11 @@
 node_modules/
 target/
-vendor/
 dist/
 .DS_Store
-.metro-test-entry.js
-.metro-test-cache/
+.hermes-test-entry.js
+.hermes-test-cache/
+.hermes-test-*.js
+.hermes-test-*.hbc
 *.bundle.js.map
 /tmp/
+package-lock.json

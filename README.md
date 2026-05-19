@@ -270,9 +270,17 @@ const { current } = ctx.renderHookWithReduxStore(() => useMyHook());
 
 ## Install
 
+From GitHub (internal):
+```bash
+bun add -D github:marcuzgabriel/hermes-test#main
+```
+
+From npm (when published):
 ```bash
 bun add -D hermes-test
 ```
+
+The postinstall script automatically downloads the prebuilt binary for your platform (macOS arm64/x64, Linux x64).
 
 Add to `package.json`:
 ```json

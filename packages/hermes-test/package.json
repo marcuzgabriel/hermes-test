@@ -1,17 +1,32 @@
 {
   "name": "hermes-test",
   "version": "0.1.0",
-  "description": "Fast test runner for React Native hooks and pure functions",
+  "description": "75x faster than Jest. Test runner for React Native and Expo that runs in Hermes.",
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
   "bin": {
     "hermes-test": "bin/hermes-test"
   },
-  "license": "MIT",
   "scripts": {
     "build": "tsc",
-    "bundle": "node bundle.mjs"
+    "bundle": "node bundle.mjs",
+    "postinstall": "node scripts/postinstall.js"
   },
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/marcuzgabriel/hermes-test"
+  },
+  "keywords": [
+    "react-native",
+    "expo",
+    "hermes",
+    "test-runner",
+    "testing",
+    "hooks",
+    "redux",
+    "rtk-query"
+  ],
+  "license": "MIT",
   "devDependencies": {
     "typescript": "^5.4.0",
     "esbuild": "^0.25.0"
