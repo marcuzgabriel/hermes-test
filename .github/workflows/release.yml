@@ -30,8 +30,9 @@ jobs:
 
       - name: Clone Hermes
         run: |
-          git clone --depth 1 --branch rn/0.84-stable https://github.com/facebook/hermes.git vendor/hermes
+          git clone https://github.com/facebook/hermes.git vendor/hermes
           cd vendor/hermes
+          git checkout fd0e1d3ed
           sed -i.bak 's/FATAL_ERROR "Host compiler/WARNING "Host compiler/g' external/llvh/cmake/modules/CheckAtomic.cmake
 
       - name: Install Rust
@@ -61,10 +62,8 @@ jobs:
           cmake -S . -B build -G Ninja \
             -DHERMES_STATIC_LINK=OFF \
             -DBUILD_SHARED_LIBS=OFF \
-            -DCMAKE_BUILD_TYPE=Release \
-            -DHERMES_ENABLE_DEBUGGER=OFF \
-            -DHERMES_ENABLE_TEST_SUITE=OFF
-          cmake --build build --parallel 4
+            -DCMAKE_BUILD_TYPE=Release
+          cmake --build build --parallel
 
       - name: Bundle harness
         run: |
