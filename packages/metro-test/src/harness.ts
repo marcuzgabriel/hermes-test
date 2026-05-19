@@ -97,11 +97,14 @@ function flushAsync<T = any>(promise: Promise<T> | T): T {
     (v) => { result = v; settled = true; },
     (e) => { error = e; settled = true; }
   );
+  // Each drain() flushes all current microtasks. We loop because resolved work
+  // may schedule new async work (promise chains, effects, timers). The loop
+  // exits as soon as our promise settles. The cap prevents infinite loops.
   for (let i = 0; i < 100 && !settled; i++) {
     drain();
   }
   if (!settled) {
-    throw new Error('flushAsync: promise did not resolve (microtask limit reached)');
+    throw new Error('flushAsync: promise did not resolve after 100 drain cycles');
   }
   if (error) throw error;
   return result as T;
@@ -110,20 +113,7 @@ function flushAsync<T = any>(promise: Promise<T> | T): T {
 // Synchronously resolve a value that may be a Promise by draining microtasks
 function resolveSync(value: any): void {
   if (value && typeof value.then === 'function') {
-    let settled = false;
-    let error: any;
-    value.then(
-      () => { settled = true; },
-      (e: any) => { settled = true; error = e; }
-    );
-    // Drain microtask queue until the promise settles (native drain handles all pending work)
-    for (let i = 0; i < 100 && !settled; i++) {
-      drain();
-    }
-    if (!settled) {
-      throw new Error('Async test did not resolve synchronously (microtask limit reached)');
-    }
-    if (error) throw error;
+    flushAsync(value);
   }
 }
 

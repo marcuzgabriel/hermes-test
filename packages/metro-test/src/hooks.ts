@@ -26,12 +26,12 @@ type HookResult<T> = {
 
 const drain = (globalThis as any).__drainMicrotasks || (() => {});
 
+// Flush all pending async work until the queue is stable.
+// Each drain() resolves all current microtasks, but resolved promises may
+// trigger new work (setState → effect → fetch → more promises). We keep
+// draining until no new work is produced.
 function flush() {
-  // Drain all microtasks + timers. A few rounds to handle cascading effects
-  // (promise resolves → setState → timer → more promises).
-  for (let i = 0; i < 10; i++) {
-    drain();
-  }
+  drain();
 }
 
 export function act(fn: () => void | Promise<void>): void {
@@ -45,7 +45,9 @@ export function act(fn: () => void | Promise<void>): void {
         () => { settled = true; },
         (e: any) => { settled = true; error = e; }
       );
-      for (let i = 0; i < 1000 && !settled; i++) {
+      // Drain until the promise settles (each drain resolves all current microtasks,
+      // but resolved work may queue more — keep going until settled)
+      for (let i = 0; i < 50 && !settled; i++) {
         drain();
       }
       if (error) throw error;
@@ -111,12 +113,9 @@ export function waitFor<T>(
   const start = Date.now();
   const TR = getTestRenderer();
 
-  for (let attempt = 0; attempt < 1000; attempt++) {
-    // Wrap in act() to flush React scheduler + effects + timers + promises
-    TR.act(() => {
-      flush();
-    });
-    flush();
+  for (let attempt = 0; attempt < 100; attempt++) {
+    TR.act(() => { drain(); });
+    drain();
 
     const result = predicate();
     if (result !== false && result !== null && result !== undefined) {
