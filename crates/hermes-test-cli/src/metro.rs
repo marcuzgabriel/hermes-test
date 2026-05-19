@@ -55,7 +55,7 @@ fn find_esbuild(project_root: &Path) -> Result<PathBuf, ()> {
     Err(())
 }
 
-/// Read path aliases from tsconfig.json "compilerOptions.paths" and metro-test.config.json.
+/// Read path aliases from tsconfig.json "compilerOptions.paths" and hermes-test.config.json.
 /// Returns Vec<(alias, target_path)> for esbuild --alias flags.
 fn read_path_aliases(project_root: &Path) -> Vec<(String, String)> {
     let mut aliases = Vec::new();
@@ -118,8 +118,8 @@ fn read_path_aliases(project_root: &Path) -> Vec<(String, String)> {
         }
     }
 
-    // Read metro-test.config.json for nativeModuleStubs
-    let config_path = project_root.join("metro-test.config.json");
+    // Read hermes-test.config.json for nativeModuleStubs
+    let config_path = project_root.join("hermes-test.config.json");
     if let Ok(content) = std::fs::read_to_string(&config_path) {
         // Look for "nativeModuleStubs": ["expo-web-browser", ...]
         if let Some(stubs_start) = content.find("\"nativeModuleStubs\"") {
@@ -209,7 +209,7 @@ fn transpile_with_swc(code: &str, context_path: &Path) -> Result<String, String>
         Some(p) => p,
         None => return Ok(code.to_string()),
     };
-    let swcrc = context_path.parent().unwrap_or(context_path).join(".metro-test-swcrc.json");
+    let swcrc = context_path.parent().unwrap_or(context_path).join(".hermes-test-swcrc.json");
     let _ = std::fs::write(&swcrc, r#"{"jsc":{"target":"es5"},"module":{"type":"es6"}}"#);
 
     let mut child = Command::new(&swc)
@@ -251,8 +251,8 @@ pub fn compile_to_bytecode(code: &str, context_path: &Path) -> Option<Vec<u8>> {
 
     let hermesc = find_hermesc()?;
 
-    let src_path = context_path.parent().unwrap_or(context_path).join(".metro-test-src.js");
-    let hbc_path = context_path.parent().unwrap_or(context_path).join(".metro-test-src.hbc");
+    let src_path = context_path.parent().unwrap_or(context_path).join(".hermes-test-src.js");
+    let hbc_path = context_path.parent().unwrap_or(context_path).join(".hermes-test-src.hbc");
     std::fs::write(&src_path, code).ok()?;
 
     let output = Command::new(&hermesc)
@@ -668,7 +668,7 @@ fn walk_dir(dir: &Path, files: &mut Vec<PathBuf>) {
                 || name_str == ".git"
                 || name_str == "vendor"
                 || name_str == "target"
-                || name_str == ".metro-test-cache"
+                || name_str == ".hermes-test-cache"
             {
                 continue;
             }
@@ -823,8 +823,8 @@ pub fn bundle_with_depgraph(
     let esbuild_path = find_esbuild(project_root)
         .map_err(|_| "esbuild not found".to_string())?;
 
-    let metafile_path = project_root.join(".metro-test-meta.json");
-    let outfile_path = project_root.join(".metro-test-bundle.js");
+    let metafile_path = project_root.join(".hermes-test-meta.json");
+    let outfile_path = project_root.join(".hermes-test-bundle.js");
 
     let mut cmd = Command::new(&esbuild_path);
     cmd.arg(entry_file)

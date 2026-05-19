@@ -1,10 +1,10 @@
 [package]
-name = "metro-test-cli"
+name = "hermes-test-cli"
 version = "0.1.0"
 edition = "2021"
 
 [[bin]]
-name = "metro-test"
+name = "hermes-test"
 path = "src/main.rs"
 
 [dependencies]

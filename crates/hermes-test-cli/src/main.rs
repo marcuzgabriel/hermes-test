@@ -8,10 +8,10 @@ use std::sync::mpsc;
 use std::time::{Duration, Instant};
 
 // Embed the harness bundle at compile time
-const HARNESS_JS: &str = include_str!("../../../packages/metro-test/dist/harness.bundle.js");
+const HARNESS_JS: &str = include_str!("../../../packages/hermes-test/dist/harness.bundle.js");
 
 #[derive(Parser)]
-#[command(name = "metro-test", version, about = "Fast test runner for React Native")]
+#[command(name = "hermes-test", version, about = "Fast test runner for React Native")]
 struct Cli {
     /// Test files or patterns (e.g. useActionMessages.test.ts)
     /// If a name doesn't contain a path separator, searches the project for it.
@@ -43,7 +43,7 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Commands {
-    /// Run tests (legacy subcommand, prefer flat: metro-test [files] [--watch])
+    /// Run tests (legacy subcommand, prefer flat: hermes-test [files] [--watch])
     Run {
         files: Vec<PathBuf>,
         #[arg(long, default_value = ".")]
@@ -54,7 +54,7 @@ enum Commands {
         bundler: String,
     },
 
-    /// Watch for file changes (legacy subcommand, prefer: metro-test [files] --watch)
+    /// Watch for file changes (legacy subcommand, prefer: hermes-test [files] --watch)
     Watch {
         files: Vec<PathBuf>,
         #[arg(long, default_value = ".")]
@@ -237,7 +237,7 @@ fn run_tests(files: &[PathBuf], root: &PathBuf, no_bundle: bool, bundler: Option
     });
 
     // Inject the harness
-    rt.eval(HARNESS_JS, "metro-test/harness.js").unwrap_or_else(|e| {
+    rt.eval(HARNESS_JS, "hermes-test/harness.js").unwrap_or_else(|e| {
         eprintln!("Failed to load harness: {e}");
         std::process::exit(1);
     });
@@ -293,7 +293,7 @@ JSON.stringify({
         let entry_content = metro::generate_entry(&test_files, None, &mock_modules);
 
         // Write entry to a temp file
-        let entry_path = root.join(".metro-test-entry.js");
+        let entry_path = root.join(".hermes-test-entry.js");
         std::fs::write(&entry_path, &entry_content).unwrap_or_else(|e| {
             eprintln!("Failed to write entry file: {e}");
             std::process::exit(1);
@@ -392,7 +392,7 @@ fn watch_tests(files: &[PathBuf], root: &PathBuf, bundler: Option<metro::Bundler
                     .filter(|e| {
                         let p = e.path.to_string_lossy();
                         !p.contains("node_modules")
-                            && !p.contains(".metro-test-")
+                            && !p.contains(".hermes-test-")
                             && !p.contains("/target/")
                             && (p.ends_with(".ts")
                                 || p.ends_with(".tsx")
@@ -507,7 +507,7 @@ fn run_cycle_with_depgraph(
     let mock_modules = metro::find_mock_modules(test_files);
 
     let entry_content = metro::generate_entry(test_files, None, &mock_modules);
-    let entry_path = root.join(".metro-test-entry.js");
+    let entry_path = root.join(".hermes-test-entry.js");
     if std::fs::write(&entry_path, &entry_content).is_err() {
         eprintln!("Failed to write entry file");
         return std::collections::HashMap::new();

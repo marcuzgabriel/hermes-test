@@ -1,4 +1,4 @@
-# metro-test
+# hermes-test
 
 A fast, deterministic test runner for React Native hooks and pure functions. Rust CLI host, Hermes engine, Metro bundling, typed TS API — designed for the AI-authoring era.
 
@@ -8,7 +8,7 @@ A fast, deterministic test runner for React Native hooks and pure functions. Rus
 
 When Claude Code opens this repo, before doing anything else:
 
-1. Read `.claude/skills/metro-test/SKILL.md` for operating principles
+1. Read `.claude/skills/hermes-test/SKILL.md` for operating principles
 2. Read `.claude/references/scope.md` to know what's in v0 vs deferred
 3. Read `.claude/references/decisions.md` to avoid relitigating settled choices
 4. Read `.claude/references/roadmap.md` to know which week of work we're on
@@ -23,17 +23,17 @@ Today's RN testing stack is structurally wrong:
 - `jest-expo` mocks are JS pretending to be native modules — type-incoherent and silently drift
 - Watch mode is multi-second — Vitest/Bun run sub-100ms but neither supports RN
 
-metro-test fixes all four by running tests in Hermes (your app's engine), via Metro (your app's bundler), with a typed API that's explicit and AI-friendly.
+hermes-test fixes all four by running tests in Hermes (your app's engine), via Metro (your app's bundler), with a typed API that's explicit and AI-friendly.
 
 ## Quickstart (target API, not yet implemented)
 
 ```bash
-npm install -D metro-test
+npm install -D hermes-test
 ```
 
 ```ts
 // useCounter.test.ts
-import { test, renderHook, act } from 'metro-test';
+import { test, renderHook, act } from 'hermes-test';
 
 test('useCounter tracks state history', async ({ expect }) => {
   const { result, history, renderCount } = renderHook(() => useCounter(0));
@@ -48,7 +48,7 @@ test('useCounter tracks state history', async ({ expect }) => {
 ```
 
 ```bash
-npx metro-test watch
+npx hermes-test watch
 # sub-200ms reruns on file save
 ```
 
@@ -75,9 +75,9 @@ Speed targets (predictions until measured — see `BENCHMARKS.md` for real data)
 ## Structure
 
 ```
-metro-test/
+hermes-test/
 ├── .claude/                   # Claude Code context — read these first
-│   ├── skills/metro-test/SKILL.md
+│   ├── skills/hermes-test/SKILL.md
 │   └── references/
 │       ├── vision.md          # Why this exists
 │       ├── architecture.md    # The stack
@@ -87,17 +87,17 @@ metro-test/
 │       ├── decisions.md       # Settled choices
 │       └── benchmarks.md      # Measurement methodology
 ├── crates/
-│   ├── metro-test-cli/        # Rust binary (week 1)
+│   ├── hermes-test-cli/        # Rust binary (week 1)
 │   └── hermes-bridge/         # C++ shim (week 1)
 ├── packages/
-│   ├── metro-test/            # User-facing TS package (week 2+)
-│   └── metro-test-ai/         # AI companion (post-v0)
+│   ├── hermes-test/            # User-facing TS package (week 2+)
+│   └── hermes-test-ai/         # AI companion (post-v0)
 ├── bench/
 │   ├── fixtures/              # Standard benchmark fixtures
 │   ├── fixtures-jest/         # Equivalent Jest versions for comparison
 │   └── watch-bench.sh
 ├── examples/
-│   └── expo-app/              # Reference Expo project using metro-test
+│   └── expo-app/              # Reference Expo project using hermes-test
 ├── docs/
 ├── BENCHMARKS.md              # Measured results, updated weekly
 └── README.md                  # User-facing, comes later

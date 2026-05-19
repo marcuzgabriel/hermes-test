@@ -1,9 +1,12 @@
 {
-  "name": "metro-test",
+  "name": "hermes-test",
   "version": "0.1.0",
   "description": "Fast test runner for React Native hooks and pure functions",
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
+  "bin": {
+    "hermes-test": "bin/hermes-test"
+  },
   "license": "MIT",
   "scripts": {
     "build": "tsc",
