@@ -58,7 +58,10 @@ try {
     fs.unlinkSync(BIN_PATH);
   }
 
-  execSync(`curl -fSL --retry 3 -o "${BIN_PATH}" "${url}"`, { stdio: 'inherit' });
+  // For private repos, set GITHUB_TOKEN or GH_TOKEN env var
+  const token = process.env.GITHUB_TOKEN || process.env.GH_TOKEN || '';
+  const authHeader = token ? `-H "Authorization: token ${token}" -H "Accept: application/octet-stream"` : '';
+  execSync(`curl -fSL --retry 3 ${authHeader} -o "${BIN_PATH}" "${url}"`, { stdio: 'inherit' });
   fs.chmodSync(BIN_PATH, 0o755);
 
   console.log('hermes-test: binary installed successfully');
