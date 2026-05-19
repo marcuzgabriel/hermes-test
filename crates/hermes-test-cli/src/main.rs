@@ -244,11 +244,7 @@ fn run_tests(files: &[PathBuf], root: &PathBuf, no_bundle: bool, bundler: Option
         std::process::exit(1);
     }
 
-    eprintln!(
-        "Found {} test file{}",
-        test_files.len(),
-        if test_files.len() == 1 { "" } else { "s" }
-    );
+    // Silent — only print results
 
     let rt = hermes::Runtime::new().unwrap_or_else(|e| {
         eprintln!("Error: {e}");
@@ -303,12 +299,7 @@ JSON.stringify({
     } else {
         // Scan test files for mockModule() calls to determine external modules
         let mock_modules = metro::find_mock_modules(&test_files);
-        if !mock_modules.is_empty() {
-            eprintln!(
-                "Mocked modules: {}",
-                mock_modules.join(", ")
-            );
-        }
+        // mock_modules detected silently
 
         // Metro mode: generate entry, bundle via Metro, eval bundle
         let entry_content = metro::generate_entry(&test_files, None, &mock_modules);
@@ -326,7 +317,7 @@ JSON.stringify({
             None => "auto",
         };
         let start = Instant::now();
-        eprintln!("Bundling with {bundler_name}...");
+        // bundling silently
         let bundle = match if let Some(b) = bundler {
             metro::bundle_with(b, &entry_path, &root, &mock_modules)
         } else {
