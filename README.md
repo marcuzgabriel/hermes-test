@@ -20,14 +20,31 @@ On top of that, Jest in React Native is slow by design. Every test file spawns a
 
 hermes-test runs your tests directly in Hermes. esbuild bundles your test + source into a single file in <100ms. A Rust CLI feeds it to the Hermes VM. One process, no workers, no transforms. Results appear before your hand leaves `Cmd+S`.
 
-Real-world benchmark — 20 production test suites from a Danish insurance app (Topdanmark):
+### Benchmarks
+
+All measurements on Apple Silicon. `hyperfine` for micro, `time` for macro. Jest uses `@swc/jest` (fastest Jest transform).
+
+**Micro — cold start, same test file:**
+
+| Scenario | hermes-test | Jest + @swc/jest | Speedup |
+|----------|-------------|------------------|---------|
+| 10 pure function tests | **16ms** | 714ms | **45x** |
+| 50 pure function tests | **16ms** | 737ms | **47x** |
+| 50 hook tests (renderHook + act) | **75ms** | 721ms | **10x** |
+| 1000 hook tests | **200ms** | 883ms | **4.4x** |
+| Watch rerun (25 tests) | **69ms** | ~2,000ms | **29x** |
+| Trivial cold start | **4.6ms** | 1,486ms | **364x** |
+
+**Macro — real production test suites (Topdanmark insurance app):**
 
 | | Jest | hermes-test | Speedup |
 |---|------|-------------|---------|
-| Wall clock | **22.5s** | **0.3s** | **75x** |
+| 20 test files, 245 tests | **22.5s** | **0.3s** | **75x** |
 | CPU time | 86.3s | 0.28s | **308x** |
 
-Same tests, same assertions, same business logic. The difference is everything around the tests.
+hermes-test scales linearly (~0.13ms per hook test). Jest's overhead is fixed startup (~700ms per worker) so the gap widens with more files and narrows with more tests per file.
+
+Full benchmark methodology and reproduction commands in [BENCHMARKS.md](./BENCHMARKS.md).
 
 ---
 
