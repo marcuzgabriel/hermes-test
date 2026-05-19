@@ -95,92 +95,217 @@ fn bundle_esbuild(
         code = inject_mock_require_shim(&code);
     }
 
-    // Transpile ES6 classes to ES5 via SWC (Hermes class support is buggy)
+    // SWC transpile for bundles importing immer/RTK (Hermes JSI bug with ES6 classes in large bundles)
     code = transpile_with_swc(&code, entry_file)?;
 
     Ok(code)
 }
-
-/// Transpile ES6+ classes to ES5 via SWC.
-/// Hermes has buggy class support even with ES6Class enabled — class expressions
-/// in __esm lazy init blocks fail with "Cannot read property 'prototype' of undefined".
+/// Pre-compile JS to Hermes bytecode via hermesc.
+/// Works around JSI evaluateJavaScript bug where ES6 class transformation
+/// fails for large files. hermesc compiles correctly via a different code path.
+/// Returns raw bytecode bytes that evaluateJavaScript can load directly.
+/// Pre-compile JS to Hermes bytecode via hermesc for large bundles with classes.
+/// Returns Some(bytecode) if compilation succeeded, None to fall back to source eval.
 fn transpile_with_swc(code: &str, context_path: &Path) -> Result<String, String> {
-    // Only run SWC when the bundle imports packages with class patterns that break
-    // in Hermes's __esm lazy init (specifically immer's Immer2 class and RTK's Tuple).
-    // React's classes work fine with ES6Class enabled — no need to transpile those.
-    // SWC only needed for bundles importing immer/RTK — their class patterns
-    // break in esbuild's __esm lazy init even with Hermes V1's class support.
-    let needs_swc = code.contains("node_modules/immer/")
-        || code.contains("node_modules/@reduxjs/toolkit/")
-        || code.contains("class _Tuple extends Array");
-
-    if !needs_swc {
+    if !code.contains("node_modules/immer/") && !code.contains("node_modules/@reduxjs/toolkit/") {
         return Ok(code.to_string());
     }
-
-    eprintln!("\x1b[2m[swc]\x1b[0m Transpiling classes for Hermes compatibility...");
-
-    // Find SWC binary
-    let swc_path = find_swc(context_path);
-    let swc = match swc_path {
+    let swc = find_swc(context_path);
+    let swc = match swc {
         Some(p) => p,
-        None => return Ok(code.to_string()), // SWC not installed, skip
+        None => return Ok(code.to_string()),
     };
-
-    // Write a temp swcrc
-    let swcrc_path = context_path.parent().unwrap_or(context_path).join(".metro-test-swcrc.json");
-    let _ = std::fs::write(&swcrc_path, r#"{"jsc":{"target":"es5"},"module":{"type":"es6"}}"#);
+    let swcrc = context_path.parent().unwrap_or(context_path).join(".metro-test-swcrc.json");
+    let _ = std::fs::write(&swcrc, r#"{"jsc":{"target":"es5"},"module":{"type":"es6"}}"#);
 
     let mut child = Command::new(&swc)
-        .arg("--filename")
-        .arg("bundle.js")
-        .arg("--config-file")
-        .arg(&swcrc_path)
-        .stdin(Stdio::piped())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .spawn()
-        .map_err(|e| format!("Failed to spawn SWC: {e}"))?;
+        .arg("--filename").arg("bundle.js")
+        .arg("--config-file").arg(&swcrc)
+        .stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::piped())
+        .spawn().map_err(|e| format!("SWC: {e}"))?;
 
     use std::io::Write;
-    if let Some(stdin) = child.stdin.as_mut() {
-        stdin.write_all(code.as_bytes()).map_err(|e| format!("SWC stdin write failed: {e}"))?;
-    }
+    child.stdin.as_mut().unwrap().write_all(code.as_bytes()).map_err(|e| format!("SWC stdin: {e}"))?;
     drop(child.stdin.take());
+    let out = child.wait_with_output().map_err(|e| format!("SWC: {e}"))?;
+    let _ = std::fs::remove_file(&swcrc);
 
-    let output = child.wait_with_output().map_err(|e| format!("SWC failed: {e}"))?;
-    let _ = std::fs::remove_file(&swcrc_path);
-
-    if !output.status.success() {
-        let stderr = String::from_utf8_lossy(&output.stderr);
-        eprintln!("SWC transpile warning: {stderr}");
-        // Fall back to original code if SWC fails
+    if !out.status.success() {
         return Ok(code.to_string());
     }
-
-    String::from_utf8(output.stdout).map_err(|e| format!("SWC output not UTF-8: {e}"))
+    String::from_utf8(out.stdout).map_err(|e| format!("SWC: {e}"))
 }
 
-fn find_swc(context_path: &Path) -> Option<PathBuf> {
-    // Check local node_modules
-    let local = context_path.join("node_modules/.bin/swc");
-    if local.exists() {
-        return Some(local);
-    }
-    // Walk up
-    let mut dir = context_path.parent();
+fn find_swc(ctx: &Path) -> Option<PathBuf> {
+    let local = ctx.join("node_modules/.bin/swc");
+    if local.exists() { return Some(local); }
+    let mut dir = ctx.parent();
     while let Some(d) = dir {
-        let candidate = d.join("node_modules/.bin/swc");
-        if candidate.exists() {
-            return Some(candidate);
-        }
+        let c = d.join("node_modules/.bin/swc");
+        if c.exists() { return Some(c); }
         dir = d.parent();
     }
+    if Command::new("swc").arg("--version").output().is_ok() { return Some(PathBuf::from("swc")); }
+    None
+}
+
+pub fn compile_to_bytecode(code: &str, context_path: &Path) -> Option<Vec<u8>> {
+    // Only needed for large bundles with class syntax
+    if code.len() < 60_000 || !code.contains("class ") {
+        return None;
+    }
+
+    let hermesc = find_hermesc()?;
+
+    let src_path = context_path.parent().unwrap_or(context_path).join(".metro-test-src.js");
+    let hbc_path = context_path.parent().unwrap_or(context_path).join(".metro-test-src.hbc");
+    std::fs::write(&src_path, code).ok()?;
+
+    let output = Command::new(&hermesc)
+        .arg("-Xes6-class")
+        .arg("-emit-binary")
+        .arg("-out")
+        .arg(&hbc_path)
+        .arg(&src_path)
+        .stderr(Stdio::piped())
+        .output()
+        .ok()?;
+
+    let _ = std::fs::remove_file(&src_path);
+
+    if !output.status.success() {
+        let _ = std::fs::remove_file(&hbc_path);
+        return None;
+    }
+
+    let bytecode = std::fs::read(&hbc_path).ok()?;
+    let _ = std::fs::remove_file(&hbc_path);
+    Some(bytecode)
+}
+
+fn find_hermesc() -> Option<PathBuf> {
+    // Check the vendor build directory
+    let vendor_path = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .parent().unwrap()
+        .parent().unwrap()
+        .join("vendor/hermes/build/bin/hermesc");
+    if vendor_path.exists() {
+        return Some(vendor_path);
+    }
     // Global
-    if Command::new("swc").arg("--version").output().is_ok() {
-        return Some(PathBuf::from("swc"));
+    if Command::new("hermesc").arg("--version").output().is_ok() {
+        return Some(PathBuf::from("hermesc"));
     }
     None
+}
+
+/// Rewrite ES6 class expressions to ES5 function constructors.
+/// Hermes has a 64KB bytecode compiler bug: class expressions return `undefined`
+/// when compilation unit > ~64KB. This rewrites them to functions (zero overhead).
+///
+/// Handles: `Foo = class { constructor(x) { this.y = x; } };`
+///       → `Foo = function(x) { this.y = x; };`
+///
+/// And: `Foo = class extends Bar { constructor() { super(); ... } };`
+///    → `Foo = function() { Bar.call(this); ... }; Object.setPrototypeOf(Foo.prototype, Bar.prototype);`
+fn desugar_classes(code: &str) -> String {
+    // Only process if there are class expressions (not declarations)
+    if !code.contains("= class ") && !code.contains("= class{") {
+        return code.to_string();
+    }
+
+    let re = regex::Regex::new(
+        r"(\w+)\s*=\s*class\s*(?:(_?\w+)\s+)?(?:extends\s+(\w+)\s*)?\{"
+    ).unwrap();
+
+    let mut result = code.to_string();
+    let mut offset: isize = 0;
+
+    let matches: Vec<_> = re.captures_iter(code).collect();
+
+    for cap in &matches {
+        let full_match = cap.get(0).unwrap();
+        let var_name = &cap[1];
+        let extends_class = cap.get(3).map(|m| m.as_str());
+
+        // Find the constructor inside this class
+        let class_start = full_match.end();
+        let ctor_re = regex::Regex::new(r"constructor\s*\(([^)]*)\)\s*\{").unwrap();
+
+        if let Some(ctor_match) = ctor_re.find(&code[class_start..]) {
+            let ctor_caps = ctor_re.captures(&code[class_start..]).unwrap();
+            let params = ctor_caps.get(1).map_or("", |m| m.as_str());
+            let ctor_body_start = class_start + ctor_match.end();
+
+            // Find matching closing brace for constructor body
+            let mut depth = 1;
+            let mut ctor_body_end = ctor_body_start;
+            for (i, ch) in code[ctor_body_start..].char_indices() {
+                match ch {
+                    '{' => depth += 1,
+                    '}' => {
+                        depth -= 1;
+                        if depth == 0 {
+                            ctor_body_end = ctor_body_start + i;
+                            break;
+                        }
+                    }
+                    _ => {}
+                }
+            }
+
+            let mut ctor_body = code[ctor_body_start..ctor_body_end].to_string();
+
+            // Handle super() calls for extends
+            if let Some(parent) = extends_class {
+                ctor_body = ctor_body.replace("super()", &format!("{parent}.call(this)"));
+                // Handle super(...args)
+                let super_re = regex::Regex::new(r"super\(([^)]+)\)").unwrap();
+                ctor_body = super_re.replace_all(&ctor_body, &format!("{parent}.call(this, $1)")).to_string();
+            }
+
+            // Find the end of the class (closing brace + semicolon)
+            let mut class_depth = 1;
+            let mut class_end = class_start;
+            for (i, ch) in code[class_start..].char_indices() {
+                match ch {
+                    '{' => class_depth += 1,
+                    '}' => {
+                        class_depth -= 1;
+                        if class_depth == 0 {
+                            class_end = class_start + i + 1;
+                            break;
+                        }
+                    }
+                    _ => {}
+                }
+            }
+
+            // Build the replacement
+            let replacement = if let Some(parent) = extends_class {
+                format!(
+                    "{var_name} = function({params}) {{{ctor_body}}};\n      Object.setPrototypeOf({var_name}.prototype, {parent}.prototype)",
+                )
+            } else {
+                format!("{var_name} = function({params}) {{{ctor_body}}}")
+            };
+
+            // Apply the replacement with offset tracking
+            let replace_start = (full_match.start() as isize + offset) as usize;
+            let replace_end = (class_end as isize + offset) as usize;
+
+            result = format!(
+                "{}{}{}",
+                &result[..replace_start],
+                replacement,
+                &result[replace_end..]
+            );
+
+            offset += replacement.len() as isize - (class_end - full_match.start()) as isize;
+        }
+    }
+
+    result
 }
 
 /// Patch esbuild's __require to route externalized modules through __mockRegistry.
@@ -520,7 +645,7 @@ pub fn bundle_with_depgraph(
         code = inject_mock_require_shim(&code);
     }
 
-    // Transpile ES6 classes to ES5 via SWC
+    // SWC transpile for bundles importing immer/RTK
     code = transpile_with_swc(&code, entry_file)?;
 
     // Parse the metafile to build a dependency graph

@@ -29,14 +29,17 @@ impl Runtime {
     }
 
     pub fn eval(&self, source: &str, url: &str) -> Result<String, String> {
-        let c_source = CString::new(source).map_err(|e| format!("Source contains null byte: {e}"))?;
+        self.eval_bytes(source.as_bytes(), url)
+    }
+
+    pub fn eval_bytes(&self, source: &[u8], url: &str) -> Result<String, String> {
         let c_url = CString::new(url).map_err(|e| format!("URL contains null byte: {e}"))?;
         let mut error_out: *mut c_char = ptr::null_mut();
 
         let result = unsafe {
             hermes_eval(
                 self.ptr,
-                c_source.as_ptr(),
+                source.as_ptr() as *const c_char,
                 source.len(),
                 c_url.as_ptr(),
                 &mut error_out,

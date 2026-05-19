@@ -20,6 +20,7 @@ fn main() {
         .include(hermes_dir.join("API/jsi"))
         .include(hermes_dir.join("public"))
         .include(hermes_dir.join("include"))
+        .include(hermes_dir.join("lib"))
         .include(hermes_dir.join("external/llvh/include"))
         .include(hermes_build.join("external/llvh/include"))
         .include(hermes_build.join("include"))

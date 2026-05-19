@@ -15,6 +15,15 @@ struct HermesRuntime {
   std::unique_ptr<facebook::hermes::HermesRuntime> rt;
 };
 
+static char* strdup_alloc(const std::string& s) {
+  char* out = static_cast<char*>(malloc(s.size() + 1));
+  if (out) {
+    memcpy(out, s.data(), s.size());
+    out[s.size()] = '\0';
+  }
+  return out;
+}
+
 // Format a jsi::Value to a string for console output
 static std::string valueToString(jsi::Runtime& runtime, const jsi::Value& val) {
   if (val.isUndefined()) return "undefined";
@@ -28,7 +37,6 @@ static std::string valueToString(jsi::Runtime& runtime, const jsi::Value& val) {
   }
   if (val.isString()) return val.getString(runtime).utf8(runtime);
   if (val.isObject()) {
-    // Use JSON.stringify for objects/arrays
     try {
       auto json = runtime.global().getPropertyAsObject(runtime, "JSON");
       auto stringify = json.getPropertyAsFunction(runtime, "stringify");
@@ -74,15 +82,6 @@ static void installConsole(jsi::Runtime& runtime) {
   runtime.global().setProperty(runtime, "console", console);
 }
 
-static char* strdup_alloc(const std::string& s) {
-  char* out = static_cast<char*>(malloc(s.size() + 1));
-  if (out) {
-    memcpy(out, s.data(), s.size());
-    out[s.size()] = '\0';
-  }
-  return out;
-}
-
 extern "C" {
 
 HermesRuntime* hermes_create_runtime(void) {
@@ -90,6 +89,8 @@ HermesRuntime* hermes_create_runtime(void) {
     auto wrapper = new HermesRuntime();
     auto config = ::hermes::vm::RuntimeConfig::Builder()
         .withES6Class(true)
+        .withEnableBlockScoping(true)
+        .withMaxNumRegisters(1024 * 1024)
         .build();
     wrapper->rt = facebook::hermes::makeHermesRuntime(config);
     installConsole(*wrapper->rt);
@@ -120,7 +121,6 @@ char* hermes_eval(
     auto jsonStr = stringify.call(runtime, result);
 
     if (jsonStr.isUndefined()) {
-      // JSON.stringify returns undefined for functions, symbols, etc.
       return strdup_alloc("null");
     }
 
