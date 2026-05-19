@@ -27,8 +27,9 @@ type HookResult<T> = {
 const drain = (globalThis as any).__drainMicrotasks || (() => {});
 
 function flush() {
-  // Multiple rounds: each drain may schedule more work (timers, promises, React updates)
-  for (let i = 0; i < 100; i++) {
+  // Drain all microtasks + timers. A few rounds to handle cascading effects
+  // (promise resolves → setState → timer → more promises).
+  for (let i = 0; i < 10; i++) {
     drain();
   }
 }

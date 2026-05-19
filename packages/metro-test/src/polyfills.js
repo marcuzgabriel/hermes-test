@@ -37,15 +37,24 @@ if (typeof globalThis.process === 'undefined') {
     globalThis.setImmediate = function(fn) { queue.push(fn); };
   }
 
-  // Used by act() and waitFor() to synchronously flush async work
+  // Flush all async work: Hermes microtask queue (promises) + our polyfill queues (timers).
+  // The C++ bridge installs a native __drainMicrotasks that calls Hermes's drainMicrotasks().
+  // We wrap it to also flush our setImmediate/setTimeout polyfill queues.
+  var nativeDrain = globalThis.__drainMicrotasks || function() {};
   globalThis.__drainMicrotasks = function() {
+    // 1. Drain Hermes's internal promise/microtask queue
+    nativeDrain();
+    // 2. Flush our setImmediate queue
     var limit = 1000;
     while (queue.length > 0 && limit-- > 0) { queue.shift()(); }
+    // 3. Flush pending timers
     var ids = Object.keys(timers);
     for (var i = 0; i < ids.length; i++) {
       var t = timers[ids[i]];
       if (t) { delete timers[ids[i]]; t(); }
     }
+    // 4. Drain again (timer callbacks may have queued more microtasks)
+    nativeDrain();
   };
 
   if (typeof globalThis.setTimeout === 'undefined') {

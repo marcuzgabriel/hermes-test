@@ -75,6 +75,17 @@ static void installConsole(jsi::Runtime& runtime) {
     jsi::Function::createFromHostFunction(runtime,
       jsi::PropNameID::forAscii(runtime, "info"), 0, makeLogger(stderr)));
   runtime.global().setProperty(runtime, "console", console);
+
+  // Install __drainMicrotasks — calls Hermes's real microtask queue drain.
+  // This replaces the hacky polyfill loop with a single native call.
+  runtime.global().setProperty(runtime, "__drainMicrotasks",
+    jsi::Function::createFromHostFunction(runtime,
+      jsi::PropNameID::forAscii(runtime, "__drainMicrotasks"), 0,
+      [](jsi::Runtime& rt, const jsi::Value&,
+         const jsi::Value*, size_t) -> jsi::Value {
+        rt.drainMicrotasks();
+        return jsi::Value::undefined();
+      }));
 }
 
 // Defined in vm_eval.cpp — direct VM execution for large bundles

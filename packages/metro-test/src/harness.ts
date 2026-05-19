@@ -84,6 +84,29 @@ function afterAll(fn: LifecycleHook): void {
 
 const drain = (globalThis as any).__drainMicrotasks || (() => {});
 
+// Synchronously resolve a promise by flushing the microtask queue.
+// Usage: const result = flushAsync(store.dispatch(api.endpoints.login.initiate(payload)));
+function flushAsync<T = any>(promise: Promise<T> | T): T {
+  if (!promise || typeof (promise as any).then !== 'function') {
+    return promise as T;
+  }
+  let result: T | undefined;
+  let error: any;
+  let settled = false;
+  (promise as Promise<T>).then(
+    (v) => { result = v; settled = true; },
+    (e) => { error = e; settled = true; }
+  );
+  for (let i = 0; i < 100 && !settled; i++) {
+    drain();
+  }
+  if (!settled) {
+    throw new Error('flushAsync: promise did not resolve (microtask limit reached)');
+  }
+  if (error) throw error;
+  return result as T;
+}
+
 // Synchronously resolve a value that may be a Promise by draining microtasks
 function resolveSync(value: any): void {
   if (value && typeof value.then === 'function') {
@@ -93,8 +116,8 @@ function resolveSync(value: any): void {
       () => { settled = true; },
       (e: any) => { settled = true; error = e; }
     );
-    // Drain microtask queue until the promise settles
-    for (let i = 0; i < 1000 && !settled; i++) {
+    // Drain microtask queue until the promise settles (native drain handles all pending work)
+    for (let i = 0; i < 100 && !settled; i++) {
       drain();
     }
     if (!settled) {
@@ -194,6 +217,7 @@ function runTests(): TestResult[] {
   mockFetchClear,
   http,
   HttpResponse,
+  flushAsync,
 };
 
-export { test, expect, spy, group, beforeEach, afterEach, beforeAll, afterAll, renderHook, act, waitFor, useMock, mockModule, mockFetch, mockFetchUse, mockFetchReset, mockFetchClear, http, HttpResponse };
+export { test, expect, spy, group, beforeEach, afterEach, beforeAll, afterAll, renderHook, act, waitFor, useMock, mockModule, mockFetch, mockFetchUse, mockFetchReset, mockFetchClear, http, HttpResponse, flushAsync };
