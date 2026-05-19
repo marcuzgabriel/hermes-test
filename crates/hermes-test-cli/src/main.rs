@@ -325,6 +325,7 @@ JSON.stringify({
             Some(metro::Bundler::Esbuild) => "esbuild",
             None => "auto",
         };
+        let start = Instant::now();
         eprintln!("Bundling with {bundler_name}...");
         let bundle = match if let Some(b) = bundler {
             metro::bundle_with(b, &entry_path, &root, &mock_modules)
@@ -354,9 +355,10 @@ JSON.stringify({
         print_console_logs(&rt);
 
         // Read back the results from the global
+        let elapsed = start.elapsed();
         match rt.eval("globalThis.__metroTestResults", "results") {
             Ok(json) => {
-                if !print_results(&json) {
+                if !print_results_with_time(&json, elapsed.as_millis(), test_files.len()) {
                     std::process::exit(1);
                 }
             }
@@ -625,6 +627,13 @@ fn print_console_logs(rt: &hermes::Runtime) {
     }
 }
 
+fn print_results_with_time(json: &str, elapsed_ms: u128, file_count: usize) -> bool {
+    let ok = print_results(json);
+    eprintln!(" \x1b[2mFiles:\x1b[0m  {file_count}");
+    eprintln!(" \x1b[2mTime:\x1b[0m   {:.2}s", elapsed_ms as f64 / 1000.0);
+    ok
+}
+
 fn print_results(json: &str) -> bool {
     let inner: String = match serde_json::from_str(json) {
         Ok(s) => s,
@@ -640,66 +649,47 @@ fn print_results(json: &str) -> bool {
     let skipped = results["skipped"].as_u64().unwrap_or(0);
     let total = results["total"].as_u64().unwrap_or(0);
 
+    // Only show failures — passing tests are silent
     if let Some(tests) = results["tests"].as_array() {
-        // Group tests by their top-level group (text before first " > ")
-        let mut groups: Vec<(String, Vec<&serde_json::Value>)> = Vec::new();
-        for test in tests {
-            let name = test["name"].as_str().unwrap_or("?");
-            let group_name = if let Some(idx) = name.find(" > ") {
-                &name[..idx]
-            } else {
-                name
-            };
-            if let Some(g) = groups.iter_mut().find(|(n, _)| n == group_name) {
-                g.1.push(test);
-            } else {
-                groups.push((group_name.to_string(), vec![test]));
+        if failed > 0 {
+            let mut groups: Vec<(String, Vec<&serde_json::Value>)> = Vec::new();
+            for test in tests {
+                let name = test["name"].as_str().unwrap_or("?");
+                if test["status"].as_str() != Some("fail") { continue; }
+                let group_name = if let Some(idx) = name.find(" > ") { &name[..idx] } else { name };
+                if let Some(g) = groups.iter_mut().find(|(n, _)| n == group_name) {
+                    g.1.push(test);
+                } else {
+                    groups.push((group_name.to_string(), vec![test]));
+                }
             }
-        }
 
-        for (group_name, group_tests) in &groups {
-            let group_passed = group_tests.iter().filter(|t| t["status"].as_str() == Some("pass")).count();
-            let group_failed = group_tests.iter().filter(|t| t["status"].as_str() == Some("fail")).count();
-            let group_skipped = group_tests.iter().filter(|t| t["status"].as_str() == Some("skip")).count();
-            let group_total = group_tests.len();
-            let group_duration: u64 = group_tests.iter().map(|t| t["duration"].as_u64().unwrap_or(0)).sum();
-
-            if group_failed == 0 {
-                // Collapsed: single line for passing group
-                let time_str = if group_duration > 0 { format!(" \x1b[2m{group_duration}ms\x1b[0m") } else { String::new() };
-                let skip_str = if group_skipped > 0 { format!(", {group_skipped} skipped") } else { String::new() };
-                eprintln!(" \x1b[32m✓\x1b[0m {group_name} \x1b[2m({group_passed} tests{skip_str})\x1b[0m{time_str}");
-            } else {
-                // Expanded: show group header + each failing test
-                eprintln!(" \x1b[31m✗\x1b[0m {group_name} \x1b[2m({group_passed} passed, \x1b[31m{group_failed} failed\x1b[0m\x1b[2m)\x1b[0m");
-                for test in group_tests {
+            eprintln!();
+            for (group_name, failing_tests) in &groups {
+                eprintln!(" \x1b[31mFAIL\x1b[0m {group_name}");
+                for test in failing_tests {
                     let name = test["name"].as_str().unwrap_or("?");
                     let short_name = if let Some(idx) = name.find(" > ") { &name[idx + 3..] } else { name };
-                    let status = test["status"].as_str().unwrap_or("?");
-                    match status {
-                        "fail" => {
-                            eprintln!("   \x1b[31m✗\x1b[0m {short_name}");
-                            if let Some(error) = test["error"].as_str() {
-                                eprintln!("     \x1b[31m{error}\x1b[0m");
-                            }
+                    eprintln!("   \x1b[31m✗ {short_name}\x1b[0m");
+                    if let Some(error) = test["error"].as_str() {
+                        if !error.is_empty() {
+                            eprintln!("     \x1b[2m{error}\x1b[0m");
                         }
-                        "pass" => {} // hide passing tests in failing group
-                        "skip" => {
-                            eprintln!("   \x1b[33m○\x1b[0m {short_name} \x1b[2m(skipped)\x1b[0m");
-                        }
-                        _ => {}
                     }
                 }
             }
         }
     }
 
-    // Summary
+    // Summary table
     eprintln!();
     if failed == 0 {
-        eprintln!(" \x1b[32m✓ {passed} tests passed\x1b[0m{}", if skipped > 0 { format!(" \x1b[2m({skipped} skipped)\x1b[0m") } else { String::new() });
+        eprintln!(" \x1b[32mTests:\x1b[0m  {passed} passed, {total} total");
     } else {
-        eprintln!(" \x1b[32m{passed} passed\x1b[0m, \x1b[31m{failed} failed\x1b[0m{}, {total} total", if skipped > 0 { format!(", {skipped} skipped") } else { String::new() });
+        eprintln!(" \x1b[31mTests:\x1b[0m  \x1b[32m{passed} passed\x1b[0m, \x1b[31m{failed} failed\x1b[0m, {total} total");
+    }
+    if skipped > 0 {
+        eprintln!(" \x1b[33mSkip:\x1b[0m   {skipped}");
     }
 
     failed == 0
