@@ -61,8 +61,10 @@ jobs:
           cmake -S . -B build -G Ninja \
             -DHERMES_STATIC_LINK=OFF \
             -DBUILD_SHARED_LIBS=OFF \
-            -DCMAKE_BUILD_TYPE=Release
-          cmake --build build
+            -DCMAKE_BUILD_TYPE=Release \
+            -DHERMES_ENABLE_DEBUGGER=OFF \
+            -DHERMES_ENABLE_TEST_SUITE=OFF
+          cmake --build build --parallel 4
 
       - name: Bundle harness
         run: |
