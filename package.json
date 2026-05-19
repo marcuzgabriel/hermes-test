@@ -1,0 +1,8 @@
+{
+  "name": "hermes-test-monorepo",
+  "private": true,
+  "workspaces": [
+    "packages/hermes-test",
+    "examples/expo-app"
+  ]
+}

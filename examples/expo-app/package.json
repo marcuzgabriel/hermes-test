@@ -26,6 +26,7 @@
     "@swc/cli": "^0.8.1",
     "@swc/core": "^1.15.33",
     "@types/react": "18",
-    "esbuild": "^0.28.0"
+    "esbuild": "^0.28.0",
+    "hermes-test": "workspace:*"
   }
 }
