@@ -1,5 +1,5 @@
 mod hermes;
-mod metro;
+mod bundler;
 
 use clap::{Parser, Subcommand};
 use notify_debouncer_mini::{new_debouncer, DebouncedEventKind};
@@ -130,10 +130,10 @@ fn main() {
     }
 }
 
-fn parse_bundler(s: &str) -> Option<metro::Bundler> {
+fn parse_bundler(s: &str) -> Option<bundler::Bundler> {
     match s {
-        "metro" => Some(metro::Bundler::Metro),
-        "esbuild" => Some(metro::Bundler::Esbuild),
+        "metro" => Some(bundler::Bundler::Metro),
+        "esbuild" => Some(bundler::Bundler::Esbuild),
         "auto" => None,
         _ => {
             eprintln!("Unknown bundler '{s}'. Use 'esbuild', 'metro', or 'auto'.");
@@ -168,7 +168,7 @@ fn resolve_test_files(args: &[String], root: &PathBuf) -> Vec<PathBuf> {
     }
 
     let mut resolved = Vec::new();
-    let all_tests = metro::find_test_files(root);
+    let all_tests = bundler::find_test_files(root);
 
     for arg in args {
         let p = PathBuf::from(arg);
@@ -226,7 +226,7 @@ fn eval_file(path: &str) {
     }
 }
 
-fn run_tests(files: &[PathBuf], root: &PathBuf, no_bundle: bool, bundler: Option<metro::Bundler>) {
+fn run_tests(files: &[PathBuf], root: &PathBuf, no_bundle: bool, bundler: Option<bundler::Bundler>) {
     let root = std::fs::canonicalize(root).unwrap_or_else(|e| {
         eprintln!("Invalid root directory: {e}");
         std::process::exit(1);
@@ -234,7 +234,7 @@ fn run_tests(files: &[PathBuf], root: &PathBuf, no_bundle: bool, bundler: Option
 
     // Find test files
     let test_files = if files.is_empty() {
-        metro::find_test_files(&root)
+        bundler::find_test_files(&root)
     } else {
         files.to_vec()
     };
@@ -298,11 +298,11 @@ JSON.stringify({
         }
     } else {
         // Scan test files for mockModule() calls to determine external modules
-        let mock_modules = metro::find_mock_modules(&test_files);
+        let mock_modules = bundler::find_mock_modules(&test_files);
         // mock_modules detected silently
 
         // Metro mode: generate entry, bundle via Metro, eval bundle
-        let entry_content = metro::generate_entry(&test_files, None, &mock_modules);
+        let entry_content = bundler::generate_entry(&test_files, None, &mock_modules);
 
         // Write entry to a temp file
         let entry_path = root.join(".hermes-test-entry.js");
@@ -312,16 +312,16 @@ JSON.stringify({
         });
 
         let bundler_name = match bundler {
-            Some(metro::Bundler::Metro) => "Metro",
-            Some(metro::Bundler::Esbuild) => "esbuild",
+            Some(bundler::Bundler::Metro) => "Metro",
+            Some(bundler::Bundler::Esbuild) => "esbuild",
             None => "auto",
         };
         let start = Instant::now();
         // bundling silently
         let bundle = match if let Some(b) = bundler {
-            metro::bundle_with(b, &entry_path, &root, &mock_modules)
+            bundler::bundle_with(b, &entry_path, &root, &mock_modules)
         } else {
-            metro::bundle_auto(&entry_path, &root, &mock_modules)
+            bundler::bundle_auto(&entry_path, &root, &mock_modules)
         } {
             Ok(b) => b,
             Err(e) => {
@@ -361,14 +361,14 @@ JSON.stringify({
     }
 }
 
-fn watch_tests(files: &[PathBuf], root: &PathBuf, bundler: Option<metro::Bundler>) {
+fn watch_tests(files: &[PathBuf], root: &PathBuf, bundler: Option<bundler::Bundler>) {
     let root = std::fs::canonicalize(root).unwrap_or_else(|e| {
         eprintln!("Invalid root directory: {e}");
         std::process::exit(1);
     });
 
     let all_test_files = if files.is_empty() {
-        metro::find_test_files(&root)
+        bundler::find_test_files(&root)
     } else {
         files.to_vec()
     };
@@ -469,7 +469,7 @@ fn watch_tests(files: &[PathBuf], root: &PathBuf, bundler: Option<metro::Bundler
                 // If we couldn't determine affected tests, run all
                 if affected.is_empty() {
                     let all = if files.is_empty() {
-                        metro::find_test_files(&root)
+                        bundler::find_test_files(&root)
                     } else {
                         files.to_vec()
                     };
@@ -519,14 +519,14 @@ fn watch_tests(files: &[PathBuf], root: &PathBuf, bundler: Option<metro::Bundler
 fn run_cycle_with_depgraph(
     test_files: &[PathBuf],
     root: &PathBuf,
-    bundler: Option<metro::Bundler>,
-) -> metro::DepGraph {
+    bundler: Option<bundler::Bundler>,
+) -> bundler::DepGraph {
     let start = Instant::now();
 
     // Scan for mockModule() calls
-    let mock_modules = metro::find_mock_modules(test_files);
+    let mock_modules = bundler::find_mock_modules(test_files);
 
-    let entry_content = metro::generate_entry(test_files, None, &mock_modules);
+    let entry_content = bundler::generate_entry(test_files, None, &mock_modules);
     let entry_path = root.join(".hermes-test-entry.js");
     if std::fs::write(&entry_path, &entry_content).is_err() {
         eprintln!("Failed to write entry file");
@@ -534,8 +534,8 @@ fn run_cycle_with_depgraph(
     }
 
     // Try to get dep graph via esbuild metafile
-    let (bundle, depgraph) = if bundler == Some(metro::Bundler::Metro) {
-        let b = match metro::bundle_with(metro::Bundler::Metro, &entry_path, root, &mock_modules) {
+    let (bundle, depgraph) = if bundler == Some(bundler::Bundler::Metro) {
+        let b = match bundler::bundle_with(bundler::Bundler::Metro, &entry_path, root, &mock_modules) {
             Ok(b) => b,
             Err(e) => {
                 let _ = std::fs::remove_file(&entry_path);
@@ -545,7 +545,7 @@ fn run_cycle_with_depgraph(
         };
         (b, std::collections::HashMap::new())
     } else {
-        match metro::bundle_with_depgraph(&entry_path, root, test_files, &mock_modules) {
+        match bundler::bundle_with_depgraph(&entry_path, root, test_files, &mock_modules) {
             Ok((b, d)) => (b, d),
             Err(e) => {
                 let _ = std::fs::remove_file(&entry_path);

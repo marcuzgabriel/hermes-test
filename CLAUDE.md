@@ -1,6 +1,6 @@
 # hermes-test
 
-A fast, deterministic test runner for React Native hooks and pure functions. Rust CLI host, Hermes engine, Metro bundling, typed TS API — designed for the AI-authoring era.
+A fast, deterministic test runner for React Native hooks and pure functions. Rust CLI host, Hermes engine, esbuild bundling, typed TS API — designed for the AI-authoring era.
 
 **Not Jest-compatible by design.** This is a deliberate choice. See `.claude/references/decisions.md`.
 
@@ -19,7 +19,7 @@ The references are the source of truth. If something in this README disagrees wi
 
 Today's RN testing stack is structurally wrong:
 - Tests run in Node, app runs in Hermes — engine-fidelity bugs leak through
-- Jest transforms duplicate Metro's work — `transformIgnorePatterns` is a maintenance hellscape
+- Jest transforms duplicate bundler work — `transformIgnorePatterns` is a maintenance hellscape
 - `jest-expo` mocks are JS pretending to be native modules — type-incoherent and silently drift
 - Watch mode is multi-second — Vitest/Bun run sub-100ms but neither supports RN
 
@@ -59,7 +59,7 @@ v0 in progress. Roadmap in `.claude/references/roadmap.md`.
 | Week | Deliverable | Status |
 |------|-------------|--------|
 | 1 | Hermes embed + Rust CLI skeleton | Not started |
-| 2 | Metro integration + harness | Not started |
+| 2 | esbuild integration + harness | Not started |
 | 3 | Hooks, mocks, state history | Not started |
 | 4 | Watch mode, reporter, codemod, ship 0.1 | Not started |
 
