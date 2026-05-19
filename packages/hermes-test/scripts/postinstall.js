@@ -7,6 +7,11 @@ const fs = require('fs');
 const path = require('path');
 const os = require('os');
 
+// Skip in CI — we're building the binary, not downloading it
+if (process.env.CI) {
+  process.exit(0);
+}
+
 const REPO = 'marcuzgabriel/hermes-test';
 const BIN_DIR = path.join(__dirname, '..', 'bin');
 const BIN_PATH = path.join(BIN_DIR, 'hermes-test');
