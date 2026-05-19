@@ -2,6 +2,11 @@
   "name": "metro-test-example",
   "version": "0.0.0",
   "private": true,
+  "scripts": {
+    "test": "metro-test",
+    "test:watch": "metro-test --watch",
+    "test:prod": "metro-test src/prod-tests"
+  },
   "dependencies": {
     "@react-native/babel-preset": "^0.82.0",
     "@react-native/metro-babel-transformer": "^0.82.0",
