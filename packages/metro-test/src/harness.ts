@@ -4,7 +4,7 @@
 import { expect } from './expect';
 import { spy } from './spy';
 import { renderHook, act, waitFor } from './hooks';
-import { useMock, resetMocks } from './mock';
+import { useMock, mockModule, resetMocks } from './mock';
 
 type TestFn = (ctx: TestContext) => void | Promise<void>;
 type TestContext = {
@@ -49,6 +49,14 @@ function test(name: string, fn: TestFn, options?: TestOptions): void {
     group: currentGroup,
   });
 }
+
+test.only = function(name: string, fn: TestFn): void {
+  test(name, fn, { only: true });
+};
+
+test.skip = function(name: string, fn: TestFn): void {
+  test(name, fn, { skip: true });
+};
 
 function group(name: string, fn: () => void): void {
   const prev = currentGroup;
@@ -178,6 +186,7 @@ function runTests(): TestResult[] {
   act,
   waitFor,
   useMock,
+  mockModule,
 };
 
-export { test, expect, spy, group, beforeEach, afterEach, beforeAll, afterAll, renderHook, act, waitFor, useMock };
+export { test, expect, spy, group, beforeEach, afterEach, beforeAll, afterAll, renderHook, act, waitFor, useMock, mockModule };

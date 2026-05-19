@@ -13,44 +13,52 @@ const HARNESS_JS: &str = include_str!("../../../packages/metro-test/dist/harness
 #[derive(Parser)]
 #[command(name = "metro-test", version, about = "Fast test runner for React Native")]
 struct Cli {
-    #[command(subcommand)]
-    command: Option<Commands>,
+    /// Test files or patterns (e.g. useActionMessages.test.ts)
+    /// If a name doesn't contain a path separator, searches the project for it.
+    files: Vec<String>,
+
+    /// Watch for file changes and rerun tests
+    #[arg(long, short)]
+    watch: bool,
+
+    /// Project root directory (auto-detected if omitted)
+    #[arg(long)]
+    root: Option<PathBuf>,
+
+    /// Skip bundling, run raw JS files directly
+    #[arg(long)]
+    no_bundle: bool,
+
+    /// Bundler to use: "esbuild" (default, fast) or "metro" (RN-compatible)
+    #[arg(long, default_value = "esbuild")]
+    bundler: String,
 
     /// JavaScript file to evaluate directly (bypass Metro)
     #[arg(long)]
     eval: Option<String>,
+
+    #[command(subcommand)]
+    command: Option<Commands>,
 }
 
 #[derive(Subcommand)]
 enum Commands {
-    /// Run tests
+    /// Run tests (legacy subcommand, prefer flat: metro-test [files] [--watch])
     Run {
-        /// Specific test files to run (if omitted, finds all *.test.ts files)
         files: Vec<PathBuf>,
-
-        /// Project root directory
         #[arg(long, default_value = ".")]
         root: PathBuf,
-
-        /// Skip bundling, run raw JS files directly
         #[arg(long)]
         no_bundle: bool,
-
-        /// Bundler to use: "esbuild" (default, fast) or "metro" (RN-compatible)
         #[arg(long, default_value = "esbuild")]
         bundler: String,
     },
 
-    /// Watch for file changes and rerun tests
+    /// Watch for file changes (legacy subcommand, prefer: metro-test [files] --watch)
     Watch {
-        /// Specific test files to watch (if omitted, finds all *.test.ts files)
         files: Vec<PathBuf>,
-
-        /// Project root directory
         #[arg(long, default_value = ".")]
         root: PathBuf,
-
-        /// Bundler to use: "esbuild" (default, fast) or "metro" (RN-compatible)
         #[arg(long, default_value = "esbuild")]
         bundler: String,
     },
@@ -59,49 +67,124 @@ enum Commands {
 fn main() {
     let cli = Cli::parse();
 
-    match cli.command {
-        Some(Commands::Run {
-            files,
-            root,
-            no_bundle,
-            bundler,
-        }) => {
-            let bundler = match bundler.as_str() {
-                "metro" => Some(metro::Bundler::Metro),
-                "esbuild" => Some(metro::Bundler::Esbuild),
-                "auto" => None,
-                _ => {
-                    eprintln!("Unknown bundler '{bundler}'. Use 'esbuild', 'metro', or 'auto'.");
-                    std::process::exit(1);
-                }
-            };
-            run_tests(&files, &root, no_bundle, bundler);
+    // Legacy subcommands still work
+    if let Some(cmd) = cli.command {
+        match cmd {
+            Commands::Run {
+                files,
+                root,
+                no_bundle,
+                bundler,
+            } => {
+                let bundler = parse_bundler(&bundler);
+                run_tests(&files, &root, no_bundle, bundler);
+            }
+            Commands::Watch {
+                files,
+                root,
+                bundler,
+            } => {
+                let bundler = parse_bundler(&bundler);
+                watch_tests(&files, &root, bundler);
+            }
         }
-        Some(Commands::Watch {
-            files,
-            root,
-            bundler,
-        }) => {
-            let bundler = match bundler.as_str() {
-                "metro" => Some(metro::Bundler::Metro),
-                "esbuild" => Some(metro::Bundler::Esbuild),
-                "auto" => None,
-                _ => {
-                    eprintln!("Unknown bundler '{bundler}'. Use 'esbuild', 'metro', or 'auto'.");
-                    std::process::exit(1);
-                }
-            };
-            watch_tests(&files, &root, bundler);
+        return;
+    }
+
+    if let Some(ref path) = cli.eval {
+        eval_file(path);
+        return;
+    }
+
+    let bundler = parse_bundler(&cli.bundler);
+
+    // Auto-detect project root: walk up from cwd to find package.json
+    let root = cli.root.unwrap_or_else(|| find_project_root());
+
+    // Resolve file arguments: if a name has no path separator, search the project
+    let files = resolve_test_files(&cli.files, &root);
+
+    if cli.watch {
+        watch_tests(&files, &root, bundler);
+    } else {
+        run_tests(&files, &root, cli.no_bundle, bundler);
+    }
+}
+
+fn parse_bundler(s: &str) -> Option<metro::Bundler> {
+    match s {
+        "metro" => Some(metro::Bundler::Metro),
+        "esbuild" => Some(metro::Bundler::Esbuild),
+        "auto" => None,
+        _ => {
+            eprintln!("Unknown bundler '{s}'. Use 'esbuild', 'metro', or 'auto'.");
+            std::process::exit(1);
         }
-        None => {
-            if let Some(ref path) = cli.eval {
-                eval_file(path);
-            } else {
-                // Default: run tests in current directory
-                run_tests(&[], &PathBuf::from("."), false, None);
+    }
+}
+
+/// Walk up from cwd to find the nearest directory with package.json
+fn find_project_root() -> PathBuf {
+    let cwd = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
+    let mut dir = cwd.as_path();
+    loop {
+        if dir.join("package.json").exists() {
+            return dir.to_path_buf();
+        }
+        match dir.parent() {
+            Some(parent) => dir = parent,
+            None => {
+                // No package.json found, use cwd
+                return cwd;
             }
         }
     }
+}
+
+/// Resolve file arguments: bare names like "useActionMessages.test.ts"
+/// get searched for in the project. Paths like "src/foo.test.ts" are used as-is.
+fn resolve_test_files(args: &[String], root: &PathBuf) -> Vec<PathBuf> {
+    if args.is_empty() {
+        return vec![];
+    }
+
+    let mut resolved = Vec::new();
+    let all_tests = metro::find_test_files(root);
+
+    for arg in args {
+        let p = PathBuf::from(arg);
+        // If it contains a separator or exists as a path, use it directly
+        if arg.contains('/') || arg.contains('\\') || p.exists() {
+            resolved.push(p);
+            continue;
+        }
+
+        // Search: match by filename (exact or substring)
+        let matches: Vec<&PathBuf> = all_tests
+            .iter()
+            .filter(|f| {
+                f.file_name()
+                    .map(|n| {
+                        let name = n.to_string_lossy();
+                        name == arg.as_str() || name.contains(arg.as_str())
+                    })
+                    .unwrap_or(false)
+            })
+            .collect();
+
+        if matches.is_empty() {
+            eprintln!("No test file matching '{arg}' found in {}", root.display());
+            std::process::exit(1);
+        }
+
+        for m in matches {
+            if !resolved.contains(m) {
+                resolved.push(m.clone());
+            }
+        }
+    }
+
+    resolved
 }
 
 fn eval_file(path: &str) {
@@ -186,15 +269,28 @@ JSON.stringify({
         );
 
         match rt.eval(&combined, "tests") {
-            Ok(json) => print_results(&json),
+            Ok(json) => {
+                if !print_results(&json) {
+                    std::process::exit(1);
+                }
+            }
             Err(e) => {
                 eprintln!("Test execution failed: {e}");
                 std::process::exit(1);
             }
         }
     } else {
+        // Scan test files for mockModule() calls to determine external modules
+        let mock_modules = metro::find_mock_modules(&test_files);
+        if !mock_modules.is_empty() {
+            eprintln!(
+                "Mocked modules: {}",
+                mock_modules.join(", ")
+            );
+        }
+
         // Metro mode: generate entry, bundle via Metro, eval bundle
-        let entry_content = metro::generate_entry(&test_files, None);
+        let entry_content = metro::generate_entry(&test_files, None, &mock_modules);
 
         // Write entry to a temp file
         let entry_path = root.join(".metro-test-entry.js");
@@ -210,9 +306,9 @@ JSON.stringify({
         };
         eprintln!("Bundling with {bundler_name}...");
         let bundle = match if let Some(b) = bundler {
-            metro::bundle_with(b, &entry_path, &root)
+            metro::bundle_with(b, &entry_path, &root, &mock_modules)
         } else {
-            metro::bundle_auto(&entry_path, &root)
+            metro::bundle_auto(&entry_path, &root, &mock_modules)
         } {
             Ok(b) => b,
             Err(e) => {
@@ -232,7 +328,11 @@ JSON.stringify({
 
         // Read back the results from the global
         match rt.eval("globalThis.__metroTestResults", "results") {
-            Ok(json) => print_results(&json),
+            Ok(json) => {
+                if !print_results(&json) {
+                    std::process::exit(1);
+                }
+            }
             Err(e) => {
                 eprintln!("Failed to read test results: {e}");
                 std::process::exit(1);
@@ -403,7 +503,10 @@ fn run_cycle_with_depgraph(
 ) -> metro::DepGraph {
     let start = Instant::now();
 
-    let entry_content = metro::generate_entry(test_files, None);
+    // Scan for mockModule() calls
+    let mock_modules = metro::find_mock_modules(test_files);
+
+    let entry_content = metro::generate_entry(test_files, None, &mock_modules);
     let entry_path = root.join(".metro-test-entry.js");
     if std::fs::write(&entry_path, &entry_content).is_err() {
         eprintln!("Failed to write entry file");
@@ -412,7 +515,7 @@ fn run_cycle_with_depgraph(
 
     // Try to get dep graph via esbuild metafile
     let (bundle, depgraph) = if bundler == Some(metro::Bundler::Metro) {
-        let b = match metro::bundle_with(metro::Bundler::Metro, &entry_path, root) {
+        let b = match metro::bundle_with(metro::Bundler::Metro, &entry_path, root, &mock_modules) {
             Ok(b) => b,
             Err(e) => {
                 let _ = std::fs::remove_file(&entry_path);
@@ -422,7 +525,7 @@ fn run_cycle_with_depgraph(
         };
         (b, std::collections::HashMap::new())
     } else {
-        match metro::bundle_with_depgraph(&entry_path, root, test_files) {
+        match metro::bundle_with_depgraph(&entry_path, root, test_files, &mock_modules) {
             Ok((b, d)) => (b, d),
             Err(e) => {
                 let _ = std::fs::remove_file(&entry_path);
@@ -467,7 +570,8 @@ fn run_cycle_with_depgraph(
     depgraph
 }
 
-fn print_results(json: &str) {
+fn print_results(json: &str) -> bool {
+    // Returns true if all tests passed, false if any failed
     // The result is double-quoted JSON (JSON.stringify returns a string, which hermes_eval
     // wraps in another JSON.stringify). Parse accordingly.
     let inner: String = match serde_json::from_str(json) {
@@ -475,7 +579,7 @@ fn print_results(json: &str) {
         Err(_) => {
             // Already raw JSON
             println!("{json}");
-            return;
+            return false;
         }
     };
 
@@ -484,7 +588,7 @@ fn print_results(json: &str) {
         Ok(v) => v,
         Err(_) => {
             println!("{inner}");
-            return;
+            return false;
         }
     };
 
@@ -529,7 +633,5 @@ fn print_results(json: &str) {
     );
     eprintln!("{status_line}");
 
-    if failed > 0 {
-        std::process::exit(1);
-    }
+    failed == 0
 }

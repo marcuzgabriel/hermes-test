@@ -9,9 +9,13 @@ pub enum Bundler {
 }
 
 /// Bundle an entry file. Tries esbuild first (fast), falls back to Metro.
-pub fn bundle_auto(entry_file: &Path, project_root: &Path) -> Result<String, String> {
+pub fn bundle_auto(
+    entry_file: &Path,
+    project_root: &Path,
+    external_modules: &[String],
+) -> Result<String, String> {
     if let Ok(path) = find_esbuild(project_root) {
-        return bundle_esbuild(entry_file, &path);
+        return bundle_esbuild(entry_file, &path, external_modules);
     }
     bundle_metro(entry_file, project_root)
 }
@@ -20,12 +24,13 @@ pub fn bundle_with(
     bundler: Bundler,
     entry_file: &Path,
     project_root: &Path,
+    external_modules: &[String],
 ) -> Result<String, String> {
     match bundler {
         Bundler::Esbuild => {
             let path = find_esbuild(project_root)
                 .map_err(|_| "esbuild not found. Install it: bun add -d esbuild".to_string())?;
-            bundle_esbuild(entry_file, &path)
+            bundle_esbuild(entry_file, &path, external_modules)
         }
         Bundler::Metro => bundle_metro(entry_file, project_root),
     }
@@ -50,15 +55,26 @@ fn find_esbuild(project_root: &Path) -> Result<PathBuf, ()> {
     Err(())
 }
 
-fn bundle_esbuild(entry_file: &Path, esbuild_path: &Path) -> Result<String, String> {
-    let output = Command::new(esbuild_path)
-        .arg(entry_file)
+fn bundle_esbuild(
+    entry_file: &Path,
+    esbuild_path: &Path,
+    external_modules: &[String],
+) -> Result<String, String> {
+    let mut cmd = Command::new(esbuild_path);
+    cmd.arg(entry_file)
         .arg("--bundle")
         .arg("--format=iife")
         .arg("--target=es2020")
         .arg("--supported:async-await=false")
         .arg("--define:process.env.NODE_ENV=\"test\"")
-        .arg("--define:global=globalThis")
+        .arg("--define:global=globalThis");
+
+    // Externalize mocked modules so they resolve through __require → __mockRegistry
+    for ext in external_modules {
+        cmd.arg(format!("--external:{ext}"));
+    }
+
+    let output = cmd
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .output()
@@ -72,7 +88,27 @@ fn bundle_esbuild(entry_file: &Path, esbuild_path: &Path) -> Result<String, Stri
     let code =
         String::from_utf8(output.stdout).map_err(|e| format!("Invalid UTF-8 from esbuild: {e}"))?;
 
-    Ok(patch_esbuild_for_hermes(&code))
+    let mut code = patch_esbuild_for_hermes(&code);
+
+    // If there are external mocked modules, inject the __require shim
+    if !external_modules.is_empty() {
+        code = inject_mock_require_shim(&code);
+    }
+
+    Ok(code)
+}
+
+/// Patch esbuild's __require to route externalized modules through __mockRegistry.
+/// Simple approach: replace the "throw" line inside __require with a registry lookup.
+fn inject_mock_require_shim(code: &str) -> String {
+    // esbuild's __require contains this exact throw statement for unsupported externals:
+    //   throw Error('Dynamic require of "' + x + '" is not supported');
+    // Replace it with a __mockRegistry lookup.
+    code.replacen(
+        r#"throw Error('Dynamic require of "' + x + '" is not supported')"#,
+        r#"{ var __r = globalThis.__mockRegistry; if (__r) { if (__r[x]) return __r[x]; var __s = x.replace(/^\.\//, ''); if (__r[__s]) return __r[__s]; if (__r['./' + __s]) return __r['./' + __s]; } throw Error('No mock registered for "' + x + '"') }"#,
+        1,
+    )
 }
 
 /// Patch esbuild's runtime helpers for Hermes compatibility + mockability.
@@ -219,6 +255,36 @@ fn walk_dir(dir: &Path, files: &mut Vec<PathBuf>) {
     }
 }
 
+/// Scan test files for mockModule('path', ...) calls and return the module paths.
+/// These modules will be externalized in esbuild so that useMock can intercept them.
+pub fn find_mock_modules(test_files: &[PathBuf]) -> Vec<String> {
+    let mut mocks = Vec::new();
+    let re_single = regex::Regex::new(r#"mockModule\(\s*['"]([^'"]+)['"]\s*,"#).ok();
+    let re_double = regex::Regex::new(r#"mockModule\(\s*"([^"]+)"\s*,"#).ok();
+
+    for file in test_files {
+        if let Ok(content) = std::fs::read_to_string(file) {
+            if let Some(ref re) = re_single {
+                for cap in re.captures_iter(&content) {
+                    let path = cap[1].to_string();
+                    if !mocks.contains(&path) {
+                        mocks.push(path);
+                    }
+                }
+            }
+            if let Some(ref re) = re_double {
+                for cap in re.captures_iter(&content) {
+                    let path = cap[1].to_string();
+                    if !mocks.contains(&path) {
+                        mocks.push(path);
+                    }
+                }
+            }
+        }
+    }
+    mocks
+}
+
 /// Check if any test files (or their imports) need React.
 /// Scans file contents for react-related imports or harness hooks.
 pub fn needs_react(test_files: &[PathBuf]) -> bool {
@@ -241,8 +307,27 @@ pub fn needs_react(test_files: &[PathBuf]) -> bool {
 }
 
 /// Generate a synthetic entry file that imports the harness and all test files.
-pub fn generate_entry(test_files: &[PathBuf], _harness_path: Option<&Path>) -> String {
+pub fn generate_entry(
+    test_files: &[PathBuf],
+    _harness_path: Option<&Path>,
+    mock_modules: &[String],
+) -> String {
     let mut entry = String::new();
+
+    // Pre-register mock module placeholders BEFORE anything loads.
+    // mockModule() in the test file will populate these objects with actual spies.
+    // The __require shim returns these same objects, so the hook sees the mocks.
+    if !mock_modules.is_empty() {
+        entry.push_str("globalThis.__mockRegistry = globalThis.__mockRegistry || {};\n");
+        for path in mock_modules {
+            // Pre-create the registry entry as an empty object.
+            // mockModule() will copy spy properties onto it later.
+            entry.push_str(&format!(
+                "globalThis.__mockRegistry['{}'] = globalThis.__mockRegistry['{}'] || {{}};\n",
+                path, path
+            ));
+        }
+    }
 
     // Only bootstrap React if test files actually need it (saves ~40ms for pure tests)
     if needs_react(test_files) {
@@ -289,6 +374,7 @@ pub fn bundle_with_depgraph(
     entry_file: &Path,
     project_root: &Path,
     test_files: &[PathBuf],
+    external_modules: &[String],
 ) -> Result<(String, DepGraph), String> {
     let esbuild_path = find_esbuild(project_root)
         .map_err(|_| "esbuild not found".to_string())?;
@@ -296,8 +382,8 @@ pub fn bundle_with_depgraph(
     let metafile_path = project_root.join(".metro-test-meta.json");
     let outfile_path = project_root.join(".metro-test-bundle.js");
 
-    let output = Command::new(&esbuild_path)
-        .arg(entry_file)
+    let mut cmd = Command::new(&esbuild_path);
+    cmd.arg(entry_file)
         .arg("--bundle")
         .arg("--format=iife")
         .arg("--target=es2020")
@@ -305,7 +391,13 @@ pub fn bundle_with_depgraph(
         .arg("--define:process.env.NODE_ENV=\"test\"")
         .arg("--define:global=globalThis")
         .arg(format!("--metafile={}", metafile_path.to_string_lossy()))
-        .arg(format!("--outfile={}", outfile_path.to_string_lossy()))
+        .arg(format!("--outfile={}", outfile_path.to_string_lossy()));
+
+    for ext in external_modules {
+        cmd.arg(format!("--external:{ext}"));
+    }
+
+    let output = cmd
         .stderr(Stdio::piped())
         .output()
         .map_err(|e| format!("Failed to run esbuild: {e}"))?;
@@ -320,7 +412,11 @@ pub fn bundle_with_depgraph(
     let code = std::fs::read_to_string(&outfile_path)
         .map_err(|e| format!("Failed to read bundle: {e}"))?;
     let _ = std::fs::remove_file(&outfile_path);
-    let code = patch_esbuild_for_hermes(&code);
+    let mut code = patch_esbuild_for_hermes(&code);
+
+    if !external_modules.is_empty() {
+        code = inject_mock_require_shim(&code);
+    }
 
     // Parse the metafile to build a dependency graph
     let depgraph = parse_depgraph(&metafile_path, project_root, test_files);
