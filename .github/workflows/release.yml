@@ -63,7 +63,7 @@ jobs:
             -DHERMES_STATIC_LINK=OFF \
             -DBUILD_SHARED_LIBS=OFF \
             -DCMAKE_BUILD_TYPE=Release
-          cmake --build build --parallel
+          cmake --build build --parallel --target hermesvm hermesVMRuntime hermesFrontend hermesOptimizer hermesCompilerDriver hermesHBCBackend hermesBackend hermesInst hermesFrontEndDefs hermesParser hermesAST hermesFlowParser hermesAST2JS hermesSourceMap hermesInternalBytecode hermesRegex hermesPlatformUnicode hermesPlatform hermesSupport hermesADT hermesPublic dtoa LLVHSupport LLVHDemangle
 
       - name: Bundle harness
         run: |
