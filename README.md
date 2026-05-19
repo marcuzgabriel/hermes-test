@@ -1,8 +1,10 @@
 # hermes-test
 
-**75x faster than Jest.** A test runner for React Native that executes your tests in Hermes — the same JavaScript engine your app ships with.
+**75x faster than Jest.** A test runner for React Native and Expo that executes your tests in Hermes — the same JavaScript engine your app ships with.
 
 No Babel transforms. No `transformIgnorePatterns`. No `jest-expo` mock layer. No 20-second test runs. Just your code, running in the real engine, at native speed.
+
+Built for **Expo** and **React Native** projects that use hooks, Redux, RTK Query, and TypeScript.
 
 ```
 245 tests — 300ms
@@ -12,13 +14,17 @@ No Babel transforms. No `transformIgnorePatterns`. No `jest-expo` mock layer. No
 
 ### The problem
 
-Every React Native project tests in Node. Your app runs in Hermes. These are different JavaScript engines with different behaviors. That gap is where bugs hide — and Jest can't find them because it's running in the wrong engine entirely.
+Every React Native and Expo project tests in Node. Your app runs in Hermes. These are different JavaScript engines with different behaviors. That gap is where bugs hide — and Jest can't find them because it's running in the wrong engine entirely.
 
-On top of that, Jest in React Native is slow by design. Every test file spawns a worker, runs Babel transforms, resolves `transformIgnorePatterns` for every `node_modules` import, and coordinates results over IPC. For a mid-size app, that's 20-60 seconds per run. Developers stop running tests. Tests rot. Coverage drops.
+On top of that, Jest in React Native is slow by design. Every test file spawns a worker, runs Babel transforms, resolves `transformIgnorePatterns` for every `node_modules` import, and coordinates results over IPC. For a mid-size Expo app, that's 20-60 seconds per run. Developers stop running tests. Tests rot. Coverage drops.
+
+`jest-expo` tries to help but adds its own problems — auto-mocking that silently drifts from real module behavior, complex preset configuration, and mocks that are JS pretending to be native modules.
 
 ### The fix
 
 hermes-test runs your tests directly in Hermes. esbuild bundles your test + source into a single file in <100ms. A Rust CLI feeds it to the Hermes VM. One process, no workers, no transforms. Results appear before your hand leaves `Cmd+S`.
+
+Most Jest mocks become unnecessary — Hermes runs your real hooks, real Redux store, real business logic natively. In a production Expo app (Topdanmark, Danish insurance), **84% of jest.mock calls were eliminated** because the real code just works in Hermes.
 
 ### Benchmarks
 
@@ -248,49 +254,90 @@ const { current } = ctx.renderHookWithReduxStore(() => useMyHook());
 
 ## Stack
 
-- **Hermes** — V8-class JS engine that ships with React Native
+- **Hermes** — the JS engine that ships with React Native and Expo
 - **esbuild** — bundler, 100x faster than Babel/Metro transforms
 - **Rust** — CLI host, native Hermes FFI, zero-overhead process management
 - **TypeScript** — test harness (spy, expect, renderHook, mockFetch, timers)
 
+## Works with
+
+- **Expo** (SDK 50+)
+- **React Native** (0.73+ with Hermes)
+- **Redux / RTK Query**
+- **React hooks**
+- **TypeScript**
+- **Monorepos** (path aliases via tsconfig.json)
+
 ## Install
 
 ```bash
-# In your RN project
 bun add -D hermes-test
+```
 
-# Add test script
-# package.json: "test": "hermes-test", "test:watch": "hermes-test --watch"
+Add to `package.json`:
+```json
+{
+  "scripts": {
+    "test": "hermes-test",
+    "test:watch": "hermes-test --watch"
+  }
+}
+```
+
+Run:
+```bash
+bun run test                          # all .test.ts files
+bun run test src/hooks/useLogin.test.ts  # specific file
+bun run test:watch                    # watch mode
 ```
 
 ## Configuration
 
 ### tsconfig.json paths
 
-hermes-test reads `tsconfig.json` paths automatically and passes them as esbuild aliases:
+hermes-test reads `tsconfig.json` paths automatically and passes them as esbuild aliases. Monorepo path aliases just work:
 
 ```json
 {
   "compilerOptions": {
     "paths": {
-      "@app/*": ["./src/*"]
+      "@app/*": ["./src/*"],
+      "@myorg/shared/*": ["../../packages/shared/src/*"]
     }
   }
 }
 ```
 
-### hermes-test.config.json
+### Native module stubs
+
+Expo and React Native modules that call native code need to be stubbed since Hermes runs without a native runtime. Add a `hermes-test.config.json`:
 
 ```json
 {
   "nativeModuleStubs": [
     "expo-web-browser",
     "expo-local-authentication",
+    "expo-application",
+    "expo-device",
     "react-native-launch-arguments"
   ]
 }
 ```
 
+Stubbed modules return empty objects. Your test code uses `mockModule` or `mockFetch` for the behavior you need.
+
+## Why not Jest?
+
+| | Jest + jest-expo | hermes-test |
+|---|-----------------|-------------|
+| Engine | Node (not your app) | Hermes (your app) |
+| Startup | ~700ms per worker | ~5ms total |
+| Transforms | Babel on every import | esbuild, one bundle |
+| Mocks needed | 394 in a real app | ~60 (native only) |
+| `transformIgnorePatterns` | Required, fragile | Not needed |
+| Watch rerun | ~2-3s | ~70ms |
+
 ## License
 
 MIT
+
