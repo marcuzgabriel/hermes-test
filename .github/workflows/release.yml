@@ -62,8 +62,22 @@ jobs:
           cmake -S . -B build -G Ninja \
             -DHERMES_STATIC_LINK=OFF \
             -DBUILD_SHARED_LIBS=OFF \
+            -DHERMES_ENABLE_DEBUGGER=OFF \
+            -DHERMES_ENABLE_TEST_SUITE=OFF \
             -DCMAKE_BUILD_TYPE=Release
-          cmake --build build --parallel --target hermesvm hermesVMRuntime hermesFrontend hermesOptimizer hermesCompilerDriver hermesHBCBackend hermesBackend hermesInst hermesFrontEndDefs hermesParser hermesAST hermesFlowParser hermesAST2JS hermesSourceMap hermesInternalBytecode hermesRegex hermesPlatformUnicode hermesPlatform hermesSupport hermesADT hermesPublic dtoa LLVHSupport LLVHDemangle
+          cmake --build build --parallel 4 --target hermesvm hermesVMRuntime hermesFrontend hermesOptimizer hermesCompilerDriver hermesHBCBackend hermesBackend hermesInst hermesFrontEndDefs hermesParser hermesAST hermesFlowParser hermesAST2JS hermesSourceMap hermesInternalBytecode hermesRegex hermesPlatformUnicode hermesPlatform hermesSupport hermesADT hermesPublic dtoa LLVHSupport LLVHDemangle
+
+      - name: Verify Hermes libraries
+        run: |
+          for lib in hermesvm hermesVMRuntime hermesFrontend hermesOptimizer hermesCompilerDriver hermesHBCBackend hermesBackend hermesInst hermesFrontEndDefs hermesParser hermesAST hermesFlowParser hermesAST2JS hermesSourceMap hermesInternalBytecode hermesRegex hermesPlatformUnicode hermesPlatform hermesSupport hermesADT hermesPublic dtoa LLVHSupport LLVHDemangle; do
+            found=$(find vendor/hermes/build -name "lib${lib}.a" | head -1)
+            if [ -z "$found" ]; then
+              echo "MISSING: lib${lib}.a"
+              exit 1
+            else
+              echo "OK: $found"
+            fi
+          done
 
       - name: Bundle harness
         run: |
