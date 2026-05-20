@@ -3,7 +3,7 @@
   "publishConfig": {
     "registry": "https://npm.pkg.github.com"
   },
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "75x faster than Jest. Test runner for React Native and Expo that runs in Hermes.",
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
@@ -46,7 +46,7 @@
     "react-test-renderer": "18"
   },
   "optionalDependencies": {
-    "@marcuzgabriel/hermes-test-darwin-arm64": "0.1.0",
-    "@marcuzgabriel/hermes-test-linux-x64": "0.1.0"
+    "@marcuzgabriel/hermes-test-darwin-arm64": "0.1.1",
+    "@marcuzgabriel/hermes-test-linux-x64": "0.1.1"
   }
 }
