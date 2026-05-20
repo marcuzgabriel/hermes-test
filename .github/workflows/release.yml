@@ -16,9 +16,6 @@ jobs:
           - os: macos-14
             target: aarch64-apple-darwin
             asset: hermes-test-darwin-arm64
-          - os: macos-13
-            target: x86_64-apple-darwin
-            asset: hermes-test-darwin-x64
           - os: ubuntu-latest
             target: x86_64-unknown-linux-gnu
             asset: hermes-test-linux-x64
@@ -142,6 +139,5 @@ jobs:
           name: v${{ inputs.version }}
           files: |
             hermes-test-darwin-arm64/hermes-test-darwin-arm64
-            hermes-test-darwin-x64/hermes-test-darwin-x64
             hermes-test-linux-x64/hermes-test-linux-x64
           generate_release_notes: true
