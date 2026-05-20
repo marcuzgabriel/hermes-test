@@ -60,6 +60,8 @@ int hermes_vm_run(
   ::hermes::hbc::CompileFlags flags;
   flags.enableES6Classes = true;
   flags.enableBlockScoping = true;
+  flags.enableGenerator = true;
+  flags.includeLibHermes = false;
 
   auto result = runtime->run(
       llvh::StringRef(source, source_len),
@@ -67,7 +69,6 @@ int hermes_vm_run(
       flags);
 
   if (result.getStatus() == ::hermes::vm::ExecutionStatus::EXCEPTION) {
-    // Best-effort error extraction
     std::string msg = "JS exception";
     runtime->clearThrownValue();
     if (error_out) *error_out = vm_strdup(msg);

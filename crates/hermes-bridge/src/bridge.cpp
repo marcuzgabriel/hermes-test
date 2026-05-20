@@ -116,10 +116,15 @@ extern "C" {
 HermesRuntime* hermes_create_runtime(void) {
   try {
     auto wrapper = new HermesRuntime();
+    auto gcConfig = ::hermes::vm::GCConfig::Builder()
+        .withMaxHeapSize(512 * 1024 * 1024)  // 512MB
+        .withInitHeapSize(32 * 1024 * 1024)   // 32MB initial
+        .build();
     auto config = ::hermes::vm::RuntimeConfig::Builder()
         .withES6Class(true)
         .withEnableBlockScoping(true)
         .withMaxNumRegisters(1024 * 1024)
+        .withGCConfig(gcConfig)
         .build();
     wrapper->rt = facebook::hermes::makeHermesRuntime(config);
     installConsole(*wrapper->rt);

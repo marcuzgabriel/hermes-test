@@ -335,12 +335,10 @@ JSON.stringify({
 
         // Eval the bundle — suppress Hermes [hermes-compile] noise on stderr.
         // console.log is now collected in globalThis.__consoleLogs (not stderr).
-        suppress_hermes_stderr(|| {
-            if let Err(e) = rt.eval(&bundle, "bundle.js") {
-                eprintln!("Test execution failed: {e}");
-                std::process::exit(1);
-            }
-        });
+        if let Err(e) = rt.eval(&bundle, "bundle.js") {
+            eprintln!("Test execution failed: {e}");
+            std::process::exit(1);
+        }
 
         // Print any console.log output from tests
         print_console_logs(&rt);

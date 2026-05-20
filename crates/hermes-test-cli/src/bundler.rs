@@ -2,6 +2,10 @@ use std::io::Read;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 
+// oxc — available for future AST transforms when needed
+// use oxc::{allocator::Allocator, codegen::Codegen, parser::Parser,
+//     semantic::SemanticBuilder, span::SourceType, transformer::{TransformOptions, Transformer}};
+
 #[derive(Clone, Copy, PartialEq)]
 pub enum Bundler {
     Esbuild,
@@ -57,89 +61,123 @@ fn find_esbuild(project_root: &Path) -> Result<PathBuf, ()> {
 
 /// Read path aliases from tsconfig.json "compilerOptions.paths" and hermes-test.config.json.
 /// Returns Vec<(alias, target_path)> for esbuild --alias flags.
-fn read_path_aliases(project_root: &Path) -> Vec<(String, String)> {
-    let mut aliases = Vec::new();
-
-    // Read tsconfig.json paths
-    for name in ["tsconfig.json", "tsconfig.app.json"] {
-        let tsconfig_path = project_root.join(name);
-        if let Ok(content) = std::fs::read_to_string(&tsconfig_path) {
-            // Simple JSON parse for paths — avoid adding serde dependency
-            // Look for "paths": { "@foo/*": ["./src/*"] }
-            if let Some(paths_start) = content.find("\"paths\"") {
-                if let Some(brace_start) = content[paths_start..].find('{') {
-                    let rest = &content[paths_start + brace_start..];
-                    let mut depth = 0;
-                    let mut end = 0;
-                    for (i, ch) in rest.char_indices() {
-                        match ch {
-                            '{' => depth += 1,
-                            '}' => {
-                                depth -= 1;
-                                if depth == 0 { end = i + 1; break; }
-                            }
-                            _ => {}
-                        }
-                    }
-                    let paths_block = &rest[..end];
-                    // Parse each "alias": ["target"] pair
-                    let mut i = 0;
-                    while let Some(key_start) = paths_block[i..].find('"') {
-                        let ks = i + key_start + 1;
-                        if let Some(key_end) = paths_block[ks..].find('"') {
-                            let key = &paths_block[ks..ks + key_end];
-                            let after_key = ks + key_end + 1;
-                            if let Some(val_start) = paths_block[after_key..].find('"') {
-                                let vs = after_key + val_start + 1;
-                                if let Some(val_end) = paths_block[vs..].find('"') {
-                                    let val = &paths_block[vs..vs + val_end];
-                                    // Convert "alias/*" → "alias" and "./src/*" → "./src"
-                                    let alias = key.trim_end_matches("/*").trim_end_matches('*');
-                                    let mut target = val.trim_end_matches("/*").trim_end_matches('*');
-                                    if !alias.is_empty() && !target.is_empty() {
-                                        // Resolve relative target against baseUrl or project root
-                                        let target_path = if target.starts_with("./") || target.starts_with("../") {
-                                            project_root.join(target).to_string_lossy().to_string()
-                                        } else {
-                                            target.to_string()
-                                        };
-                                        aliases.push((alias.to_string(), target_path));
-                                    }
-                                    i = vs + val_end + 1;
-                                    continue;
-                                }
-                            }
-                        }
-                        i += key_start + 1;
-                    }
-                }
-            }
-            break; // Only read first tsconfig found
-        }
-    }
-
-    // Read hermes-test.config.json for nativeModuleStubs
-    let config_path = project_root.join("hermes-test.config.json");
-    if let Ok(content) = std::fs::read_to_string(&config_path) {
-        // Look for "nativeModuleStubs": ["expo-web-browser", ...]
-        if let Some(stubs_start) = content.find("\"nativeModuleStubs\"") {
-            if let Some(arr_start) = content[stubs_start..].find('[') {
-                if let Some(arr_end) = content[stubs_start + arr_start..].find(']') {
-                    let arr = &content[stubs_start + arr_start + 1..stubs_start + arr_start + arr_end];
-                    for item in arr.split(',') {
-                        let module = item.trim().trim_matches('"').trim_matches('\'');
-                        if !module.is_empty() {
-                            // These get externalized — the __require shim returns empty objects
-                            // (handled by inject_mock_require_shim)
-                        }
-                    }
-                }
-            }
-        }
-    }
-
-    aliases
+struct BundleConfig {
+    aliases: Vec<(String, String)>,
+    externals: Vec<String>,
+    root: Option<PathBuf>,
 }
+
+/// Extract a string value from JSON: "key": "value"
+fn json_string_value(json: &str, key: &str) -> Option<String> {
+    let pattern = format!("\"{key}\"");
+    let start = json.find(&pattern)?;
+    let after = &json[start + pattern.len()..];
+    let colon = after.find(':')?;
+    let rest = after[colon + 1..].trim_start();
+    if !rest.starts_with('"') { return None; }
+    let val_end = rest[1..].find('"')?;
+    Some(rest[1..1 + val_end].to_string())
+}
+
+/// Extract a string array from JSON: "key": ["a", "b"]
+fn json_string_array(json: &str, key: &str) -> Option<Vec<String>> {
+    let pattern = format!("\"{key}\"");
+    let start = json.find(&pattern)?;
+    let after = &json[start + pattern.len()..];
+    let arr_start = after.find('[')?;
+    let arr_end = after[arr_start..].find(']')?;
+    let arr = &after[arr_start + 1..arr_start + arr_end];
+    Some(arr.split(',')
+        .map(|s| s.trim().trim_matches('"').trim_matches('\'').to_string())
+        .filter(|s| !s.is_empty())
+        .collect())
+}
+
+/// Read "paths" from a tsconfig.json file and add as esbuild aliases.
+fn read_tsconfig_paths(base_dir: &Path, tsconfig_path: &Path, aliases: &mut Vec<(String, String)>) {
+    let Ok(content) = std::fs::read_to_string(tsconfig_path) else { return };
+    let Some(paths_start) = content.find("\"paths\"") else { return };
+    let Some(brace_start) = content[paths_start..].find('{') else { return };
+    let rest = &content[paths_start + brace_start..];
+
+    let mut depth = 0;
+    let mut end = 0;
+    for (i, ch) in rest.char_indices() {
+        match ch {
+            '{' => depth += 1,
+            '}' => { depth -= 1; if depth == 0 { end = i + 1; break; } }
+            _ => {}
+        }
+    }
+    let paths_block = &rest[..end];
+    let mut i = 0;
+    while let Some(key_start) = paths_block[i..].find('"') {
+        let ks = i + key_start + 1;
+        let Some(key_end) = paths_block[ks..].find('"') else { break };
+        let key = &paths_block[ks..ks + key_end];
+        let after_key = ks + key_end + 1;
+        let Some(val_start) = paths_block[after_key..].find('"') else { break };
+        let vs = after_key + val_start + 1;
+        let Some(val_end) = paths_block[vs..].find('"') else { break };
+        let val = &paths_block[vs..vs + val_end];
+
+        let alias = key.trim_end_matches("/*").trim_end_matches('*');
+        let target = val.trim_end_matches("/*").trim_end_matches('*');
+        if !alias.is_empty() && !target.is_empty() {
+            let target_path = if target.starts_with("./") || target.starts_with("../") {
+                base_dir.join(target).to_string_lossy().to_string()
+            } else {
+                target.to_string()
+            };
+            aliases.push((alias.to_string(), target_path));
+        }
+        i = vs + val_end + 1;
+    }
+}
+
+/// Read hermes-test.config.json and resolve tsconfig paths.
+/// Config: { "root": "../..", "tsconfig": "../../tsconfig.json", "external": ["zod", ...] }
+fn read_config(project_root: &Path) -> BundleConfig {
+    let mut config = BundleConfig { aliases: Vec::new(), externals: Vec::new(), root: None };
+
+    // Find hermes-test.config.json — check project root, then walk up
+    let mut search_dir = project_root.canonicalize().unwrap_or_else(|_| project_root.to_path_buf());
+    let config_content = loop {
+        let path = search_dir.join("hermes-test.config.json");
+        if let Ok(content) = std::fs::read_to_string(&path) {
+            break Some((search_dir.clone(), content));
+        }
+        if !search_dir.pop() { break None; }
+    };
+
+    let Some((config_dir, content)) = config_content else {
+        // No config — read tsconfig.json from project root only
+        read_tsconfig_paths(project_root, &project_root.join("tsconfig.json"), &mut config.aliases);
+        return config;
+    };
+
+    // "root" — monorepo workspace root
+    if let Some(val) = json_string_value(&content, "root") {
+        config.root = Some(config_dir.join(&val));
+    }
+
+    // "tsconfig" — path to tsconfig with aliases
+    if let Some(val) = json_string_value(&content, "tsconfig") {
+        let tsconfig_path = config_dir.join(&val);
+        let tsconfig_dir = tsconfig_path.parent().unwrap_or(&config_dir);
+        read_tsconfig_paths(tsconfig_dir, &tsconfig_path, &mut config.aliases);
+    } else {
+        read_tsconfig_paths(project_root, &project_root.join("tsconfig.json"), &mut config.aliases);
+    }
+
+    // "external" — modules to externalize
+    if let Some(items) = json_string_array(&content, "external") {
+        config.externals = items;
+    }
+
+    config
+}
+
 
 fn bundle_esbuild(
     entry_file: &Path,
@@ -147,7 +185,7 @@ fn bundle_esbuild(
     external_modules: &[String],
 ) -> Result<String, String> {
     let project_root = entry_file.parent().unwrap_or(Path::new("."));
-    let aliases = read_path_aliases(project_root);
+    let cfg = read_config(project_root);
 
     let mut cmd = Command::new(esbuild_path);
     cmd.arg(entry_file)
@@ -164,41 +202,30 @@ fn bundle_esbuild(
         .arg("--loader:.svg=empty")
         .arg("--external:console");
 
-    // Monorepo support: walk up from the project root to find all
-    // node_modules directories so esbuild can resolve hoisted dependencies
-    {
-        let mut node_paths = Vec::new();
-        let abs_root = project_root.canonicalize().unwrap_or_else(|_| project_root.to_path_buf());
-        let mut dir = abs_root.clone();
-        loop {
-            let nm = dir.join("node_modules");
-            if nm.is_dir() {
-                node_paths.push(nm.to_string_lossy().to_string());
-            }
-            if !dir.pop() { break; }
-        }
-        if !node_paths.is_empty() {
-            let sep = if cfg!(windows) { ";" } else { ":" };
-            cmd.env("NODE_PATH", node_paths.join(sep));
+    // Monorepo: if config specifies root, add its node_modules to NODE_PATH
+    if let Some(ref root) = cfg.root {
+        let nm = root.join("node_modules");
+        if nm.is_dir() {
+            cmd.env("NODE_PATH", nm.to_string_lossy().to_string());
         }
     }
 
-    // Apply path aliases from tsconfig.json
-    for (alias, target) in &aliases {
+    // Path aliases from tsconfig (resolved by config)
+    for (alias, target) in &cfg.aliases {
         cmd.arg(format!("--alias:{alias}={target}"));
     }
 
-    // Externalize React Native core (uses Flow syntax that esbuild can't parse)
-    let default_externals = [
-        "react-native",
-        "react-native/*",
-        "@react-native/*",
-    ];
-    for ext in &default_externals {
+    // Default externals: React Native uses Flow syntax
+    for ext in &["react-native", "react-native/*", "@react-native/*"] {
         cmd.arg(format!("--external:{ext}"));
     }
 
-    // Externalize mocked modules so they resolve through __require → __mockRegistry
+    // Config externals
+    for ext in &cfg.externals {
+        cmd.arg(format!("--external:{ext}"));
+    }
+
+    // Mock module externals
     for ext in external_modules {
         cmd.arg(format!("--external:{ext}"));
     }
@@ -217,15 +244,17 @@ fn bundle_esbuild(
     let code =
         String::from_utf8(output.stdout).map_err(|e| format!("Invalid UTF-8 from esbuild: {e}"))?;
 
-    let mut code = patch_esbuild_for_hermes(&code);
+    let mut code = code.to_string();
 
-    // If there are external mocked modules, inject the __require shim
-    if !external_modules.is_empty() {
+    // Patch esbuild runtime helpers for Hermes compat
+    code = patch_esbuild_for_hermes(&code);
+
+    // Inject __require shim when there are external modules that need runtime resolution
+    let has_externals = !external_modules.is_empty() || !cfg.externals.is_empty()
+        || code.contains("Dynamic require of");
+    if has_externals {
         code = inject_mock_require_shim(&code);
     }
-
-    // No SWC needed — VM Runtime::run() handles classes correctly,
-    // and Array.isArray polyfill handles class-extends-Array.
 
     Ok(code)
 }
@@ -445,7 +474,7 @@ fn inject_mock_require_shim(code: &str) -> String {
     // Replace it with a __mockRegistry lookup.
     code.replacen(
         r#"throw Error('Dynamic require of "' + x + '" is not supported')"#,
-        r#"{ var __r = globalThis.__mockRegistry; if (__r) { if (__r[x]) return __r[x]; var __s = x.replace(/^\.\//, ''); if (__r[__s]) return __r[__s]; if (__r['./' + __s]) return __r['./' + __s]; } throw Error('No mock registered for "' + x + '"') }"#,
+        r#"{ var __r = globalThis.__mockRegistry; if (__r) { if (__r[x]) return __r[x]; var __s = x.replace(/^\.\//, ''); if (__r[__s]) return __r[__s]; if (__r['./' + __s]) return __r['./' + __s]; } return {} }"#,
         1,
     )
 }
