@@ -65,7 +65,7 @@ jobs:
             -DHERMES_ENABLE_DEBUGGER=OFF \
             -DHERMES_ENABLE_TEST_SUITE=OFF \
             -DCMAKE_BUILD_TYPE=Release
-          cmake --build build --parallel 4 --target hermesvm hermesVMRuntime hermesFrontend hermesOptimizer hermesCompilerDriver hermesHBCBackend hermesBackend hermesInst hermesFrontEndDefs hermesParser hermesAST hermesFlowParser hermesAST2JS hermesSourceMap hermesInternalBytecode hermesRegex hermesPlatformUnicode hermesPlatform hermesSupport hermesADT hermesPublic dtoa LLVHSupport LLVHDemangle
+          cmake --build build --parallel 4
 
       - name: Verify Hermes libraries
         run: |
