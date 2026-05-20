@@ -170,8 +170,9 @@ fn read_config(project_root: &Path) -> BundleConfig {
         read_tsconfig_paths(project_root, &project_root.join("tsconfig.json"), &mut config.aliases);
     }
 
-    // "external" — modules to externalize
-    if let Some(items) = json_string_array(&content, "external") {
+    // "externals" (or "external") — modules to externalize
+    if let Some(items) = json_string_array(&content, "externals")
+        .or_else(|| json_string_array(&content, "external")) {
         config.externals = items;
     }
 
@@ -202,11 +203,22 @@ fn bundle_esbuild(
         .arg("--loader:.svg=empty")
         .arg("--external:console");
 
-    // Monorepo: if config specifies root, add its node_modules to NODE_PATH
-    if let Some(ref root) = cfg.root {
-        let nm = root.join("node_modules");
-        if nm.is_dir() {
-            cmd.env("NODE_PATH", nm.to_string_lossy().to_string());
+    // Monorepo: add node_modules paths for resolution.
+    // Include both the project root and the monorepo root (if configured).
+    {
+        let mut node_paths = Vec::new();
+        let project_nm = entry_file.parent().unwrap_or(Path::new(".")).join("node_modules");
+        if project_nm.is_dir() {
+            node_paths.push(project_nm.to_string_lossy().to_string());
+        }
+        if let Some(ref root) = cfg.root {
+            let root_nm = root.join("node_modules");
+            if root_nm.is_dir() {
+                node_paths.push(root_nm.to_string_lossy().to_string());
+            }
+        }
+        if !node_paths.is_empty() {
+            cmd.env("NODE_PATH", node_paths.join(":"));
         }
     }
 
@@ -220,9 +232,12 @@ fn bundle_esbuild(
         cmd.arg(format!("--external:{ext}"));
     }
 
-    // Config externals
+    // Config externals — also add wildcard for sub-path imports (e.g. @sentry/react-native/dist/...)
     for ext in &cfg.externals {
         cmd.arg(format!("--external:{ext}"));
+        if !ext.ends_with('*') {
+            cmd.arg(format!("--external:{ext}/*"));
+        }
     }
 
     // Mock module externals
@@ -282,9 +297,14 @@ fn inject_mock_require_shim(code: &str) -> String {
     // esbuild's __require contains this exact throw statement for unsupported externals:
     //   throw Error('Dynamic require of "' + x + '" is not supported');
     // Replace it with a __mockRegistry lookup.
+    // Return a Proxy for externalized modules so that properties added later
+    // via mockModule() are visible even though import destructuring already ran.
+    // This solves the ESM import hoisting problem: `import {X} from 'mod'` runs
+    // before `mockModule('mod', () => ({X: ...}))` but the Proxy delegates reads
+    // to the live mock registry entry.
     code.replacen(
         r#"throw Error('Dynamic require of "' + x + '" is not supported')"#,
-        r#"{ var __r = globalThis.__mockRegistry; if (__r) { if (__r[x]) return __r[x]; var __s = x.replace(/^\.\//, ''); if (__r[__s]) return __r[__s]; if (__r['./' + __s]) return __r['./' + __s]; } return {} }"#,
+        r#"{ var __r = globalThis.__mockRegistry || (globalThis.__mockRegistry = {}); var __k = x.replace(/^\.\//, ''); if (!__r[__k] && !__r[x]) __r[x] = {}; var __t = __r[x] || __r[__k] || __r['./' + __k] || {}; return typeof Proxy !== 'undefined' ? new Proxy(__t, { get: function(t,p) { var __rr = globalThis.__mockRegistry; var __m = __rr[x] || __rr[__k] || __rr['./' + __k]; return __m ? __m[p] : t[p]; } }) : __t }"#,
         1,
     )
 }
@@ -693,7 +713,7 @@ pub fn generate_entry(
         entry.push_str(
             r#"try {
   globalThis.__React = require('react');
-  globalThis.__ReactTestRenderer = require('react-test-renderer');
+  globalThis.IS_REACT_ACT_ENVIRONMENT = true;
 } catch(e) {}
 "#,
         );

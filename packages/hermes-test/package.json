@@ -35,8 +35,8 @@
   },
   "dependencies": {
     "@react-native/js-polyfills": "^0.85.3",
-    "react": "18",
-    "react-test-renderer": "18"
+    "react": ">=18",
+    "react-reconciler": ">=0.29.0"
   },
   "optionalDependencies": {
     "@marcuzgabriel/hermes-test-darwin-arm64": "0.1.0",

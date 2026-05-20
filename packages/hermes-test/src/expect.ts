@@ -238,6 +238,12 @@ function createAssertion(actual: any, negated: boolean): any {
           : `Expected spy to never have been called, but it was called ${(actual as Spy).callCount} times`
       );
     },
+
+    // Jest-compatible aliases
+    toHaveBeenCalled() { return this.wasCalled(); },
+    toHaveBeenCalledTimes(n: number) { return this.wasCalledTimes(n); },
+    toHaveBeenCalledWith(...args: any[]) { return this.wasCalledWith(...args); },
+    toHaveBeenLastCalledWith(...args: any[]) { return this.wasLastCalledWith(...args); },
   };
 
   if (!negated) {

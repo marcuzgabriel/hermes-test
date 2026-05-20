@@ -1,7 +1,8 @@
 // renderHook, act, waitFor — React hook testing primitives
-// Uses react-test-renderer to run hooks in a lightweight React tree
+// Uses react-reconciler to run hooks in a minimal React tree.
+// No dependency on react-test-renderer (deprecated in React 19).
 //
-// React and ReactTestRenderer are NOT bundled with the harness — they come from
+// React and ReactReconciler are NOT bundled with the harness — they come from
 // the user's project via esbuild. The harness expects them on globalThis.
 
 function getReact(): typeof import('react') {
@@ -10,13 +11,82 @@ function getReact(): typeof import('react') {
   return R;
 }
 
-function getTestRenderer(): typeof import('react-test-renderer') {
-  const TR = (globalThis as any).__ReactTestRenderer;
-  if (!TR) throw new Error('react-test-renderer not available. Install it: bun add -d react-test-renderer');
-  return TR;
+import Reconciler from 'react-reconciler';
+import { DefaultEventPriority, NoEventPriority } from 'react-reconciler/constants';
+
+// Based on mdjastrzebski/test-renderer — the universal-test-renderer for React 19
+// https://github.com/mdjastrzebski/test-renderer
+let currentUpdatePriority: number = NoEventPriority;
+
+const hostConfig = {
+  supportsMutation: true,
+  supportsPersistence: false,
+  supportsHydration: false,
+  supportsMicrotasks: true,
+  isPrimaryRenderer: true,
+  warnsIfNotActing: true,
+  createInstance() { return { children: [] }; },
+  createTextInstance() { return {}; },
+  appendInitialChild(p: any, c: any) { p.children.push(c); },
+  appendChild(p: any, c: any) { p.children.push(c); },
+  appendChildToContainer(p: any, c: any) { p.children.push(c); },
+  removeChild(p: any, c: any) { const i = p.children.indexOf(c); if (i !== -1) p.children.splice(i, 1); },
+  removeChildFromContainer(p: any, c: any) { const i = p.children.indexOf(c); if (i !== -1) p.children.splice(i, 1); },
+  insertBefore(p: any, c: any, b: any) { const i = p.children.indexOf(b); p.children.splice(i, 0, c); },
+  insertInContainerBefore(p: any, c: any, b: any) { const i = p.children.indexOf(b); p.children.splice(i, 0, c); },
+  commitUpdate() {},
+  commitTextUpdate() {},
+  commitMount() {},
+  prepareForCommit() { return null; },
+  resetAfterCommit() {},
+  resetTextContent() {},
+  finalizeInitialChildren() { return false; },
+  shouldSetTextContent() { return false; },
+  getRootHostContext() { return null; },
+  getChildHostContext(ctx: any) { return ctx; },
+  getPublicInstance(inst: any) { return inst; },
+  prepareUpdate() { return {}; },
+  clearContainer(c: any) { c.children = []; },
+  scheduleTimeout: (globalThis as any).setTimeout || ((fn: any) => fn()),
+  cancelTimeout: (globalThis as any).clearTimeout || (() => {}),
+  noTimeout: -1,
+  scheduleMicrotask: typeof queueMicrotask === 'function' ? queueMicrotask : (fn: any) => Promise.resolve().then(fn),
+  getCurrentEventPriority() { return DefaultEventPriority; },
+  setCurrentUpdatePriority(priority: number) { currentUpdatePriority = priority; },
+  getCurrentUpdatePriority() { return currentUpdatePriority; },
+  resolveUpdatePriority() { return currentUpdatePriority || DefaultEventPriority; },
+  shouldAttemptEagerTransition() { return false; },
+  trackSchedulerEvent() {},
+  resolveEventType() { return ''; },
+  resolveEventTimeStamp() { return -1.1; },
+  requestPostPaintCallback() {},
+  maySuspendCommit() { return false; },
+  preloadInstance() { return true; },
+  startSuspendingCommit() {},
+  suspendInstance() {},
+  waitForCommitToBeReady() { return null; },
+  NotPendingTransition: null,
+  resetFormInstance() {},
+  hideInstance() {},
+  unhideInstance() {},
+  hideTextInstance() {},
+  unhideTextInstance() {},
+  getInstanceFromNode() { return null; },
+  prepareScopeUpdate() {},
+  getInstanceFromScope() { return null; },
+  detachDeletedInstance() {},
+  beforeActiveInstanceBlur() {},
+  afterActiveInstanceBlur() {},
+  preparePortalMount() {},
+};
+
+function createReconciler() {
+  const create = typeof Reconciler === 'function' ? Reconciler : (Reconciler as any).default;
+  return create(hostConfig);
 }
 
 type HookResult<T> = {
+  readonly result: { readonly current: T };
   readonly current: T;
   readonly history: ReadonlyArray<T>;
   readonly renderCount: number;
@@ -26,17 +96,23 @@ type HookResult<T> = {
 
 const drain = (globalThis as any).__drainMicrotasks || (() => {});
 
-// Flush all pending async work until the queue is stable.
-// Each drain() resolves all current microtasks, but resolved promises may
-// trigger new work (setState → effect → fetch → more promises). We keep
-// draining until no new work is produced.
 function flush() {
   drain();
 }
 
+// Enable React.act() support
+(globalThis as any).IS_REACT_ACT_ENVIRONMENT = true;
+
 export function act(fn: () => void | Promise<void>): void {
-  const TR = getTestRenderer();
-  TR.act(() => {
+  const React = getReact();
+  const reactAct = (React as any).act || (React as any).unstable_act;
+  if (!reactAct) {
+    fn();
+    flush();
+    return;
+  }
+
+  reactAct(() => {
     const result = fn();
     if (result && typeof (result as any).then === 'function') {
       let settled = false;
@@ -45,8 +121,6 @@ export function act(fn: () => void | Promise<void>): void {
         () => { settled = true; },
         (e: any) => { settled = true; error = e; }
       );
-      // Drain until the promise settles (each drain resolves all current microtasks,
-      // but resolved work may queue more — keep going until settled)
       for (let i = 0; i < 50 && !settled; i++) {
         drain();
       }
@@ -62,10 +136,23 @@ export function renderHook<T>(
 ): HookResult<T> {
   const history: T[] = [];
   let currentValue: T;
-  let renderer: TestRenderer.ReactTestRenderer;
 
   const React = getReact();
-  const TR = getTestRenderer();
+  const reconciler = createReconciler();
+
+  const container = { children: [] };
+  const root = reconciler.createContainer(
+    container,
+    0, // LegacyRoot — effects fire synchronously in act()
+    null,  // hydrationCallbacks
+    false, // isStrictMode
+    false, // concurrentUpdatesByDefaultOverride
+    '',    // identifierPrefix
+    (err: any) => { throw err; }, // onUncaughtError
+    (err: any) => { throw err; }, // onCaughtError
+    null,  // onRecoverableError
+    () => {}, // onDefaultTransitionIndicator
+  );
 
   function TestComponent({ hookProps }: { hookProps: any }) {
     const value = hookFn(hookProps);
@@ -83,10 +170,15 @@ export function renderHook<T>(
   }
 
   act(() => {
-    renderer = TR.create(createTree(options?.initialProps));
+    reconciler.updateContainer(createTree(options?.initialProps), root, null, null);
   });
 
   return {
+    result: {
+      get current() {
+        return currentValue!;
+      },
+    },
     get current() {
       return currentValue!;
     },
@@ -98,12 +190,12 @@ export function renderHook<T>(
     },
     rerender(props?: any) {
       act(() => {
-        renderer!.update(createTree(props));
+        reconciler.updateContainer(createTree(props), root, null, null);
       });
     },
     unmount() {
       act(() => {
-        renderer!.unmount();
+        reconciler.updateContainer(null, root, null, null);
       });
     },
   };
@@ -115,10 +207,9 @@ export function waitFor<T>(
 ): T {
   const timeout = options?.timeout ?? 1000;
   const start = Date.now();
-  const TR = getTestRenderer();
 
   for (let attempt = 0; attempt < 100; attempt++) {
-    TR.act(() => { drain(); });
+    act(() => { drain(); });
     drain();
 
     const result = predicate();

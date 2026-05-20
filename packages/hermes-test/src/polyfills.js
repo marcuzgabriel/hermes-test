@@ -9,6 +9,24 @@ if (typeof globalThis.process === 'undefined') {
   globalThis.process.env = { NODE_ENV: 'test' };
 }
 
+// MessageChannel polyfill — React 19's scheduler uses it for async work
+if (typeof globalThis.MessageChannel === 'undefined') {
+  globalThis.MessageChannel = function() {
+    var cb = null;
+    this.port1 = { onmessage: null };
+    this.port2 = {
+      postMessage: function() {
+        if (cb) { var fn = cb; cb = null; fn({ data: undefined }); }
+      }
+    };
+    var self = this;
+    Object.defineProperty(this.port1, 'onmessage', {
+      set: function(fn) { cb = fn; },
+      get: function() { return cb; }
+    });
+  };
+}
+
 // Timer polyfills — React scheduler and react-test-renderer need these
 (function() {
   var queue = [];
