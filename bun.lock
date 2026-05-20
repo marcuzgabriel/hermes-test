@@ -38,16 +38,19 @@
       },
       "dependencies": {
         "@react-native/js-polyfills": "^0.85.3",
-        "react": ">=18",
-        "react-reconciler": ">=0.29.0",
       },
       "devDependencies": {
         "esbuild": "^0.25.0",
+        "react": "^19.2.0",
+        "react-reconciler": "^0.33.0",
         "typescript": "^5.4.0",
       },
       "optionalDependencies": {
         "@marcuzgabriel/hermes-test-darwin-arm64": "0.1.0",
         "@marcuzgabriel/hermes-test-linux-x64": "0.1.0",
+      },
+      "peerDependencies": {
+        "react": ">=18",
       },
     },
   },
