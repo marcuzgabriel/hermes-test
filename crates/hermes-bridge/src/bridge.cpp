@@ -105,12 +105,6 @@ static void installConsole(jsi::Runtime& runtime) {
       }));
 }
 
-// Defined in vm_eval.cpp — direct VM execution for large bundles
-extern "C" int hermes_vm_run(
-    void* vm_runtime_ptr,
-    const char* source, size_t source_len,
-    const char* source_url, char** error_out);
-
 extern "C" {
 
 HermesRuntime* hermes_create_runtime(void) {
