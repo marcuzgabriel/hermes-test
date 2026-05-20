@@ -1,19 +1,18 @@
 {
   "name": "@marcuzgabriel/hermes-test",
+  "version": "0.1.0",
   "publishConfig": {
     "registry": "https://npm.pkg.github.com"
   },
-  "version": "0.1.1",
   "description": "75x faster than Jest. Test runner for React Native and Expo that runs in Hermes.",
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
   "bin": {
-    "hermes-test": "bin/hermes-test.js"
+    "hermes-test": "bin/hermes-test"
   },
   "scripts": {
     "build": "tsc",
-    "bundle": "node bundle.mjs",
-    "postinstall": "node scripts/postinstall.js"
+    "bundle": "node bundle.mjs"
   },
   "repository": {
     "type": "git",
@@ -29,12 +28,6 @@
     "redux",
     "rtk-query"
   ],
-  "files": [
-    "bin/",
-    "dist/",
-    "src/",
-    "scripts/"
-  ],
   "license": "MIT",
   "devDependencies": {
     "typescript": "^5.4.0",
@@ -46,7 +39,7 @@
     "react-test-renderer": "18"
   },
   "optionalDependencies": {
-    "@marcuzgabriel/hermes-test-darwin-arm64": "0.1.1",
-    "@marcuzgabriel/hermes-test-linux-x64": "0.1.1"
+    "@marcuzgabriel/hermes-test-darwin-arm64": "0.1.0",
+    "@marcuzgabriel/hermes-test-linux-x64": "0.1.0"
   }
 }

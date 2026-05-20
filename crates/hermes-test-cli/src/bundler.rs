@@ -156,11 +156,41 @@ fn bundle_esbuild(
         .arg("--target=es2020")
         .arg("--supported:async-await=false")
         .arg("--define:process.env.NODE_ENV=\"test\"")
-        .arg("--define:global=globalThis");
+        .arg("--define:global=globalThis")
+        .arg("--loader:.js=jsx");
+
+    // Monorepo support: walk up from the project root to find all
+    // node_modules directories so esbuild can resolve hoisted dependencies
+    {
+        let mut node_paths = Vec::new();
+        let abs_root = project_root.canonicalize().unwrap_or_else(|_| project_root.to_path_buf());
+        let mut dir = abs_root.clone();
+        loop {
+            let nm = dir.join("node_modules");
+            if nm.is_dir() {
+                node_paths.push(nm.to_string_lossy().to_string());
+            }
+            if !dir.pop() { break; }
+        }
+        if !node_paths.is_empty() {
+            let sep = if cfg!(windows) { ";" } else { ":" };
+            cmd.env("NODE_PATH", node_paths.join(sep));
+        }
+    }
 
     // Apply path aliases from tsconfig.json
     for (alias, target) in &aliases {
         cmd.arg(format!("--alias:{alias}={target}"));
+    }
+
+    // Externalize React Native core (uses Flow syntax that esbuild can't parse)
+    let default_externals = [
+        "react-native",
+        "react-native/*",
+        "@react-native/*",
+    ];
+    for ext in &default_externals {
+        cmd.arg(format!("--external:{ext}"));
     }
 
     // Externalize mocked modules so they resolve through __require → __mockRegistry
@@ -868,9 +898,6 @@ pub fn bundle_with_depgraph(
     if !external_modules.is_empty() {
         code = inject_mock_require_shim(&code);
     }
-
-    // SWC transpile for bundles importing immer/RTK
-    code = transpile_with_swc(&code, entry_file)?;
 
     // Parse the metafile to build a dependency graph
     let depgraph = parse_depgraph(&metafile_path, project_root, test_files);

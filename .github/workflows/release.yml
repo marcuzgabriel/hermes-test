@@ -108,7 +108,7 @@ jobs:
         with:
           token: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Bump version in package.json
+      - name: Bump version in all packages
         run: |
           VERSION=${{ inputs.version }}
           for dir in packages/hermes-test packages/hermes-test-darwin-arm64 packages/hermes-test-linux-x64; do
@@ -158,11 +158,8 @@ jobs:
 
       - name: Publish platform packages
         run: |
-          VERSION=${{ inputs.version }}
-
           # darwin-arm64
           cd packages/hermes-test-darwin-arm64
-          node -e "const p=require('./package.json'); p.version='${VERSION}'; require('fs').writeFileSync('package.json', JSON.stringify(p,null,2)+'\n')"
           mkdir -p bin
           cp ../../hermes-test-darwin-arm64/hermes-test-darwin-arm64 bin/hermes-test
           chmod +x bin/hermes-test
@@ -171,7 +168,6 @@ jobs:
 
           # linux-x64
           cd packages/hermes-test-linux-x64
-          node -e "const p=require('./package.json'); p.version='${VERSION}'; require('fs').writeFileSync('package.json', JSON.stringify(p,null,2)+'\n')"
           mkdir -p bin
           cp ../../hermes-test-linux-x64/hermes-test-linux-x64 bin/hermes-test
           chmod +x bin/hermes-test

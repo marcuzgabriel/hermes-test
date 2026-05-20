@@ -234,6 +234,7 @@ version = "0.1.0"
 dependencies = [
  "cc",
  "clap",
+ "libc",
  "notify",
  "notify-debouncer-mini",
  "regex",
