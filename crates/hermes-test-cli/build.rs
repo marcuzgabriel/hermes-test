@@ -53,6 +53,18 @@ fn main() {
         .flag("-frtti")
         .compile("hermes_vm_eval");
 
+    // Compile hermes_compile.cpp — in-process bytecode compilation (replaces hermesc subprocess)
+    let mut compile_build = cc::Build::new();
+    compile_build.cpp(true).std("c++17").file(bridge_dir.join("src/hermes_compile.cpp"));
+    for inc in &common_includes { compile_build.include(inc); }
+    // Also need hermes/lib for internal headers
+    compile_build.include(hermes_dir.join("lib"));
+    compile_build
+        .flag("-Wno-non-virtual-dtor")
+        .flag("-fexceptions")
+        .flag("-frtti")
+        .compile("hermes_compile");
+
     // Link Hermes static libraries (order matters for static linking)
     let lib_dirs = [
         hermes_build.join("API/hermes"),

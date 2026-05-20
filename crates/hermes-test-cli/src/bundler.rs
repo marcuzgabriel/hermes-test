@@ -258,57 +258,18 @@ fn bundle_esbuild(
 
     Ok(code)
 }
-pub fn compile_to_bytecode(code: &str, context_path: &Path) -> Option<Vec<u8>> {
-    // Skip hermesc for bundles without actual class syntax
-    // Check for "= class " or "= class{" which is how esbuild emits class expressions
+/// Compile JS to Hermes bytecode in-process via linked Hermes compiler.
+/// No subprocess, no temp files. Returns None if bundle has no classes.
+pub fn compile_to_bytecode(code: &str, _context_path: &Path) -> Option<Vec<u8>> {
+    // Only needed for bundles with class syntax
     if !code.contains("= class ") && !code.contains("= class{") {
         return None;
     }
 
-    let hermesc = find_hermesc()?;
-
-    // Use /tmp for temp files (often tmpfs/ramdisk — faster than project dir)
-    let dir = std::env::temp_dir();
-    let src_path = dir.join("hermes-test-src.js");
-    let hbc_path = dir.join("hermes-test-src.hbc");
-    std::fs::write(&src_path, code).ok()?;
-
-    let output = Command::new(&hermesc)
-        .arg("-Xes6-class")
-        .arg("-emit-binary")
-        .arg("-out")
-        .arg(&hbc_path)
-        .arg(&src_path)
-        .stderr(Stdio::piped())
-        .output()
-        .ok()?;
-
-    let _ = std::fs::remove_file(&src_path);
-
-    if !output.status.success() {
-        let _ = std::fs::remove_file(&hbc_path);
-        return None;
+    match crate::hermes::compile_bytecode(code, "bundle.js") {
+        Ok(bytecode) => Some(bytecode),
+        Err(_) => None,
     }
-
-    let bytecode = std::fs::read(&hbc_path).ok()?;
-    let _ = std::fs::remove_file(&hbc_path);
-    Some(bytecode)
-}
-
-fn find_hermesc() -> Option<PathBuf> {
-    // Check the vendor build directory
-    let vendor_path = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-        .parent().unwrap()
-        .parent().unwrap()
-        .join("vendor/hermes/build/bin/hermesc");
-    if vendor_path.exists() {
-        return Some(vendor_path);
-    }
-    // Global
-    if Command::new("hermesc").arg("--version").output().is_ok() {
-        return Some(PathBuf::from("hermesc"));
-    }
-    None
 }
 
 

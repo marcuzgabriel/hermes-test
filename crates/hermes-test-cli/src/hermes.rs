@@ -13,6 +13,14 @@ extern "C" {
     ) -> *mut c_char;
     fn hermes_free_string(s: *mut c_char);
     fn hermes_destroy_runtime(rt: *mut std::ffi::c_void);
+    fn hermes_compile(
+        source: *const c_char,
+        source_len: usize,
+        source_url: *const c_char,
+        out_bytecode: *mut *mut u8,
+        out_size: *mut usize,
+        error_out: *mut *mut c_char,
+    ) -> i32;
 }
 
 pub struct Runtime {
@@ -65,6 +73,44 @@ impl Runtime {
         unsafe { hermes_free_string(result) };
         Ok(json)
     }
+}
+
+/// Compile JS source to Hermes bytecode in-process (no subprocess).
+pub fn compile_bytecode(source: &str, url: &str) -> Result<Vec<u8>, String> {
+    let c_url = CString::new(url).map_err(|e| format!("URL null byte: {e}"))?;
+    let mut out_bytecode: *mut u8 = ptr::null_mut();
+    let mut out_size: usize = 0;
+    let mut error_out: *mut c_char = ptr::null_mut();
+
+    let rc = unsafe {
+        hermes_compile(
+            source.as_ptr() as *const c_char,
+            source.len(),
+            c_url.as_ptr(),
+            &mut out_bytecode,
+            &mut out_size,
+            &mut error_out,
+        )
+    };
+
+    if rc != 0 {
+        let msg = if !error_out.is_null() {
+            let s = unsafe { CStr::from_ptr(error_out) }.to_string_lossy().into_owned();
+            unsafe { libc::free(error_out as *mut _) };
+            s
+        } else {
+            "Compilation failed".into()
+        };
+        return Err(msg);
+    }
+
+    if out_bytecode.is_null() || out_size == 0 {
+        return Err("Empty bytecode".into());
+    }
+
+    let bytecode = unsafe { std::slice::from_raw_parts(out_bytecode, out_size) }.to_vec();
+    unsafe { libc::free(out_bytecode as *mut _) };
+    Ok(bytecode)
 }
 
 impl Drop for Runtime {
