@@ -28,6 +28,29 @@ if (fs.existsSync(BIN_PATH) && fs.lstatSync(BIN_PATH).isSymbolicLink()) {
   } catch {}
 }
 
+function findNpmrcToken() {
+  // Walk up from cwd looking for .npmrc with a GitHub Packages token
+  let dir = process.cwd();
+  while (true) {
+    const npmrc = path.join(dir, '.npmrc');
+    if (fs.existsSync(npmrc)) {
+      const content = fs.readFileSync(npmrc, 'utf8');
+      const match = content.match(/\/\/npm\.pkg\.github\.com\/:_authToken=(.+)/);
+      if (match) {
+        // Resolve env var references like ${NPM_AUTH_TOKEN}
+        const val = match[1].trim();
+        const envMatch = val.match(/^\$\{(.+)\}$/);
+        if (envMatch) return process.env[envMatch[1]] || '';
+        return val;
+      }
+    }
+    const parent = path.dirname(dir);
+    if (parent === dir) break;
+    dir = parent;
+  }
+  return '';
+}
+
 const platform = os.platform();
 const arch = os.arch();
 
@@ -63,8 +86,8 @@ try {
     fs.unlinkSync(BIN_PATH);
   }
 
-  // For private repos, set GITHUB_TOKEN or GH_TOKEN env var
-  const token = process.env.GITHUB_TOKEN || process.env.GH_TOKEN || '';
+  // Resolve auth token: env vars first, then .npmrc
+  const token = process.env.GITHUB_TOKEN || process.env.GH_TOKEN || process.env.NPM_AUTH_TOKEN || findNpmrcToken();
   const authHeader = token ? `-H "Authorization: token ${token}" -H "Accept: application/octet-stream"` : '';
   execSync(`curl -fSL --retry 3 ${authHeader} -o "${BIN_PATH}" "${url}"`, { stdio: 'inherit' });
   fs.chmodSync(BIN_PATH, 0o755);
