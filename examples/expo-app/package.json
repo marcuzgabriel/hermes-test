@@ -27,6 +27,6 @@
     "@swc/core": "^1.15.33",
     "@types/react": "18",
     "esbuild": "^0.28.0",
-    "hermes-test": "workspace:*"
+    "@marcuzgabriel/hermes-test": "workspace:*"
   }
 }
