@@ -268,7 +268,10 @@ pub fn compile_to_bytecode(code: &str, _context_path: &Path) -> Option<Vec<u8>> 
 
     match crate::hermes::compile_bytecode(code, "bundle.js") {
         Ok(bytecode) => Some(bytecode),
-        Err(_) => None,
+        Err(e) => {
+            eprintln!("WARNING: hermesc bytecode compilation failed: {e}");
+            None
+        },
     }
 }
 
@@ -284,6 +287,175 @@ fn inject_mock_require_shim(code: &str) -> String {
         r#"{ var __r = globalThis.__mockRegistry; if (__r) { if (__r[x]) return __r[x]; var __s = x.replace(/^\.\//, ''); if (__r[__s]) return __r[__s]; if (__r['./' + __s]) return __r['./' + __s]; } return {} }"#,
         1,
     )
+}
+
+/// Fix ALL `class Foo extends Array { ... }` patterns in bundled code.
+///
+/// Hermes bug: `super()` in derived Array classes compiles to `Array.call(this, ...args)`
+/// which discards the return value. The instance is a plain JSObject, not a JSArray,
+/// breaking Array.isArray, concat, splice, spread, etc.
+///
+/// Fix: replace each class-extends-Array with a Reflect.construct-based function.
+/// This is the same pattern used by:
+///   - Babel: `_wrapNativeSuper` + `_construct` helpers
+///     https://github.com/babel/babel/blob/main/packages/babel-helpers/src/helpers/wrapNativeSuper.ts
+///   - SWC: `_wrap_native_super` + `_construct` helpers
+///     https://unpkg.com/@swc/helpers/esm/_wrap_native_super.js
+///   - WebReflection's original design:
+///     https://github.com/nicolo-ribaudo/babel/blob/main/packages/babel-helpers/src/helpers/wrapNativeSuper.ts
+///
+/// All three produce: `Reflect.construct(Array, args, DerivedClass)` which creates
+/// a real JSArray with the subclass prototype chain.
+fn fix_class_extends_array(code: &str) -> String {
+    // Match: `Name = class [_OptionalInternalName] extends Array {`
+    let re = regex::Regex::new(
+        r"(\w+)\s*=\s*class\s+(_?\w+)\s+extends\s+Array\s*\{"
+    ).unwrap();
+
+    let mut result = code.to_string();
+    // Process matches in reverse to preserve offsets
+    let matches: Vec<_> = re.captures_iter(code).collect();
+
+    for cap in matches.iter().rev() {
+        let full = cap.get(0).unwrap();
+        let var_name = &cap[1];
+        let internal_name = &cap[2];
+
+        // Find the matching closing `};` for the class
+        let mut depth = 1;
+        let mut class_end = full.end();
+        for (i, ch) in code[full.end()..].char_indices() {
+            match ch {
+                '{' => depth += 1,
+                '}' => {
+                    depth -= 1;
+                    if depth == 0 {
+                        class_end = full.end() + i + 1;
+                        break;
+                    }
+                }
+                _ => {}
+            }
+        }
+        // Include trailing semicolon
+        if class_end < code.len() && code.as_bytes()[class_end] == b';' {
+            class_end += 1;
+        }
+
+        // Extract class body to find instance methods (we need to fix super. references)
+        let class_body = &code[full.end()..class_end];
+
+        // Build replacement: function-based constructor + prototype methods
+        // Extract methods from class body, transform super. → Array.prototype.
+        let mut methods = Vec::new();
+        let mut pos = 0;
+        let body_bytes = class_body.as_bytes();
+
+        // Simple state machine to find top-level method definitions
+        while pos < class_body.len() {
+            // Skip to next method (look for identifier followed by `(`)
+            // Methods are at depth 0 in the class body (depth starts at 0 since we excluded the opening {)
+            let remaining = &class_body[pos..];
+
+            // Find `constructor(` or `methodName(` or `static get [Symbol.species](` etc.
+            if remaining.starts_with("constructor") {
+                // Skip constructor — we replace it with Reflect.construct
+                // Find its closing brace
+                if let Some(brace) = remaining.find('{') {
+                    let mut d = 1;
+                    let start = pos + brace + 1;
+                    for (i, ch) in class_body[start..].char_indices() {
+                        match ch {
+                            '{' => d += 1,
+                            '}' => { d -= 1; if d == 0 { pos = start + i + 1; break; } }
+                            _ => {}
+                        }
+                    }
+                } else {
+                    pos += 1;
+                }
+                continue;
+            }
+
+            // Check for method patterns at top level
+            let is_static = remaining.starts_with("static ");
+            let method_remaining = if is_static { &remaining[7..] } else { remaining };
+
+            // Look for `get [Symbol.species]()` pattern
+            if is_static && method_remaining.starts_with("get [Symbol.species]") {
+                // Skip — we'll add our own Symbol.species
+                if let Some(brace) = remaining.find('{') {
+                    let mut d = 1;
+                    let start = pos + brace + 1;
+                    for (i, ch) in class_body[start..].char_indices() {
+                        match ch {
+                            '{' => d += 1,
+                            '}' => { d -= 1; if d == 0 { pos = start + i + 1; break; } }
+                            _ => {}
+                        }
+                    }
+                } else {
+                    pos += 1;
+                }
+                continue;
+            }
+
+            // Match: `methodName(...args) {`
+            let method_name_re = regex::Regex::new(r"^(\w+)\s*\(([^)]*)\)\s*\{").unwrap();
+            if let Some(m) = method_name_re.captures(method_remaining) {
+                let name = m.get(1).unwrap().as_str();
+                let params = m.get(2).unwrap().as_str();
+                let brace_end = m.get(0).unwrap().end();
+                let abs_body_start = pos + (if is_static { 7 } else { 0 }) + brace_end;
+
+                // Find matching closing brace
+                let mut d = 1;
+                let mut body_end = abs_body_start;
+                for (i, ch) in class_body[abs_body_start..].char_indices() {
+                    match ch {
+                        '{' => d += 1,
+                        '}' => { d -= 1; if d == 0 { body_end = abs_body_start + i; break; } }
+                        _ => {}
+                    }
+                }
+
+                let body = &class_body[abs_body_start..body_end];
+                // Fix super.X → Array.prototype.X
+                let body = body.replace("super.", "Array.prototype.");
+                // Fix internal class name references: new _Tuple → new Tuple
+                let body = body.replace(&format!("new {internal_name}"), &format!("new {var_name}"));
+
+                let target = if is_static { var_name.to_string() } else { format!("{var_name}.prototype") };
+                methods.push(format!("{target}.{name} = function({params}) {{{body}}};"));
+
+                pos = body_end + 1;
+                continue;
+            }
+
+            pos += 1;
+        }
+
+        let methods_str = methods.join("\n");
+
+        let replacement = format!(
+            r#"{var_name} = (function() {{
+  function {var_name}() {{
+    return Reflect.construct(Array, Array.prototype.slice.call(arguments), new.target || {var_name});
+  }}
+  {var_name}.prototype = Object.create(Array.prototype, {{
+    constructor: {{ value: {var_name}, writable: true, configurable: true }}
+  }});
+  Object.setPrototypeOf({var_name}, Array);
+  Object.defineProperty({var_name}, Symbol.species, {{ get: function() {{ return {var_name}; }} }});
+  {methods_str}
+  return {var_name};
+}})();"#
+        );
+
+        result = format!("{}{}{}", &result[..full.start()], replacement, &result[class_end..]);
+    }
+
+    result
 }
 
 /// Patch esbuild's runtime helpers for Hermes compatibility + mockability.
@@ -312,129 +484,14 @@ fn patch_esbuild_for_hermes(code: &str) -> String {
         1,
     );
 
-    // Patch 3: Replace RTK's Tuple (class extends Array) with a plain Array subtype.
-    // Hermes's class-extends-Array is broken: Array.isArray returns false, concat
-    // corrupts elements, Symbol.species doesn't work. Replace the entire class with
-    // a function-based approach that creates real arrays with extra methods.
-    let tuple_re = regex::Regex::new(
-        r"(?s)Tuple = class _Tuple extends Array \{.*?\n\s*\};"
-    ).unwrap();
-    let code = tuple_re.replace(&code, r#"Tuple = function Tuple() {
-        var arr = Array.prototype.slice.call(arguments);
-        arr.concat = function() {
-          var r = arr.slice();
-          for (var i = 0; i < arguments.length; i++) {
-            var a = arguments[i];
-            if (Array.isArray(a)) { for (var j = 0; j < a.length; j++) r.push(a[j]); }
-            else r.push(a);
-          }
-          return new Tuple(r);
-        };
-        arr.prepend = function() {
-          var args = Array.prototype.slice.call(arguments);
-          if (args.length === 1 && Array.isArray(args[0])) {
-            return new Tuple(args[0].concat(arr));
-          }
-          return new Tuple(args.concat(arr));
-        };
-        if (arguments.length === 1 && Array.isArray(arguments[0])) {
-          arr = arguments[0].slice();
-          arr.concat = Tuple.prototype.concat;
-          arr.prepend = Tuple.prototype.prepend;
-        }
-        return arr;
-      };
-      Tuple.prototype.concat = function() {
-        var r = Array.prototype.slice.call(this);
-        for (var i = 0; i < arguments.length; i++) {
-          var a = arguments[i];
-          if (Array.isArray(a)) { for (var j = 0; j < a.length; j++) r.push(a[j]); }
-          else r.push(a);
-        }
-        r.concat = Tuple.prototype.concat;
-        r.prepend = Tuple.prototype.prepend;
-        return r;
-      };
-      Tuple.prototype.prepend = function() {
-        var args = Array.prototype.slice.call(arguments);
-        var self = Array.prototype.slice.call(this);
-        if (args.length === 1 && Array.isArray(args[0])) {
-          var r = args[0].concat(self);
-        } else {
-          var r = args.concat(self);
-        }
-        r.concat = Tuple.prototype.concat;
-        r.prepend = Tuple.prototype.prepend;
-        return r;
-      };"#).to_string();
+    // Patch 3: Fix ALL `class extends Array` patterns.
+    // Hermes bug: super() in derived class compiles to Array.call(this, ...args) and discards
+    // the return value. The instance is a plain JSObject (not JSArray), breaking Array.isArray,
+    // concat, splice, spread, etc. Fix: replace with Reflect.construct-based function that
+    // creates real JSArray instances with the correct prototype chain.
+    let code = fix_class_extends_array(&code);
 
-    // Patch 4: Generic class-extends desugar for non-Array subclasses (Error, etc.)
-    // Hermes class-extends is broken for all base classes, not just Array.
-    // Replace: `Foo = class [_Name] extends Bar { constructor(args) { super(x); body } };`
-    // With:    `Foo = function(args) { var _this = Bar.call(this, x) || this; body2 };
-    //           Foo.prototype = Object.create(Bar.prototype);`
-    // Skip Tuple (already handled above) and skip if no extends.
-    let extends_re = regex::Regex::new(
-        r"(\w+)\s*=\s*class\s+(?:_?\w+\s+)?extends\s+(\w+)\s*\{"
-    ).unwrap();
-    let mut code_str = code.to_string();
-    // Iterate from the end to preserve offsets
-    let matches: Vec<_> = extends_re.captures_iter(&code).collect();
-    for cap in matches.iter().rev() {
-        let full = cap.get(0).unwrap();
-        let var_name = &cap[1];
-        let parent = &cap[2];
-
-        // Skip Tuple (already replaced) and Array subclasses
-        if var_name == "Tuple" || parent == "Array" {
-            continue;
-        }
-
-        // Find constructor
-        let after_class = &code[full.end()..];
-        let ctor_re = regex::Regex::new(r"constructor\s*\(([^)]*)\)\s*\{").unwrap();
-        if let Some(ctor) = ctor_re.captures(after_class) {
-            let params = ctor.get(1).map_or("", |m| m.as_str());
-            let ctor_body_start = full.end() + ctor.get(0).unwrap().end();
-
-            // Find matching brace
-            let mut depth = 1;
-            let mut ctor_end = ctor_body_start;
-            for (i, ch) in code[ctor_body_start..].char_indices() {
-                match ch {
-                    '{' => depth += 1,
-                    '}' => { depth -= 1; if depth == 0 { ctor_end = ctor_body_start + i; break; } }
-                    _ => {}
-                }
-            }
-
-            let mut body = code[ctor_body_start..ctor_end].to_string();
-            // Replace super(...) with Parent.call(this, ...)
-            let super_re = regex::Regex::new(r"super\(([^)]*)\)").unwrap();
-            body = super_re.replace_all(&body, &format!("{parent}.call(this, $1)")).to_string();
-
-            // Find end of class
-            let mut class_depth = 1;
-            let mut class_end = full.end();
-            for (i, ch) in code[full.end()..].char_indices() {
-                match ch {
-                    '{' => class_depth += 1,
-                    '}' => { class_depth -= 1; if class_depth == 0 { class_end = full.end() + i + 1; break; } }
-                    _ => {}
-                }
-            }
-            // Include trailing semicolon
-            if class_end < code.len() && code.as_bytes()[class_end] == b';' {
-                class_end += 1;
-            }
-
-            let replacement = format!(
-                "{var_name} = function({params}) {{{body}}};\n      Object.setPrototypeOf({var_name}.prototype, {parent}.prototype);\n      Object.setPrototypeOf({var_name}, {parent});",
-            );
-
-            code_str = format!("{}{}{}", &code_str[..full.start()], replacement, &code_str[class_end..]);
-        }
-    }
+    let code_str = code;
 
     if code_str.len() == original_len {
         eprintln!("WARNING: esbuild patches did not match — Hermes for-let-of bug may cause failures");
@@ -613,21 +670,8 @@ pub fn generate_entry(
 ) -> String {
     let mut entry = String::new();
 
-    // Hermes class-extends-Array is fundamentally broken (isArray, concat, Symbol.species).
-    // Instead of polyfilling each method, replace RTK's Tuple class with a plain Array wrapper
-    // that just adds concat/prepend methods. Injected into the bundle IIFE.
-    entry.push_str(r#"(function(){
-  var o=Array.isArray;
-  Array.isArray=function(a){
-    if(o(a))return true;
-    if(a&&typeof a==='object'&&typeof a.length==='number'){
-      var p=Object.getPrototypeOf(a);
-      while(p&&p!==Object.prototype){if(p===Array.prototype)return true;p=Object.getPrototypeOf(p)}
-    }
-    return false;
-  };
-})();
-"#);
+    // Array.isArray polyfill is now in the harness polyfills.js (runs before bundle).
+    // class-extends-Array fix is in fix_class_extends_array() (post-process step).
 
     // Pre-register mock module placeholders BEFORE anything loads.
     // mockModule() in the test file will populate these objects with actual spies.
