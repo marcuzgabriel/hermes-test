@@ -308,15 +308,17 @@ fn find_swc(ctx: &Path) -> Option<PathBuf> {
 }
 
 pub fn compile_to_bytecode(code: &str, context_path: &Path) -> Option<Vec<u8>> {
-    // Only needed for large bundles with class syntax
-    if code.len() < 60_000 || !code.contains("class ") {
+    // Skip hermesc for bundles without classes — JSI handles them fine
+    if !code.contains("class ") {
         return None;
     }
 
     let hermesc = find_hermesc()?;
 
-    let src_path = context_path.parent().unwrap_or(context_path).join(".hermes-test-src.js");
-    let hbc_path = context_path.parent().unwrap_or(context_path).join(".hermes-test-src.hbc");
+    // Use /tmp for temp files (often tmpfs/ramdisk — faster than project dir)
+    let dir = std::env::temp_dir();
+    let src_path = dir.join("hermes-test-src.js");
+    let hbc_path = dir.join("hermes-test-src.hbc");
     std::fs::write(&src_path, code).ok()?;
 
     let output = Command::new(&hermesc)

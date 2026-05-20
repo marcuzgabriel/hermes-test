@@ -145,23 +145,7 @@ char* hermes_eval(
   try {
     auto& runtime = *rt->rt;
 
-    // Large bundles (>60KB): use VM Runtime::run() to avoid JSI class bug
-    if (source_len > 60000) {
-      char* vm_error = nullptr;
-      int rc = hermes_vm_run(
-          runtime.getVMRuntimeUnsafe(),
-          source, source_len,
-          source_url ? source_url : "eval",
-          &vm_error);
-      if (rc != 0) {
-        if (error_out && vm_error) *error_out = vm_error;
-        else free(vm_error);
-        return nullptr;
-      }
-      return strdup_alloc("null");
-    }
-
-    // Small scripts: normal JSI path
+    // All evals use JSI — hermesc precompiles bundles to bytecode for class support
     auto result = runtime.evaluateJavaScript(
         std::make_shared<jsi::StringBuffer>(
             std::string(source, source_len)),

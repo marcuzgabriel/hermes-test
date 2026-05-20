@@ -335,7 +335,13 @@ JSON.stringify({
 
         // Eval the bundle — suppress Hermes [hermes-compile] noise on stderr.
         // console.log is now collected in globalThis.__consoleLogs (not stderr).
-        if let Err(e) = rt.eval(&bundle, "bundle.js") {
+        // Try to precompile to Hermes bytecode via hermesc (handles ES6 classes)
+        let eval_result = if let Some(bytecode) = bundler::compile_to_bytecode(&bundle, &entry_path) {
+            rt.eval_bytes(&bytecode, "bundle.hbc")
+        } else {
+            rt.eval(&bundle, "bundle.js")
+        };
+        if let Err(e) = eval_result {
             eprintln!("Test execution failed: {e}");
             std::process::exit(1);
         }

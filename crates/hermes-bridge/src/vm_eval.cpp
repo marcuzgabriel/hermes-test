@@ -44,8 +44,8 @@ static char* vm_strdup(const std::string& s) {
 
 extern "C" {
 
-/// Run JS source via VM Runtime::run() — correctly handles ES6 classes
-/// in bundles >64KB. vm_runtime_ptr comes from HermesRuntime::getVMRuntimeUnsafe().
+/// Run JS source via VM Runtime::run() — correctly handles ES6 classes.
+/// vm_runtime_ptr comes from HermesRuntime::getVMRuntimeUnsafe().
 /// Returns 0 on success, 1 on error (error message in error_out).
 int hermes_vm_run(
     void* vm_runtime_ptr,
@@ -55,6 +55,15 @@ int hermes_vm_run(
     char** error_out) {
   if (error_out) *error_out = nullptr;
 
+  if (!vm_runtime_ptr) {
+    if (error_out) *error_out = vm_strdup("vm_runtime_ptr is null");
+    return 1;
+  }
+  if (!source || source_len == 0) {
+    if (error_out) *error_out = vm_strdup("empty source");
+    return 1;
+  }
+
   auto* runtime = static_cast<::hermes::vm::Runtime*>(vm_runtime_ptr);
 
   ::hermes::hbc::CompileFlags flags;
@@ -63,15 +72,28 @@ int hermes_vm_run(
   flags.enableGenerator = true;
   flags.includeLibHermes = false;
 
-  auto result = runtime->run(
-      llvh::StringRef(source, source_len),
-      source_url ? source_url : "eval",
-      flags);
+  // Force Hermes to copy the source buffer (prevents SIGBUS from non-owning ref)
+  flags.lazy = true;
+  flags.preemptiveFileCompilationThreshold = 0;
+  flags.preemptiveFunctionCompilationThreshold = 0;
 
-  if (result.getStatus() == ::hermes::vm::ExecutionStatus::EXCEPTION) {
-    std::string msg = "JS exception";
-    runtime->clearThrownValue();
-    if (error_out) *error_out = vm_strdup(msg);
+  try {
+    auto result = runtime->run(
+        llvh::StringRef(source, source_len),
+        source_url ? source_url : "eval",
+        flags);
+
+    if (result.getStatus() == ::hermes::vm::ExecutionStatus::EXCEPTION) {
+      std::string msg = "JS exception";
+      runtime->clearThrownValue();
+      if (error_out) *error_out = vm_strdup(msg);
+      return 1;
+    }
+  } catch (const std::exception &e) {
+    if (error_out) *error_out = vm_strdup(std::string("C++ exception: ") + e.what());
+    return 1;
+  } catch (...) {
+    if (error_out) *error_out = vm_strdup("Unknown C++ exception in vm_run");
     return 1;
   }
 
