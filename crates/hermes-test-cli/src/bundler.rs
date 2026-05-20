@@ -157,7 +157,12 @@ fn bundle_esbuild(
         .arg("--supported:async-await=false")
         .arg("--define:process.env.NODE_ENV=\"test\"")
         .arg("--define:global=globalThis")
-        .arg("--loader:.js=jsx");
+        .arg("--loader:.js=jsx")
+        .arg("--loader:.png=empty")
+        .arg("--loader:.jpg=empty")
+        .arg("--loader:.gif=empty")
+        .arg("--loader:.svg=empty")
+        .arg("--external:console");
 
     // Monorepo support: walk up from the project root to find all
     // node_modules directories so esbuild can resolve hoisted dependencies
@@ -713,7 +718,7 @@ fn walk_dir(dir: &Path, files: &mut Vec<PathBuf>) {
     }
 }
 
-/// Scan test files for mockModule('path', ...) calls and return the module paths.
+/// Scan test files for mockModule() and jest.mock() calls and return the module paths.
 /// These modules will be externalized in esbuild so that useMock can intercept them.
 pub fn find_mock_modules(test_files: &[PathBuf]) -> Vec<String> {
     let mut mocks = Vec::new();
