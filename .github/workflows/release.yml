@@ -152,6 +152,10 @@ jobs:
       - name: Publish to GitHub Packages
         run: |
           cd packages/hermes-test
+          mkdir -p bin
+          cp ../../hermes-test-darwin-arm64/hermes-test-darwin-arm64 bin/hermes-test-darwin-arm64
+          cp ../../hermes-test-linux-x64/hermes-test-linux-x64 bin/hermes-test-linux-x64
+          chmod +x bin/*
           npm publish
         env:
           NODE_AUTH_TOKEN: ${{ secrets.GITHUB_TOKEN }}

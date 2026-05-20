@@ -29,6 +29,12 @@
     "redux",
     "rtk-query"
   ],
+  "files": [
+    "bin/",
+    "dist/",
+    "src/",
+    "scripts/"
+  ],
   "license": "MIT",
   "devDependencies": {
     "typescript": "^5.4.0",
