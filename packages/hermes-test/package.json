@@ -8,12 +8,11 @@
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
   "bin": {
-    "hermes-test": "bin/hermes-test"
+    "hermes-test": "bin/hermes-test.js"
   },
   "scripts": {
     "build": "tsc",
-    "bundle": "node bundle.mjs",
-    "postinstall": "node scripts/postinstall.js"
+    "bundle": "node bundle.mjs"
   },
   "repository": {
     "type": "git",
@@ -32,8 +31,7 @@
   "files": [
     "bin/",
     "dist/",
-    "src/",
-    "scripts/"
+    "src/"
   ],
   "license": "MIT",
   "devDependencies": {
@@ -44,5 +42,9 @@
     "@react-native/js-polyfills": "^0.85.3",
     "react": "18",
     "react-test-renderer": "18"
+  },
+  "optionalDependencies": {
+    "@marcuzgabriel/hermes-test-darwin-arm64": "0.1.0",
+    "@marcuzgabriel/hermes-test-linux-x64": "0.1.0"
   }
 }
