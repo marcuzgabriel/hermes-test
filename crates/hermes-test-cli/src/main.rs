@@ -335,7 +335,7 @@ JSON.stringify({
 
         // Eval the bundle — suppress Hermes [hermes-compile] noise on stderr.
         // console.log is now collected in globalThis.__consoleLogs (not stderr).
-        // Try to precompile to Hermes bytecode via hermesc (handles ES6 classes)
+        // Precompile via hermesc if bundle has classes, then eval bytecode via JSI
         let eval_result = if let Some(bytecode) = bundler::compile_to_bytecode(&bundle, &entry_path) {
             rt.eval_bytes(&bytecode, "bundle.hbc")
         } else {

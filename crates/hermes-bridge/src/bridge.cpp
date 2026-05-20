@@ -139,7 +139,7 @@ char* hermes_eval(
   try {
     auto& runtime = *rt->rt;
 
-    // All evals use JSI — hermesc precompiles bundles to bytecode for class support
+    // All evals use JSI. For class bundles, Rust precompiles via hermesc.
     auto result = runtime.evaluateJavaScript(
         std::make_shared<jsi::StringBuffer>(
             std::string(source, source_len)),

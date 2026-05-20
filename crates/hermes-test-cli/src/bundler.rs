@@ -259,8 +259,9 @@ fn bundle_esbuild(
     Ok(code)
 }
 pub fn compile_to_bytecode(code: &str, context_path: &Path) -> Option<Vec<u8>> {
-    // Skip hermesc for bundles without classes — JSI handles them fine
-    if !code.contains("class ") {
+    // Skip hermesc for bundles without actual class syntax
+    // Check for "= class " or "= class{" which is how esbuild emits class expressions
+    if !code.contains("= class ") && !code.contains("= class{") {
         return None;
     }
 
