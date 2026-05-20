@@ -10,7 +10,7 @@ Copy the prompt below into your first Claude Code session in this repo. It tells
 
 ## Prompt for Claude Code
 
-> Read `.claude/skills/metro-test/SKILL.md` and all files in `.claude/references/`. Then read `.claude/references/roadmap.md` carefully — we are working on Week 1.
+> Read `.claude/skills/hermes-test/SKILL.md` and all files in `.claude/references/`. Then read `.claude/references/roadmap.md` carefully — we are working on Week 1.
 >
 > Your task this session is the Week 1 deliverable: a Rust CLI that embeds Hermes via a C++ shim, evaluates a hardcoded JS string, and prints a JSON result. The gate is a sub-1-second cold start on a trivial test.
 >
@@ -18,7 +18,7 @@ Copy the prompt below into your first Claude Code session in this repo. It tells
 >
 > 1. Set up the workspace:
 >    - `crates/hermes-bridge/` — C++ shim with `extern "C"` interface
->    - `crates/metro-test-cli/` — Rust binary
+>    - `crates/hermes-test-cli/` — Rust binary
 >    - `bench/fixtures/trivial.test.js` — placeholder, just a string for now
 >    - Top-level `Cargo.toml` workspace
 >
@@ -35,7 +35,7 @@ Copy the prompt below into your first Claude Code session in this repo. It tells
 >    - Wrap evaluations in try/catch, return `{error: "..."}` JSON on `jsi::JSError`
 >    - Use `JSON.stringify` via JSI to serialize the result value
 >
-> 4. Write the Rust CLI (`crates/metro-test-cli/`):
+> 4. Write the Rust CLI (`crates/hermes-test-cli/`):
 >    - Use `cxx` for the C++ bridge
 >    - `clap` for argument parsing — for week 1, just take a file path
 >    - `serde_json` for parsing the result
@@ -47,12 +47,12 @@ Copy the prompt below into your first Claude Code session in this repo. It tells
 >    - End with the array of results so `JSON.stringify` of the last expression captures them
 >
 > 6. Verify it runs end-to-end:
->    - `cargo run -p metro-test-cli -- bench/fixtures/trivial.test.js`
+>    - `cargo run -p hermes-test-cli -- bench/fixtures/trivial.test.js`
 >    - Should print something like `✓ adds two numbers`
 >
 > 7. Benchmark (the gate):
 >    - Install `hyperfine` if not present
->    - Run: `hyperfine --warmup 1 --runs 10 'cargo run --release -p metro-test-cli -- bench/fixtures/trivial.test.js'`
+>    - Run: `hyperfine --warmup 1 --runs 10 'cargo run --release -p hermes-test-cli -- bench/fixtures/trivial.test.js'`
 >    - Also run: `hyperfine --warmup 1 --runs 10 'npx jest bench/fixtures-jest/trivial.test.js'` (create the Jest equivalent first)
 >    - Record both in `BENCHMARKS.md` using the format from `.claude/references/benchmarks.md`
 >

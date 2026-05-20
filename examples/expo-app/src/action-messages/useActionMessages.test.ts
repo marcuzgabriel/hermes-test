@@ -1,7 +1,7 @@
-// Real-world test: useActionMessages — ported from Jest to metro-test
+// Real-world test: useActionMessages — ported from Jest to hermes-test
 //
 // Original: jest.mock('./useRedux', () => ({ useAppSelector: jest.fn() }))
-// metro-test: mockModule('./useRedux', () => ({ useAppSelector: spy(() => ...) }))
+// hermes-test: mockModule('./useRedux', () => ({ useAppSelector: spy(() => ...) }))
 //
 // 3 module-level mocks, 24 test cases, groups, beforeEach
 

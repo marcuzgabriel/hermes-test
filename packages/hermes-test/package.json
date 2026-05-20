@@ -1,5 +1,8 @@
 {
-  "name": "hermes-test",
+  "name": "@marcuzgabriel/hermes-test",
+  "publishConfig": {
+    "registry": "https://npm.pkg.github.com"
+  },
   "version": "0.1.0",
   "description": "75x faster than Jest. Test runner for React Native and Expo that runs in Hermes.",
   "main": "dist/index.js",

@@ -101,6 +101,7 @@ jobs:
     runs-on: ubuntu-latest
     permissions:
       contents: write
+      packages: write
 
     steps:
       - uses: actions/checkout@v4
@@ -121,13 +122,13 @@ jobs:
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
           git add packages/hermes-test/package.json
-          git commit -m "v${{ inputs.version }}"
+          git diff --cached --quiet || git commit -m "v${{ inputs.version }}"
           git push origin main
 
       - name: Create tag
         run: |
-          git tag v${{ inputs.version }}
-          git push origin v${{ inputs.version }}
+          git tag v${{ inputs.version }} || true
+          git push origin v${{ inputs.version }} || true
 
       - name: Download artifacts
         uses: actions/download-artifact@v4
@@ -141,3 +142,16 @@ jobs:
             hermes-test-darwin-arm64/hermes-test-darwin-arm64
             hermes-test-linux-x64/hermes-test-linux-x64
           generate_release_notes: true
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          registry-url: 'https://npm.pkg.github.com'
+
+      - name: Publish to GitHub Packages
+        run: |
+          cd packages/hermes-test
+          npm publish
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.GITHUB_TOKEN }}

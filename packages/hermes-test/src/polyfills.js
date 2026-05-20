@@ -1,4 +1,4 @@
-// Hermes runtime polyfills for metro-test
+// Hermes runtime polyfills for hermes-test
 // These run before any bundled code (injected via esbuild banner).
 // Hermes lacks these APIs since they normally come from the RN native runtime.
 

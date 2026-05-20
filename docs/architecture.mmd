@@ -1,5 +1,5 @@
 ---
-title: metro-test — Full Application Architecture
+title: hermes-test — Full Application Architecture
 ---
 flowchart TB
     subgraph USER["User's Project"]
@@ -8,10 +8,10 @@ flowchart TB
         NM["node_modules/\n(react, axios, date-fns, etc.)"]
     end
 
-    subgraph CLI["Rust CLI (metro-test-cli)"]
+    subgraph CLI["Rust CLI (hermes-test-cli)"]
         PARSE["Parse CLI args\n(clap)"]
         DISCOVER["Discover test files\n(walk *.test.ts)"]
-        ENTRY["Generate entry file\n(.metro-test-entry.js)"]
+        ENTRY["Generate entry file\n(.hermes-test-entry.js)"]
         CHOOSE{Bundler?}
     end
 

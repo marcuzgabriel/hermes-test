@@ -1,4 +1,4 @@
-// Basic test file using the metro-test harness (no Metro bundling)
+// Basic test file using the hermes-test harness (no Metro bundling)
 // Uses globalThis.__metroTest since we can't use ES imports without Metro
 var mt = globalThis.__metroTest;
 var test = mt.test;

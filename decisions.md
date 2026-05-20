@@ -47,7 +47,7 @@ Settled. Don't relitigate without explicit user approval. If a future task seems
 
 **Decided**: 2026-05
 **Rationale**: LLM in the runtime loop breaks determinism, adds 100-5000ms per test, costs money per CI run. The benefits (intent-based testing) can be captured at authoring time via codegen that produces regular `.test.ts` files.
-**Implication**: `metro-test-ai` is a separate npm package with separate binaries. It writes test files. It does not execute them. The runner has no network access during test execution.
+**Implication**: `hermes-test-ai` is a separate npm package with separate binaries. It writes test files. It does not execute them. The runner has no network access during test execution.
 
 ## D-008: State history as a first-class concept
 
@@ -89,32 +89,32 @@ Settled. Don't relitigate without explicit user approval. If a future task seems
 
 **Decided**: 2026-05
 **Rationale**: The harness JS doesn't change between test runs. Compiling to bytecode once and caching to disk saves ~50-150ms per cold run.
-**Implication**: `.metro-test-cache/` directory at repo root, configurable. Cache key is hash of harness version + Metro bundle hash.
+**Implication**: `.hermes-test-cache/` directory at repo root, configurable. Cache key is hash of harness version + Metro bundle hash.
 
 ## D-015: Distribute as a single npm package + Rust binary
 
 **Decided**: 2026-05
-**Rationale**: Users install one thing: `npm install -D metro-test`. The npm package downloads the appropriate prebuilt binary on `postinstall` (like esbuild does).
+**Rationale**: Users install one thing: `npm install -D hermes-test`. The npm package downloads the appropriate prebuilt binary on `postinstall` (like esbuild does).
 **Implication**: We ship prebuilt binaries for macOS arm64/x64, Linux x64/arm64, Windows x64 via GitHub Releases. CI builds them.
 
 ## D-016: Metro is a load-bearing dependency — accept the risk, design around it
 
 **Decided**: 2026-05
-**Rationale**: Metro is still 0.x and has a history of breaking changes at minor versions (e.g., 0.60, 0.66, ongoing experimental flag churn). But the alternatives are all worse: building our own bundler is project-killing scope; using esbuild/SWC alone loses RN-specific module resolution; running raw Hermes loses TS/JSX/assets. Metro is the only viable path, and the fidelity gain (exact production bundle pipeline) is the whole point of metro-test's pitch.
+**Rationale**: Metro is still 0.x and has a history of breaking changes at minor versions (e.g., 0.60, 0.66, ongoing experimental flag churn). But the alternatives are all worse: building our own bundler is project-killing scope; using esbuild/SWC alone loses RN-specific module resolution; running raw Hermes loses TS/JSX/assets. Metro is the only viable path, and the fidelity gain (exact production bundle pipeline) is the whole point of hermes-test's pitch.
 **Risk profile**:
 - Metro disappearing: ~0% (Facebook-critical, actively developed)
 - Metro programmatic API breaking at minor version: real, has happened before
 - Metro becoming much slower: low (active optimization direction)
 - RN moving off Metro: years out at minimum; consolidation (Static Hermes on top of Metro) is the trend
 **Mitigation strategy**:
-- Pin Metro to a narrow peer-dependency range per metro-test release (`^0.82.0 || ^0.83.0`, bump deliberately)
-- Support the latest two RN minor versions only; older RN users stay on older metro-test
+- Pin Metro to a narrow peer-dependency range per hermes-test release (`^0.82.0 || ^0.83.0`, bump deliberately)
+- Support the latest two RN minor versions only; older RN users stay on older hermes-test
 - Use only documented public APIs — `runBuild`, the daemon WebSocket protocol Expo CLI uses
 - Avoid anything prefixed `unstable_`, custom serializers, `enhanceMiddleware`
 - Test against the latest Metro release within each supported RN version on CI
 - Budget 1-2 engineering days per quarter for Metro API drift adaptation
 - If a Metro breakage takes more than a week to adapt, that's a signal to revisit the dependency strategy
-**Implication**: All Metro interactions go through one file (`crates/metro-test-cli/src/metro.rs`) so API changes localize to a single adaptation point. Treat Metro like a third-party service: small surface, easy to swap if forced.
+**Implication**: All Metro interactions go through one file (`crates/hermes-test-cli/src/metro.rs`) so API changes localize to a single adaptation point. Treat Metro like a third-party service: small surface, easy to swap if forced.
 
 ## D-017: Rust from day one, no Node prototype phase
 
@@ -133,4 +133,4 @@ Settled. Don't relitigate without explicit user approval. If a future task seems
 - Lean on Claude Code aggressively for boilerplate (C++ shim, `cxx` bindings, CMake config)
 - Time-box Week 1 to two weekends of focused work; if not running by then, surface for replan, not silently slip
 - Treat the `cxx` bridge as the hardest part of the entire project — once it works, the rest is incremental
-**Implication**: No `packages/metro-test-node-prototype/` directory. The `Cargo.toml` workspace is committed to from day one. The Node-host option is closed; reopening it requires explicit user approval.
+**Implication**: No `packages/hermes-test-node-prototype/` directory. The `Cargo.toml` workspace is committed to from day one. The Node-host option is closed; reopening it requires explicit user approval.

@@ -1,4 +1,4 @@
-# metro-test — Full Application Architecture
+# hermes-test — Full Application Architecture
 
 ```mermaid
 flowchart TB
@@ -8,10 +8,10 @@ flowchart TB
         NM["node_modules/\n(react, axios, date-fns, etc.)"]
     end
 
-    subgraph CLI["Rust CLI (metro-test-cli)"]
+    subgraph CLI["Rust CLI (hermes-test-cli)"]
         PARSE["Parse CLI args\n(clap)"]
         DISCOVER["Discover test files\n(walk *.test.ts)"]
-        ENTRY["Generate entry file\n(.metro-test-entry.js)"]
+        ENTRY["Generate entry file\n(.hermes-test-entry.js)"]
         CHOOSE{Bundler?}
     end
 
@@ -106,13 +106,13 @@ sequenceDiagram
     participant ESB as esbuild
     participant Hermes as Hermes Engine
 
-    User->>CLI: metro-test run --root .
+    User->>CLI: hermes-test run --root .
     CLI->>FS: Walk for *.test.ts
     FS-->>CLI: [auth.test.ts, utils.test.ts]
 
     Note over CLI: Generate entry file
 
-    CLI->>FS: Write .metro-test-entry.js
+    CLI->>FS: Write .hermes-test-entry.js
     CLI->>ESB: Bundle entry (7ms)
 
     Note over ESB: Resolves FULL import graph:<br/>user source + node_modules<br/>TS → JS transform<br/>Single IIFE output
