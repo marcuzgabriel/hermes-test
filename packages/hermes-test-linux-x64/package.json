@@ -4,9 +4,6 @@
   "description": "hermes-test binary for Linux x64",
   "os": ["linux"],
   "cpu": ["x64"],
-  "bin": {
-    "hermes-test": "bin/hermes-test"
-  },
   "files": ["bin/"],
   "publishConfig": {
     "registry": "https://npm.pkg.github.com"

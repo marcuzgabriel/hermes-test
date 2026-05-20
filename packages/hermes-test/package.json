@@ -12,7 +12,8 @@
   },
   "scripts": {
     "build": "tsc",
-    "bundle": "node bundle.mjs"
+    "bundle": "node bundle.mjs",
+    "postinstall": "node scripts/postinstall.js"
   },
   "repository": {
     "type": "git",
@@ -31,7 +32,8 @@
   "files": [
     "bin/",
     "dist/",
-    "src/"
+    "src/",
+    "scripts/"
   ],
   "license": "MIT",
   "devDependencies": {

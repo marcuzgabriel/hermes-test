@@ -4,9 +4,6 @@
   "description": "hermes-test binary for macOS arm64",
   "os": ["darwin"],
   "cpu": ["arm64"],
-  "bin": {
-    "hermes-test": "bin/hermes-test"
-  },
   "files": ["bin/"],
   "publishConfig": {
     "registry": "https://npm.pkg.github.com"
