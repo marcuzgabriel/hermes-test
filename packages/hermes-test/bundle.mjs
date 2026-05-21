@@ -16,10 +16,10 @@ await build({
   banner: { js: polyfills },
   external: ['react'],
   // react-reconciler is bundled INTO the harness. Its internal require('react')
-  // is aliased to our getReact() shim that reads from globalThis.__React,
+  // is aliased to our shim that reads from globalThis.__HT_React,
   // ensuring it uses the same React instance as the user's code.
   alias: {
-    'react': './src/react-shim.js',
+    'react': './src/shims/react.js',
   },
 });
 
