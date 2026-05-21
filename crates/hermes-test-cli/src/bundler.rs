@@ -67,6 +67,7 @@ pub struct BundleConfig {
     shims: Vec<(String, String)>, // (module_name, file_path)
     root: Option<PathBuf>,
     pub split: bool,
+    pub test_match: Option<String>, // e.g. ".hermes.test.ts" — only discover matching files
 }
 
 /// Extract a string value from JSON: "key": "value"
@@ -163,7 +164,7 @@ fn read_tsconfig_paths(base_dir: &Path, tsconfig_path: &Path, aliases: &mut Vec<
 /// Read hermes-test.config.json and resolve tsconfig paths.
 /// Config: { "root": "../..", "tsconfig": "../../tsconfig.json", "external": ["zod", ...] }
 pub fn read_config(project_root: &Path) -> BundleConfig {
-    let mut config = BundleConfig { aliases: Vec::new(), externals: Vec::new(), shims: Vec::new(), root: None, split: false };
+    let mut config = BundleConfig { aliases: Vec::new(), externals: Vec::new(), shims: Vec::new(), root: None, split: false, test_match: None };
 
     // Find hermes-test.config.json — check project root, then walk up
     let mut search_dir = project_root.canonicalize().unwrap_or_else(|_| project_root.to_path_buf());
@@ -212,6 +213,11 @@ pub fn read_config(project_root: &Path) -> BundleConfig {
     // "split" — enable vendor/group bundle splitting
     if content.contains("\"split\"") && content.contains("true") {
         config.split = true;
+    }
+
+    // "testMatch" — custom test file pattern (e.g. ".hermes.test.ts")
+    if let Some(val) = json_string_value(&content, "testMatch") {
+        config.test_match = Some(val);
     }
 
     config
@@ -738,15 +744,21 @@ main().catch(e => {{
     )
 }
 
-/// Find all test files matching *.test.ts, *.test.tsx, *.test.js, *.test.jsx
+/// Find all test files. Uses testMatch pattern from config if set,
+/// otherwise matches *.test.ts, *.test.tsx, *.test.js, *.test.jsx
 pub fn find_test_files(root: &Path) -> Vec<PathBuf> {
+    let cfg = read_config(root);
+    find_test_files_with_pattern(root, cfg.test_match.as_deref())
+}
+
+pub fn find_test_files_with_pattern(root: &Path, pattern: Option<&str>) -> Vec<PathBuf> {
     let mut files = Vec::new();
-    walk_dir(root, &mut files);
+    walk_dir(root, &mut files, pattern);
     files.sort();
     files
 }
 
-fn walk_dir(dir: &Path, files: &mut Vec<PathBuf>) {
+fn walk_dir(dir: &Path, files: &mut Vec<PathBuf>, pattern: Option<&str>) {
     let entries = match std::fs::read_dir(dir) {
         Ok(e) => e,
         Err(_) => return,
@@ -766,7 +778,12 @@ fn walk_dir(dir: &Path, files: &mut Vec<PathBuf>) {
             {
                 continue;
             }
-            walk_dir(&path, files);
+            walk_dir(&path, files, pattern);
+        } else if let Some(pat) = pattern {
+            // Custom pattern: match suffix (e.g. ".hermes.test.ts")
+            if name_str.ends_with(pat) {
+                files.push(path);
+            }
         } else if name_str.ends_with(".test.ts")
             || name_str.ends_with(".test.tsx")
             || name_str.ends_with(".test.js")
