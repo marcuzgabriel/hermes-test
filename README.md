@@ -45,8 +45,9 @@ All measurements on Apple Silicon. `hyperfine` for micro, `time` for macro. Jest
 
 | | Jest | hermes-test | Speedup |
 |---|------|-------------|---------|
-| 20 test files, 245 tests | **22.5s** | **0.3s** | **75x** |
-| CPU time | 86.3s | 0.28s | **308x** |
+| 9 test files, 94 tests | **22.5s** | **0.49s** | **46x** |
+| CPU time | 86.3s | 0.49s | **176x** |
+| Single bundle (shadow wrappers) | N/A | **0.49s** | all files, one bundle |
 
 hermes-test scales linearly (~0.13ms per hook test). Jest's overhead is fixed startup (~700ms per worker) so the gap widens with more files and narrows with more tests per file.
 
@@ -251,6 +252,27 @@ const { current } = ctx.renderHookWithReduxStore(() => useMyHook());
 2. Rust CLI applies **Hermes patches** (class-extends, for-let-of, configurable getters)
 3. **Hermes VM** evaluates the bundle via `Runtime::run()` — same engine as your app
 4. Results printed to terminal — single process, no workers, no IPC
+
+### Mock isolation (Shadow Wrappers)
+
+When multiple test files mock the same module differently, hermes-test uses **shadow wrappers** — a filesystem-based mock isolation technique that keeps everything in a single bundle.
+
+For each mocked aliased module, a shadow directory is generated at build time:
+- Non-mocked files: symlinked to the real source
+- Mocked files: replaced with a **lazy Proxy wrapper** that checks which test file is running
+
+```
+src/hooks/index.ts          ← real module (useAppSelector from Redux)
+.hermes-test-shadow/
+  hooks/
+    index.ts                ← Proxy wrapper: returns mock or real per test file
+    carousel/               ← symlink → real src/hooks/carousel/
+    appState/               ← symlink → real src/hooks/appState/
+```
+
+At runtime, the Proxy checks `__HT_file_mocks[currentTestFile]` on every property access. Different test files get different mocks from the same bundled module — no per-file bundling needed.
+
+This is inspired by [Vitest's mock hoisting](https://vitest.dev/guide/mocking) but avoids AST transforms and per-file workers. One bundle, one Hermes runtime, lazy filesystem-level interception.
 
 ## Stack
 
