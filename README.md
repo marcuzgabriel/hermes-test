@@ -316,23 +316,33 @@ hermes-test reads `tsconfig.json` paths automatically and passes them as esbuild
 }
 ```
 
-### Native module stubs
+### hermes-test.config.json
 
-Expo and React Native modules that call native code need to be stubbed since Hermes runs without a native runtime. Add a `hermes-test.config.json`:
+Project-level configuration. Place in your project root (or monorepo app directory):
 
 ```json
 {
-  "nativeModuleStubs": [
-    "expo-web-browser",
-    "expo-local-authentication",
-    "expo-application",
-    "expo-device",
-    "react-native-launch-arguments"
-  ]
+  "root": "../..",
+  "externals": ["@sentry/*", "expo-*"],
+  "split": true,
+  "shims": {
+    "react-native-keychain": "./test/shims/keychain.js"
+  }
 }
 ```
 
-Stubbed modules return empty objects. Your test code uses `mockModule` or `mockFetch` for the behavior you need.
+| Key | Description |
+|-----|-------------|
+| `root` | Monorepo workspace root (for resolving node_modules) |
+| `externals` | Modules to externalize (native modules, wildcards supported) |
+| `split` | Enable vendor/group bundle splitting for large test suites |
+| `shims` | Custom shim files for native modules (overrides built-in stubs) |
+
+**Bundle splitting** (`"split": true`) separates node_modules into a cached vendor bundle and local code into small group bundles. Recommended for projects with 50+ test files. The vendor bytecode is cached on disk — only recompiles when dependencies change.
+
+Why: Hermes execution time scales super-linearly with bundle size — a 1.7MB bundle takes ~1300ms to execute, but the same tests split across individual files sum to ~530ms. This is caused by GC heap pressure and parser overhead in the Hermes VM growing disproportionately with bundle size. Splitting keeps each chunk smaller, reducing this overhead. See [BENCHMARKS.md](./BENCHMARKS.md#scaling-full-suite-31-files-1413-tests) for measured data.
+
+Externalized modules return empty Proxy objects at runtime. Use `mockModule` or `mockFetch` in your tests for specific behavior.
 
 ## Why not Jest?
 

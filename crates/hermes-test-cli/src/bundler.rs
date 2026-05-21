@@ -66,6 +66,7 @@ pub struct BundleConfig {
     externals: Vec<String>,
     shims: Vec<(String, String)>, // (module_name, file_path)
     root: Option<PathBuf>,
+    pub split: bool,
 }
 
 /// Extract a string value from JSON: "key": "value"
@@ -162,7 +163,7 @@ fn read_tsconfig_paths(base_dir: &Path, tsconfig_path: &Path, aliases: &mut Vec<
 /// Read hermes-test.config.json and resolve tsconfig paths.
 /// Config: { "root": "../..", "tsconfig": "../../tsconfig.json", "external": ["zod", ...] }
 pub fn read_config(project_root: &Path) -> BundleConfig {
-    let mut config = BundleConfig { aliases: Vec::new(), externals: Vec::new(), shims: Vec::new(), root: None };
+    let mut config = BundleConfig { aliases: Vec::new(), externals: Vec::new(), shims: Vec::new(), root: None, split: false };
 
     // Find hermes-test.config.json — check project root, then walk up
     let mut search_dir = project_root.canonicalize().unwrap_or_else(|_| project_root.to_path_buf());
@@ -206,6 +207,11 @@ pub fn read_config(project_root: &Path) -> BundleConfig {
             let resolved = config_dir.join(&val).to_string_lossy().to_string();
             config.shims.push((key, resolved));
         }
+    }
+
+    // "split" — enable vendor/group bundle splitting
+    if content.contains("\"split\"") && content.contains("true") {
+        config.split = true;
     }
 
     config

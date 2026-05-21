@@ -307,8 +307,8 @@ JSON.stringify({
         let cfg = bundler::read_config(&root);
         let start = Instant::now();
 
-        // Use bundle splitting for large test suites or when --split is passed
-        let use_split = (force_split || test_files.len() >= 50)
+        // Use bundle splitting when enabled via --split flag or config
+        let use_split = (force_split || cfg.split)
             && bundler != Some(bundler::Bundler::Metro);
 
         if use_split {
