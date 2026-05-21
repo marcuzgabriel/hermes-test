@@ -2,9 +2,11 @@ use std::io::Read;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 
-// oxc — available for future AST transforms when needed
-// use oxc::{allocator::Allocator, codegen::Codegen, parser::Parser,
-//     semantic::SemanticBuilder, span::SourceType, transformer::{TransformOptions, Transformer}};
+// SWC class transform was evaluated but rejected:
+// - Requires 3 scoped thread-locals (GLOBALS, HANDLER, HELPERS)
+// - inject_helpers() emits require('@swc/helpers') calls incompatible with Hermes
+// - Full SWC codegen re-emits the entire bundle (changes whitespace, breaks other patches)
+// Our regex-based fix_all_class_extends() handles all known patterns at <1ms with zero deps.
 
 #[derive(Clone, Copy, PartialEq)]
 pub enum Bundler {
