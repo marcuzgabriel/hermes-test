@@ -36,13 +36,14 @@ type TestResult = {
 };
 
 type LifecycleHook = () => void | Promise<void>;
+type ScopedHook = { fn: LifecycleHook; group: string | undefined };
 
 // Global state for test registration
 const tests: TestEntry[] = [];
-const beforeEachHooks: LifecycleHook[] = [];
-const afterEachHooks: LifecycleHook[] = [];
-const beforeAllHooks: LifecycleHook[] = [];
-const afterAllHooks: LifecycleHook[] = [];
+const beforeEachHooks: ScopedHook[] = [];
+const afterEachHooks: ScopedHook[] = [];
+const beforeAllHooks: ScopedHook[] = [];
+const afterAllHooks: ScopedHook[] = [];
 let currentGroup: string | undefined;
 
 function test(name: string, fn: TestFn, options?: TestOptions): void {
@@ -71,19 +72,28 @@ function group(name: string, fn: () => void): void {
 }
 
 function beforeEach(fn: LifecycleHook): void {
-  beforeEachHooks.push(fn);
+  beforeEachHooks.push({ fn, group: currentGroup });
 }
 
 function afterEach(fn: LifecycleHook): void {
-  afterEachHooks.push(fn);
+  afterEachHooks.push({ fn, group: currentGroup });
 }
 
 function beforeAll(fn: LifecycleHook): void {
-  beforeAllHooks.push(fn);
+  beforeAllHooks.push({ fn, group: currentGroup });
 }
 
 function afterAll(fn: LifecycleHook): void {
-  afterAllHooks.push(fn);
+  afterAllHooks.push({ fn, group: currentGroup });
+}
+
+/// Check if a hook's group scope applies to a test's group.
+/// A hook applies if: (1) it's global (no group), or (2) the test's group
+/// starts with the hook's group (ancestor or same group).
+function hookApplies(hook: ScopedHook, testGroup: string | undefined): boolean {
+  if (hook.group === undefined) return true; // global hook
+  if (testGroup === undefined) return false; // global test, scoped hook
+  return testGroup === hook.group || testGroup.startsWith(hook.group + ' > ');
 }
 
 const drain = (globalThis as any).__HT_drain || (() => {});
@@ -125,10 +135,8 @@ function runTests(): TestResult[] {
   const results: TestResult[] = [];
   const hasOnly = tests.some((t) => t.options.only);
 
-  // Run beforeAll hooks
-  for (const hook of beforeAllHooks) {
-    resolveSync(hook());
-  }
+  // Run beforeAll hooks (scoped)
+  const beforeAllRan = new Set<ScopedHook>();
 
   for (const entry of tests) {
     if (entry.options.skip || (hasOnly && !entry.options.only)) {
@@ -136,19 +144,31 @@ function runTests(): TestResult[] {
       continue;
     }
 
+    // Run beforeAll hooks that apply to this test (once per scope)
+    for (const hook of beforeAllHooks) {
+      if (!beforeAllRan.has(hook) && hookApplies(hook, entry.group)) {
+        beforeAllRan.add(hook);
+        resolveSync(hook.fn());
+      }
+    }
+
     const start = Date.now();
     try {
-      // Run beforeEach hooks
+      // Run beforeEach hooks that apply to this test's group
       for (const hook of beforeEachHooks) {
-        resolveSync(hook());
+        if (hookApplies(hook, entry.group)) {
+          resolveSync(hook.fn());
+        }
       }
 
       const ctx: TestContext = { expect, spy, useMock, renderHook, act, waitFor };
       resolveSync(entry.fn(ctx));
 
-      // Run afterEach hooks
+      // Run afterEach hooks that apply to this test's group
       for (const hook of afterEachHooks) {
-        resolveSync(hook());
+        if (hookApplies(hook, entry.group)) {
+          resolveSync(hook.fn());
+        }
       }
 
       // Reset mocks between tests
@@ -163,9 +183,11 @@ function runTests(): TestResult[] {
     } catch (e: any) {
       // Still run afterEach even on failure
       for (const hook of afterEachHooks) {
-        try {
-          resolveSync(hook());
-        } catch {}
+        if (hookApplies(hook, entry.group)) {
+          try {
+            resolveSync(hook.fn());
+          } catch {}
+        }
       }
 
       // Reset mocks between tests
@@ -184,7 +206,7 @@ function runTests(): TestResult[] {
   // Run afterAll hooks
   for (const hook of afterAllHooks) {
     try {
-      resolveSync(hook());
+      resolveSync(hook.fn());
     } catch {}
   }
 

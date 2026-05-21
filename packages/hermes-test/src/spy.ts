@@ -121,6 +121,7 @@ export function spy<F extends (...args: any[]) => any = () => void>(
   (fn as any).mockClear = () => {
     calls.length = 0;
     returnValues.length = 0;
+    onceImpls.length = 0;
   };
 
   (fn as any).mockReset = () => {
