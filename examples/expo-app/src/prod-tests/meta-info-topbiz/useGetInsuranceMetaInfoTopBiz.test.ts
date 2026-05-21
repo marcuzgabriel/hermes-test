@@ -1,5 +1,5 @@
 // Production test port: useGetInsuranceMetaInfoTopBiz — 5 tests
-const { test, group, beforeEach, expect } = (globalThis as any).__metroTest;
+const { test, group, beforeEach, expect } = (globalThis as any).__HT;
 import { withStore } from '../shared/testStore';
 import { useGetInsuranceMetaInfoTopBiz } from './useGetInsuranceMetaInfoTopBiz';
 

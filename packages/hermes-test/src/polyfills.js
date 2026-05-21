@@ -27,7 +27,7 @@ if (typeof globalThis.MessageChannel === 'undefined') {
   };
 }
 
-// Timer polyfills — React scheduler and react-test-renderer need these
+// Timer polyfills — React scheduler needs these
 (function() {
   var queue = [];
   var timerIdCounter = 1;
@@ -38,10 +38,10 @@ if (typeof globalThis.MessageChannel === 'undefined') {
   }
 
   // Flush all async work: Hermes microtask queue (promises) + our polyfill queues (timers).
-  // The C++ bridge installs a native __drainMicrotasks that calls Hermes's drainMicrotasks().
+  // The C++ bridge installs a native __HT_drain that calls Hermes's drainMicrotasks().
   // We wrap it to also flush our setImmediate/setTimeout polyfill queues.
-  var nativeDrain = globalThis.__drainMicrotasks || function() {};
-  globalThis.__drainMicrotasks = function() {
+  var nativeDrain = globalThis.__HT_drain || function() {};
+  globalThis.__HT_drain = function() {
     // 1. Drain Hermes's internal promise/microtask queue
     nativeDrain();
     // 2. Flush our setImmediate queue

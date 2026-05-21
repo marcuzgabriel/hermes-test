@@ -1,4 +1,4 @@
-const { test } = (globalThis as any).__metroTest;
+const { test } = (globalThis as any).__HT;
 import * as h from './bench-helpers';
 
 test('add basics', ({ expect }: any) => { expect(h.add(2, 3)).toBe(5); expect(h.add(-1, 1)).toBe(0); });

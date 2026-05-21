@@ -6,7 +6,7 @@
 // 3 module-level mocks, 24 test cases, groups, beforeEach
 
 const { test, group, beforeEach, renderHook, spy, mockModule, expect } =
-  (globalThis as any).__metroTest;
+  (globalThis as any).__HT;
 
 // Spies that persist across tests (like const mockFn = jest.fn())
 const mockDispatchWithErrorHandler = spy(async () => {});

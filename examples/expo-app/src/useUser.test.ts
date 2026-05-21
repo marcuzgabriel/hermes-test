@@ -1,4 +1,4 @@
-const { test, renderHook, waitFor, spy } = (globalThis as any).__metroTest;
+const { test, renderHook, waitFor, spy } = (globalThis as any).__HT;
 import { useUser } from './useUser';
 
 test('useUser loads user data', ({ expect }: any) => {

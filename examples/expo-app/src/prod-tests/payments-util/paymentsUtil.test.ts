@@ -4,7 +4,7 @@
 // Zero mocks. Real business logic running in Hermes.
 // Danish locale, moment-timezone, invoice processing.
 
-const { test, group, expect } = (globalThis as any).__metroTest;
+const { test, group, expect } = (globalThis as any).__HT;
 import moment from 'moment-timezone';
 
 import {

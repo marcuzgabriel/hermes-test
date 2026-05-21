@@ -3,7 +3,7 @@
 //
 // Pure functions. Guidewire invoice processing — dates, fees, invoice types, period mapping.
 
-const { test, group, expect } = (globalThis as any).__metroTest;
+const { test, group, expect } = (globalThis as any).__HT;
 import moment from 'moment-timezone';
 import {
   validateIfDueDateHasPassedGWDate, extractPeriodFromGWInvoice, getGWInvoiceTypes,

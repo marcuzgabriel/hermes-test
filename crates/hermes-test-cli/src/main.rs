@@ -274,7 +274,7 @@ fn run_tests(files: &[PathBuf], root: &PathBuf, no_bundle: bool, bundler: Option
         // Append the runner
         combined.push_str(
             r#"
-var __results = globalThis.__metroTest.runTests();
+var __results = globalThis.__HT.runTests();
 JSON.stringify({
   tests: __results,
   passed: __results.filter(function(t) { return t.status === 'pass'; }).length,
@@ -334,7 +334,7 @@ JSON.stringify({
         let _ = std::fs::remove_file(&entry_path);
 
         // Eval the bundle — suppress Hermes [hermes-compile] noise on stderr.
-        // console.log is now collected in globalThis.__consoleLogs (not stderr).
+        // console.log is now collected in globalThis.__HT_logs (not stderr).
         // Precompile via hermesc if bundle has classes, then eval bytecode via JSI
         let eval_result = if let Some(bytecode) = bundler::compile_to_bytecode(&bundle, &entry_path) {
             rt.eval_bytes(&bytecode, "bundle.hbc")
@@ -351,7 +351,7 @@ JSON.stringify({
 
         // Read back the results from the global
         let elapsed = start.elapsed();
-        match rt.eval("globalThis.__metroTestResults", "results") {
+        match rt.eval("globalThis.__HT_results", "results") {
             Ok(json) => {
                 if !print_results_with_time(&json, elapsed.as_millis(), test_files.len()) {
                     std::process::exit(1);
@@ -581,7 +581,7 @@ fn run_cycle_with_depgraph(
 
     let elapsed = start.elapsed();
 
-    match rt.eval("globalThis.__metroTestResults", "results") {
+    match rt.eval("globalThis.__HT_results", "results") {
         Ok(json) => {
             print_results(&json);
             eprintln!("\x1b[2mRan in {}ms\x1b[0m", elapsed.as_millis());
@@ -597,7 +597,7 @@ fn run_cycle_with_depgraph(
 /// Print console.log/warn/error output that was collected during test execution.
 fn print_console_logs(rt: &hermes::Runtime) {
     let logs_js = r#"(function() {
-        var logs = globalThis.__consoleLogs;
+        var logs = globalThis.__HT_logs;
         if (!logs || !logs.length) return '[]';
         var out = [];
         for (var i = 0; i < logs.length; i++) {

@@ -1,4 +1,4 @@
-const { test, expect } = (globalThis as any).__metroTest;
+const { test, expect } = (globalThis as any).__HT;
 import { add, multiply, fibonacci, isPrime } from './math';
 
 test('add returns sum', ({ expect }: any) => {

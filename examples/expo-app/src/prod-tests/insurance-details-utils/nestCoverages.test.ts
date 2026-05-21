@@ -3,7 +3,7 @@
 //
 // Pure functions. Real insurance coverage grouping logic running in Hermes.
 
-const { test, group, expect } = (globalThis as any).__metroTest;
+const { test, group, expect } = (globalThis as any).__HT;
 
 import nestCoverages, {
   CoverageGrp, countDeductible, getDeductibleState, DeductibleStateType,

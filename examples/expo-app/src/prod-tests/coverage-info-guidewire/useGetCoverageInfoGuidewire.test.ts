@@ -1,5 +1,5 @@
 // Production test port: useGetCoverageInfoGuidewire — 6 tests
-const { test, group, renderHook, expect } = (globalThis as any).__metroTest;
+const { test, group, renderHook, expect } = (globalThis as any).__HT;
 import { useGetCoverageInfoGuidewire } from './useGetCoverageInfoGuidewire';
 
 const baseCoverage = { publicID: 'cov1', name: 'Varigt mén og tandskade' };

@@ -2,7 +2,7 @@
 // Mirrors: reducers/slices/api/login/__tests__/login.test.ts
 
 const { test, group, beforeEach, afterEach, http, HttpResponse, mockFetch, mockFetchUse, mockFetchReset, flushAsync, expect } =
-  (globalThis as any).__metroTest;
+  (globalThis as any).__HT;
 
 import appApi from './api';
 import type { LoginPayload } from './api';

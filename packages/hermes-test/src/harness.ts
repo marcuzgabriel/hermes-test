@@ -86,7 +86,7 @@ function afterAll(fn: LifecycleHook): void {
   afterAllHooks.push(fn);
 }
 
-const drain = (globalThis as any).__drainMicrotasks || (() => {});
+const drain = (globalThis as any).__HT_drain || (() => {});
 
 // Synchronously resolve a promise by flushing the microtask queue.
 // Usage: const result = flushAsync(store.dispatch(api.endpoints.login.initiate(payload)));
@@ -192,7 +192,7 @@ function runTests(): TestResult[] {
 }
 
 // Expose to the global scope for the harness entry
-(globalThis as any).__metroTest = {
+(globalThis as any).__HT = {
   test,
   expect,
   spy,

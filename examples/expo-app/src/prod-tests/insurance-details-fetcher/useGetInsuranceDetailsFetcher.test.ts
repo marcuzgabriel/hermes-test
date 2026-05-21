@@ -5,7 +5,7 @@
 // detailsFetchable guard, forceRefetch, Promise.allSettled.
 // Uses spy() for dispatch tracking, withStore for insurances state.
 
-const { test, group, beforeEach, act, spy, expect } = (globalThis as any).__metroTest;
+const { test, group, beforeEach, act, spy, expect } = (globalThis as any).__HT;
 
 import { withStore } from '../shared/testStore';
 import {

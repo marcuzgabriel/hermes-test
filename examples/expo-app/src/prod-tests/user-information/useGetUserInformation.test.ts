@@ -4,7 +4,7 @@
 // Hook reads user data from store, derives hasEmail/hasPhone/isBusinessLogin etc.
 // Tests keyValueStorage side effect, stakeholder views, business logic.
 
-const { test, group, beforeEach, spy, expect } = (globalThis as any).__metroTest;
+const { test, group, beforeEach, spy, expect } = (globalThis as any).__HT;
 import { withStore } from '../shared/testStore';
 import { useGetUserInformation, keyValueStorage } from './useGetUserInformation';
 

@@ -1,5 +1,5 @@
 // Production test port: useFormCoordinator — 8 tests
-const { test, group, beforeEach, act, expect } = (globalThis as any).__metroTest;
+const { test, group, beforeEach, act, expect } = (globalThis as any).__HT;
 import { withStore } from '../shared/testStore';
 import { useFormCoordinator } from './useFormCoordinator';
 

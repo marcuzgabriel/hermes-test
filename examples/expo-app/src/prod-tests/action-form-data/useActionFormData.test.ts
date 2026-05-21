@@ -4,7 +4,7 @@
 // Hook reads RTK cache from store. Tests seed store.api.queries with action data + config.
 // Complex: datepicker ISO conversion, list merging, radio mapping, checkbox zones.
 
-const { test, group, beforeEach, expect } = (globalThis as any).__metroTest;
+const { test, group, beforeEach, expect } = (globalThis as any).__HT;
 import { withStore } from '../shared/testStore';
 import { useActionFormData } from './useActionFormData';
 

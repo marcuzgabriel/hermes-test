@@ -1,4 +1,4 @@
-const { test, expect, mockFetch, http, HttpResponse, flushAsync } = (globalThis as any).__metroTest;
+const { test, expect, mockFetch, http, HttpResponse, flushAsync } = (globalThis as any).__HT;
 
 // Test the Reflect.construct Tuple replacement in isolation
 test('Reflect.construct Tuple basics', ({ expect }: any) => {

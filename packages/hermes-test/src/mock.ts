@@ -1,7 +1,7 @@
 // useMock — patches module exports for test mocking
 // Works by replacing the getter functions on ESM namespace objects
 //
-// mockModule — jest.mock() equivalent: registers factory in global __mockRegistry
+// mockModule — jest.mock() equivalent: registers factory in global __HT_mocks
 // so that externalized modules resolve through our mock layer at require() time.
 
 import { spy, type Spy } from './spy';
@@ -12,8 +12,8 @@ let savedDescriptors: SavedDescriptor[] = [];
 // --- mockModule: jest.mock() equivalent ---
 // Registers a mock factory for a module path. The bundler externalizes these
 // modules and the require shim reads from this registry.
-const mockRegistry: Record<string, Record<string, any>> = (globalThis as any).__mockRegistry || {};
-(globalThis as any).__mockRegistry = mockRegistry;
+const mockRegistry: Record<string, Record<string, any>> = (globalThis as any).__HT_mocks || {};
+(globalThis as any).__HT_mocks = mockRegistry;
 
 export function mockModule(
   modulePath: string,

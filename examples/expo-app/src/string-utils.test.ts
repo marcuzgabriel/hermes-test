@@ -1,4 +1,4 @@
-const { test, expect } = (globalThis as any).__metroTest;
+const { test, expect } = (globalThis as any).__HT;
 import { capitalize, slugify, truncate } from './string-utils';
 
 test('capitalize', ({ expect }: any) => {

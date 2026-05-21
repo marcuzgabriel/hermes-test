@@ -1,6 +1,6 @@
 // Production test port: useLogin — 12 tests
 const { test, group, beforeEach, renderHook, act, flushAsync, spy, expect } =
-  (globalThis as any).__metroTest;
+  (globalThis as any).__HT;
 
 import { useLogin, keychainStorage } from './useLogin';
 

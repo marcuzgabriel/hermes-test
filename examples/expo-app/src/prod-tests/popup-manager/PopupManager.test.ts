@@ -3,7 +3,7 @@
 //
 // State machine: popup priority queue, quarantine, condition evaluation, caching.
 
-const { test, group, beforeEach, expect } = (globalThis as any).__metroTest;
+const { test, group, beforeEach, expect } = (globalThis as any).__HT;
 import { PopupManager } from './PopupManager';
 
 beforeEach(() => { PopupManager.reset(); });

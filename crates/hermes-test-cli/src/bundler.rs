@@ -291,12 +291,12 @@ pub fn compile_to_bytecode(code: &str, _context_path: &Path) -> Option<Vec<u8>> 
 }
 
 
-/// Patch esbuild's __require to route externalized modules through __mockRegistry.
+/// Patch esbuild's __require to route externalized modules through __HT_mocks.
 /// Simple approach: replace the "throw" line inside __require with a registry lookup.
 fn inject_mock_require_shim(code: &str) -> String {
     // esbuild's __require contains this exact throw statement for unsupported externals:
     //   throw Error('Dynamic require of "' + x + '" is not supported');
-    // Replace it with a __mockRegistry lookup.
+    // Replace it with a __HT_mocks lookup.
     // Return a Proxy for externalized modules so that properties added later
     // via mockModule() are visible even though import destructuring already ran.
     // This solves the ESM import hoisting problem: `import {X} from 'mod'` runs
@@ -304,7 +304,7 @@ fn inject_mock_require_shim(code: &str) -> String {
     // to the live mock registry entry.
     code.replacen(
         r#"throw Error('Dynamic require of "' + x + '" is not supported')"#,
-        r#"{ var __r = globalThis.__mockRegistry || (globalThis.__mockRegistry = {}); var __k = x.replace(/^\.\//, ''); if (!__r[__k] && !__r[x]) __r[x] = {}; var __t = __r[x] || __r[__k] || __r['./' + __k] || {}; return typeof Proxy !== 'undefined' ? new Proxy(__t, { get: function(t,p) { var __rr = globalThis.__mockRegistry; var __m = __rr[x] || __rr[__k] || __rr['./' + __k]; return __m ? __m[p] : t[p]; } }) : __t }"#,
+        r#"{ var __r = globalThis.__HT_mocks || (globalThis.__HT_mocks = {}); var __k = x.replace(/^\.\//, ''); if (!__r[__k] && !__r[x]) __r[x] = {}; var __t = __r[x] || __r[__k] || __r['./' + __k] || {}; return typeof Proxy !== 'undefined' ? new Proxy(__t, { get: function(t,p) { var __rr = globalThis.__HT_mocks; var __m = __rr[x] || __rr[__k] || __rr['./' + __k]; return __m ? __m[p] : t[p]; } }) : __t }"#,
         1,
     )
 }
@@ -697,12 +697,12 @@ pub fn generate_entry(
     // mockModule() in the test file will populate these objects with actual spies.
     // The __require shim returns these same objects, so the hook sees the mocks.
     if !mock_modules.is_empty() {
-        entry.push_str("globalThis.__mockRegistry = globalThis.__mockRegistry || {};\n");
+        entry.push_str("globalThis.__HT_mocks = globalThis.__HT_mocks || {};\n");
         for path in mock_modules {
             // Pre-create the registry entry as an empty object.
             // mockModule() will copy spy properties onto it later.
             entry.push_str(&format!(
-                "globalThis.__mockRegistry['{}'] = globalThis.__mockRegistry['{}'] || {{}};\n",
+                "globalThis.__HT_mocks['{}'] = globalThis.__HT_mocks['{}'] || {{}};\n",
                 path, path
             ));
         }
@@ -712,7 +712,7 @@ pub fn generate_entry(
     if needs_react(test_files) {
         entry.push_str(
             r#"try {
-  globalThis.__React = require('react');
+  globalThis.__HT_React = require('react');
   globalThis.IS_REACT_ACT_ENVIRONMENT = true;
 } catch(e) {}
 "#,
@@ -740,8 +740,8 @@ pub fn generate_entry(
     // Run all registered tests and stash results on a global
     entry.push_str(
         r#"
-var __results = globalThis.__metroTest.runTests();
-globalThis.__metroTestResults = JSON.stringify({
+var __results = globalThis.__HT.runTests();
+globalThis.__HT_results = JSON.stringify({
   tests: __results,
   passed: __results.filter(function(t) { return t.status === 'pass'; }).length,
   failed: __results.filter(function(t) { return t.status === 'fail'; }).length,

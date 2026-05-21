@@ -4,7 +4,7 @@
 // RTK Query base query with mockFetch. Tests auth headers, error handling, 401 refresh.
 
 const { test, group, beforeEach, afterEach, spy, http, HttpResponse, mockFetch, mockFetchUse, mockFetchReset, flushAsync, expect } =
-  (globalThis as any).__metroTest;
+  (globalThis as any).__HT;
 
 import { createApi, fetchBaseQuery } from '@reduxjs/toolkit/query/react';
 import { configureStore } from '@reduxjs/toolkit';

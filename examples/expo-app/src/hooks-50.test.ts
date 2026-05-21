@@ -1,4 +1,4 @@
-const { test, renderHook, act } = (globalThis as any).__metroTest;
+const { test, renderHook, act } = (globalThis as any).__HT;
 import { useCounter } from './useCounter';
 
 test('hook test 0: counter from 0', (ctx: any) => {

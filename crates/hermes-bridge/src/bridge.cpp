@@ -50,9 +50,9 @@ static std::string valueToString(jsi::Runtime& runtime, const jsi::Value& val) {
 
 static void installConsole(jsi::Runtime& runtime) {
   // Store logs in a JS array — avoids mixing with Hermes's internal stderr output.
-  // Rust reads globalThis.__consoleLogs after eval and prints them cleanly.
+  // Rust reads globalThis.__HT_logs after eval and prints them cleanly.
   auto logs = jsi::Array(runtime, 0);
-  runtime.global().setProperty(runtime, "__consoleLogs", std::move(logs));
+  runtime.global().setProperty(runtime, "__HT_logs", std::move(logs));
 
   auto console = jsi::Object(runtime);
   auto makeLogger = [](const char* level) {
@@ -64,7 +64,7 @@ static void installConsole(jsi::Runtime& runtime) {
           if (i > 0) msg += " ";
           msg += valueToString(rt, args[i]);
         }
-        auto logsVal = rt.global().getProperty(rt, "__consoleLogs");
+        auto logsVal = rt.global().getProperty(rt, "__HT_logs");
         if (logsVal.isObject()) {
           auto logsArr = logsVal.getObject(rt).getArray(rt);
           auto len = logsArr.size(rt);
@@ -93,11 +93,11 @@ static void installConsole(jsi::Runtime& runtime) {
       jsi::PropNameID::forAscii(runtime, "info"), 0, makeLogger("info")));
   runtime.global().setProperty(runtime, "console", console);
 
-  // Install __drainMicrotasks — calls Hermes's real microtask queue drain.
+  // Install __HT_drain — calls Hermes's real microtask queue drain.
   // This replaces the hacky polyfill loop with a single native call.
-  runtime.global().setProperty(runtime, "__drainMicrotasks",
+  runtime.global().setProperty(runtime, "__HT_drain",
     jsi::Function::createFromHostFunction(runtime,
-      jsi::PropNameID::forAscii(runtime, "__drainMicrotasks"), 0,
+      jsi::PropNameID::forAscii(runtime, "__HT_drain"), 0,
       [](jsi::Runtime& rt, const jsi::Value&,
          const jsi::Value*, size_t) -> jsi::Value {
         rt.drainMicrotasks();

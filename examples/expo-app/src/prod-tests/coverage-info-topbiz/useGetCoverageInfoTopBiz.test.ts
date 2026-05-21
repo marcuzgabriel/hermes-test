@@ -4,7 +4,7 @@
 // Hook with mockModule for useGetInsuranceMetaInfo. Tests different TopBiz coverage types.
 
 const { test, group, beforeEach, renderHook, mockModule, expect } =
-  (globalThis as any).__metroTest;
+  (globalThis as any).__HT;
 
 let metaInfoReturn: any = {};
 mockModule('./useGetInsuranceMetaInfo', () => ({

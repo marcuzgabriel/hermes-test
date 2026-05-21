@@ -1,4 +1,4 @@
-const { test } = (globalThis as any).__metroTest;
+const { test } = (globalThis as any).__HT;
 import { unique, chunk, flatten, zip, sum, range, groupBy, compact, intersection, difference } from './array-utils';
 
 test('unique removes duplicates', ({ expect }: any) => {

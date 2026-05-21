@@ -1,5 +1,5 @@
 // Production test port: useServicePills — 8 tests
-const { test, group, beforeEach, renderHook, expect } = (globalThis as any).__metroTest;
+const { test, group, beforeEach, renderHook, expect } = (globalThis as any).__HT;
 import { withStore } from '../shared/testStore';
 import { useServicePills, pillsFromCoverages, pillsFromInsurances } from './useServicePills';
 

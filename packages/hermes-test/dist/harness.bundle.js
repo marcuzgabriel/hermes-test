@@ -27,7 +27,7 @@ if (typeof globalThis.MessageChannel === 'undefined') {
   };
 }
 
-// Timer polyfills — React scheduler and react-test-renderer need these
+// Timer polyfills — React scheduler needs these
 (function() {
   var queue = [];
   var timerIdCounter = 1;
@@ -38,10 +38,10 @@ if (typeof globalThis.MessageChannel === 'undefined') {
   }
 
   // Flush all async work: Hermes microtask queue (promises) + our polyfill queues (timers).
-  // The C++ bridge installs a native __drainMicrotasks that calls Hermes's drainMicrotasks().
+  // The C++ bridge installs a native __HT_drain that calls Hermes's drainMicrotasks().
   // We wrap it to also flush our setImmediate/setTimeout polyfill queues.
-  var nativeDrain = globalThis.__drainMicrotasks || function() {};
-  globalThis.__drainMicrotasks = function() {
+  var nativeDrain = globalThis.__HT_drain || function() {};
+  globalThis.__HT_drain = function() {
     // 1. Drain Hermes's internal promise/microtask queue
     nativeDrain();
     // 2. Flush our setImmediate queue
@@ -277,11 +277,11 @@ var __metroTestHarness = (() => {
       var handler = {
         get: function(_, prop) {
           if (prop === Symbol.toPrimitive || prop === "then") return void 0;
-          var R = globalThis.__React;
+          var R = globalThis.__HT_React;
           return R ? R[prop] : void 0;
         },
         set: function(_, prop, value) {
-          var R = globalThis.__React;
+          var R = globalThis.__HT_React;
           if (R) R[prop] = value;
           return true;
         }
@@ -23154,7 +23154,7 @@ var __metroTestHarness = (() => {
   var import_react_reconciler = __toESM(require_react_reconciler());
   var import_constants = __toESM(require_constants());
   function getReact() {
-    const R = globalThis.__React;
+    const R = globalThis.__HT_React;
     if (!R) throw new Error("React not available. Make sure react is installed in your project.");
     return R;
   }
@@ -23306,7 +23306,7 @@ var __metroTestHarness = (() => {
     const create = typeof import_react_reconciler.default === "function" ? import_react_reconciler.default : import_react_reconciler.default.default;
     return create(hostConfig);
   }
-  var drain = globalThis.__drainMicrotasks || (() => {
+  var drain = globalThis.__HT_drain || (() => {
   });
   function flush() {
     drain();
@@ -23438,8 +23438,8 @@ var __metroTestHarness = (() => {
 
   // src/mock.ts
   var savedDescriptors = [];
-  var mockRegistry = globalThis.__mockRegistry || {};
-  globalThis.__mockRegistry = mockRegistry;
+  var mockRegistry = globalThis.__HT_mocks || {};
+  globalThis.__HT_mocks = mockRegistry;
   function mockModule(modulePath, factory) {
     const impl = factory();
     const wrapped = wrapWithSpies(impl);
@@ -23774,7 +23774,7 @@ var __metroTestHarness = (() => {
   function afterAll(fn) {
     afterAllHooks.push(fn);
   }
-  var drain2 = globalThis.__drainMicrotasks || (() => {
+  var drain2 = globalThis.__HT_drain || (() => {
   });
   function flushAsync(promise) {
     if (!promise || typeof promise.then !== "function") {
@@ -23860,7 +23860,7 @@ var __metroTestHarness = (() => {
     }
     return results;
   }
-  globalThis.__metroTest = {
+  globalThis.__HT = {
     test,
     expect,
     spy,

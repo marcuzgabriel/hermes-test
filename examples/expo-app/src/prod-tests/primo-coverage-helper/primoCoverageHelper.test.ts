@@ -3,7 +3,7 @@
 //
 // Pure function. Coverage data aggregation for Primo insurance UI.
 
-const { test, group, expect } = (globalThis as any).__metroTest;
+const { test, group, expect } = (globalThis as any).__HT;
 import primoCoverageHelper from './primoCoverageHelper';
 
 const coverageData = [{

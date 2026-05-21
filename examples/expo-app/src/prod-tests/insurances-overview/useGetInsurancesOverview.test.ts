@@ -5,7 +5,7 @@
 // Tests the main hook (pure arg), index lookup (store-backed), and product-by-index (store-backed).
 
 const { test, group, beforeEach, renderHook, mockModule, expect } =
-  (globalThis as any).__metroTest;
+  (globalThis as any).__HT;
 
 import { withStore } from '../shared/testStore';
 

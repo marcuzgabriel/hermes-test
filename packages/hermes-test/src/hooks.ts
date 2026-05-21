@@ -6,7 +6,7 @@
 // the user's project via esbuild. The harness expects them on globalThis.
 
 function getReact(): typeof import('react') {
-  const R = (globalThis as any).__React;
+  const R = (globalThis as any).__HT_React;
   if (!R) throw new Error('React not available. Make sure react is installed in your project.');
   return R;
 }
@@ -94,7 +94,7 @@ type HookResult<T> = {
   unmount(): void;
 };
 
-const drain = (globalThis as any).__drainMicrotasks || (() => {});
+const drain = (globalThis as any).__HT_drain || (() => {});
 
 function flush() {
   drain();

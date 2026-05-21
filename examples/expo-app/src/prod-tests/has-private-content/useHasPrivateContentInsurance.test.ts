@@ -4,7 +4,7 @@
 // Zero mocks. Store seeded with products, hook reads via useSelector.
 
 const { test, group, beforeEach, expect } =
-  (globalThis as any).__metroTest;
+  (globalThis as any).__HT;
 
 import { withStore } from '../shared/testStore';
 import { useHasPrivateContentInsurance } from './useHasPrivateContentInsurances';

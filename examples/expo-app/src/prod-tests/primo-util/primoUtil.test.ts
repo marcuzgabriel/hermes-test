@@ -1,5 +1,5 @@
 // Production test port: primoUtil — 15 tests
-const { test, group, expect } = (globalThis as any).__metroTest;
+const { test, group, expect } = (globalThis as any).__HT;
 import { extractPeriodFromPrimoInvoice, getAllInsuranceTopLevelFeesPrimo, getPrimoInvoiceTypes, getAllMissingInvoicePaymentEntriesPrimo, getInsuranceAttachedFeesPrimo, populateMapWithPrimoInvoicePeriods, InvoiceType } from './primoUtil';
 
 group('extractPeriodFromPrimoInvoice', () => {
