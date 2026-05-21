@@ -296,16 +296,20 @@ fn bundle_esbuild_with_config(
     }
 
     // Path aliases from tsconfig (resolved by config).
-    // Skip aliases for packages that are externalized — esbuild aliases override externals,
-    // so if a package is in both, the alias wins and the code gets bundled. We want externals
-    // to win so native-dependent local packages stay externalized.
+    // Skip aliases for packages that are externalized or mocked — esbuild aliases override
+    // externals, so if a package is in both, the alias wins and the code gets bundled.
+    // We want externals/mocks to win so they can be intercepted by __require at runtime.
     for (alias, target) in &cfg.aliases {
         let is_externalized = cfg.externals.iter().any(|e| {
             let e_base = e.trim_end_matches('*').trim_end_matches('/');
             alias == e_base || alias.starts_with(&format!("{e_base}/"))
                 || (e.ends_with('*') && alias.starts_with(e_base))
         });
-        if !is_externalized {
+        // Also skip if any mockModule path starts with this alias
+        let is_mocked = external_modules.iter().any(|m| {
+            m == alias || m.starts_with(&format!("{alias}/"))
+        });
+        if !is_externalized && !is_mocked {
             cmd.arg(format!("--alias:{alias}={target}"));
         }
     }
