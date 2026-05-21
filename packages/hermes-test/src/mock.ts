@@ -20,12 +20,19 @@ export function mockModule(
   factory: () => Record<string, any>
 ): void {
   const impl = factory();
+  // When factory returns a function (e.g. default export mock like createLogger),
+  // set it directly — Object.keys() on a function returns nothing so property
+  // copying wouldn't work.
+  if (typeof impl === 'function') {
+    mockRegistry[modulePath] = impl;
+    return;
+  }
   const wrapped = wrapWithSpies(impl);
   // The entry file pre-creates registry objects so __require returns them
   // before mockModule runs. Copy spy properties onto the existing object
   // so the reference stays the same.
   const existing = mockRegistry[modulePath];
-  if (existing) {
+  if (existing && typeof existing === 'object') {
     for (const key of Object.keys(wrapped)) {
       existing[key] = wrapped[key];
     }
