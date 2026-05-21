@@ -397,12 +397,12 @@ fn run_tests_split(
     };
     let bundle_ms = bundle_start.elapsed().as_millis();
 
-    // Eval vendor (setup + all node_modules)
+    // Eval vendor (setup + all node_modules) — use bytecode cache
     let exec_start = Instant::now();
-    let eval_vendor = if let Some(bytecode) = bundler::compile_to_bytecode(&split.vendor, &root.join("vendor.js")) {
-        rt.eval_bytes(&bytecode, "vendor.hbc")
+    let (eval_vendor, vendor_cached) = if let Some((bytecode, cached)) = bundler::compile_to_bytecode_cached(&split.vendor, root, "vendor") {
+        (rt.eval_bytes(&bytecode, "vendor.hbc"), cached)
     } else {
-        rt.eval(&split.vendor, "vendor.js")
+        (rt.eval(&split.vendor, "vendor.js"), false)
     };
     if let Err(e) = eval_vendor {
         eprintln!("Vendor eval failed: {e}");
@@ -443,7 +443,8 @@ globalThis.__HT_results = JSON.stringify({
 
     let exec_ms = exec_start.elapsed().as_millis();
     let elapsed = start.elapsed();
-    eprintln!(" \x1b[2mSplit:\x1b[0m  bundle {bundle_ms}ms, exec {exec_ms}ms (vendor {}KB + {} groups)",
+    let cache_str = if vendor_cached { " (cached)" } else { "" };
+    eprintln!(" \x1b[2mSplit:\x1b[0m  bundle {bundle_ms}ms, exec {exec_ms}ms (vendor {}KB{cache_str} + {} groups)",
         split.vendor.len() / 1024, split.groups.len());
     match rt.eval("globalThis.__HT_results", "results") {
         Ok(json) => {

@@ -336,6 +336,56 @@ pub fn compile_to_bytecode(code: &str, _context_path: &Path) -> Option<Vec<u8>> 
     }
 }
 
+/// Compile to bytecode with disk cache. Returns (bytecode, cache_hit).
+/// Cache key: hash of JS source. Cache dir: project_root/.hermes-test-cache/
+pub fn compile_to_bytecode_cached(
+    code: &str,
+    project_root: &Path,
+    prefix: &str,
+) -> Option<(Vec<u8>, bool)> {
+    if !code.contains("= class ") && !code.contains("= class{") {
+        return None;
+    }
+
+    let hash = {
+        use std::hash::{Hash, Hasher};
+        let mut hasher = std::collections::hash_map::DefaultHasher::new();
+        code.hash(&mut hasher);
+        format!("{:016x}", hasher.finish())
+    };
+
+    let cache_dir = project_root.join(".hermes-test-cache");
+    let cache_path = cache_dir.join(format!("{prefix}-{hash}.hbc"));
+
+    // Try cache hit
+    if let Ok(bytecode) = std::fs::read(&cache_path) {
+        return Some((bytecode, true));
+    }
+
+    // Cache miss — compile and save
+    match crate::hermes::compile_bytecode(code, "bundle.js") {
+        Ok(bytecode) => {
+            let _ = std::fs::create_dir_all(&cache_dir);
+            // Clean old cache files for this prefix
+            if let Ok(entries) = std::fs::read_dir(&cache_dir) {
+                for entry in entries.flatten() {
+                    let name = entry.file_name();
+                    let name = name.to_string_lossy();
+                    if name.starts_with(prefix) && name.ends_with(".hbc") && name != cache_path.file_name().unwrap().to_string_lossy().as_ref() {
+                        let _ = std::fs::remove_file(entry.path());
+                    }
+                }
+            }
+            let _ = std::fs::write(&cache_path, &bytecode);
+            Some((bytecode, false))
+        }
+        Err(e) => {
+            eprintln!("WARNING: hermesc bytecode compilation failed: {e}");
+            None
+        }
+    }
+}
+
 
 /// Patch esbuild's __require to route externalized modules through __HT_mocks.
 /// Simple approach: replace the "throw" line inside __require with a registry lookup.
@@ -1074,6 +1124,9 @@ pub fn bundle_split(
     // Step 2: Build vendor bundle with all discovered packages
     let setup = generate_setup_code(test_files, mock_modules, cfg);
     let packages: Vec<String> = all_packages.into_iter().collect();
+
+    let mut packages = packages;
+    packages.sort(); // Deterministic order for cache stability
 
     let vendor = if packages.is_empty() {
         // No packages to vendor — just run setup code raw
