@@ -61,9 +61,10 @@ fn find_esbuild(project_root: &Path) -> Result<PathBuf, ()> {
 
 /// Read path aliases from tsconfig.json "compilerOptions.paths" and hermes-test.config.json.
 /// Returns Vec<(alias, target_path)> for esbuild --alias flags.
-struct BundleConfig {
+pub struct BundleConfig {
     aliases: Vec<(String, String)>,
     externals: Vec<String>,
+    shims: Vec<(String, String)>, // (module_name, file_path)
     root: Option<PathBuf>,
 }
 
@@ -90,6 +91,29 @@ fn json_string_array(json: &str, key: &str) -> Option<Vec<String>> {
     Some(arr.split(',')
         .map(|s| s.trim().trim_matches('"').trim_matches('\'').to_string())
         .filter(|s| !s.is_empty())
+        .collect())
+}
+
+/// Extract key-value pairs from a JSON object: "key": { "a": "b", "c": "d" }
+fn json_object_entries(json: &str, key: &str) -> Option<Vec<(String, String)>> {
+    let pattern = format!("\"{key}\"");
+    let start = json.find(&pattern)?;
+    let after = &json[start + pattern.len()..];
+    let brace_start = after.find('{')?;
+    let rest = &after[brace_start..];
+    let mut depth = 0;
+    let mut end = 0;
+    for (i, ch) in rest.char_indices() {
+        match ch {
+            '{' => depth += 1,
+            '}' => { depth -= 1; if depth == 0 { end = i; break; } }
+            _ => {}
+        }
+    }
+    let inner = &rest[1..end];
+    let re = regex::Regex::new(r#""([^"]+)"\s*:\s*"([^"]+)""#).ok()?;
+    Some(re.captures_iter(inner)
+        .map(|c| (c[1].to_string(), c[2].to_string()))
         .collect())
 }
 
@@ -137,8 +161,8 @@ fn read_tsconfig_paths(base_dir: &Path, tsconfig_path: &Path, aliases: &mut Vec<
 
 /// Read hermes-test.config.json and resolve tsconfig paths.
 /// Config: { "root": "../..", "tsconfig": "../../tsconfig.json", "external": ["zod", ...] }
-fn read_config(project_root: &Path) -> BundleConfig {
-    let mut config = BundleConfig { aliases: Vec::new(), externals: Vec::new(), root: None };
+pub fn read_config(project_root: &Path) -> BundleConfig {
+    let mut config = BundleConfig { aliases: Vec::new(), externals: Vec::new(), shims: Vec::new(), root: None };
 
     // Find hermes-test.config.json — check project root, then walk up
     let mut search_dir = project_root.canonicalize().unwrap_or_else(|_| project_root.to_path_buf());
@@ -174,6 +198,14 @@ fn read_config(project_root: &Path) -> BundleConfig {
     if let Some(items) = json_string_array(&content, "externals")
         .or_else(|| json_string_array(&content, "external")) {
         config.externals = items;
+    }
+
+    // "shims" — custom shim files for native modules { "react-native": "./shims/rn.js" }
+    if let Some(obj) = json_object_entries(&content, "shims") {
+        for (key, val) in obj {
+            let resolved = config_dir.join(&val).to_string_lossy().to_string();
+            config.shims.push((key, resolved));
+        }
     }
 
     config
@@ -687,6 +719,7 @@ pub fn generate_entry(
     test_files: &[PathBuf],
     _harness_path: Option<&Path>,
     mock_modules: &[String],
+    cfg: &BundleConfig,
 ) -> String {
     let mut entry = String::new();
 
@@ -697,6 +730,38 @@ pub fn generate_entry(
     entry.push_str("globalThis.__HT_mocks = globalThis.__HT_mocks || {};\n");
     entry.push_str("globalThis.__HT_mocks['hermes-test'] = globalThis.__HT;\n");
     entry.push_str("globalThis.__HT_mocks['@marcuzgabriel/hermes-test'] = globalThis.__HT;\n");
+
+    // Load shims for native modules. User shims (from config) override built-in defaults.
+    // Built-in shims are embedded in the hermes-test binary.
+    {
+        let builtin_shims = vec![
+            ("react-native", include_str!("../../../packages/hermes-test/src/shims/react-native.js")),
+        ];
+
+        // Collect user-configured shim module names
+        let user_shim_modules: Vec<&str> = cfg.shims.iter().map(|(k, _)| k.as_str()).collect();
+
+        // Load built-in shims (skip if user provided a custom one)
+        for (module_name, shim_source) in &builtin_shims {
+            if !user_shim_modules.contains(module_name) {
+                entry.push_str(&format!(
+                    "globalThis.__HT_mocks['{}'] = (function() {{ {} }})();\n",
+                    module_name,
+                    // Wrap as: var m = {}; ... ; return m; → but our shims use module.exports
+                    // So wrap as IIFE with module.exports shim
+                    format!("var module = {{ exports: {{}} }}; {}; return module.exports;", shim_source)
+                ));
+            }
+        }
+
+        // Load user-configured shims via require (esbuild will bundle them)
+        for (module_name, shim_path) in &cfg.shims {
+            entry.push_str(&format!(
+                "globalThis.__HT_mocks['{}'] = require('{}');\n",
+                module_name, shim_path
+            ));
+        }
+    }
 
     // Pre-register mock module placeholders BEFORE anything loads.
     // mockModule() in the test file will populate these objects with actual spies.

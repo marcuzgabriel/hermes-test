@@ -302,7 +302,8 @@ JSON.stringify({
         // mock_modules detected silently
 
         // Metro mode: generate entry, bundle via Metro, eval bundle
-        let entry_content = bundler::generate_entry(&test_files, None, &mock_modules);
+        let cfg = bundler::read_config(&root);
+        let entry_content = bundler::generate_entry(&test_files, None, &mock_modules, &cfg);
 
         // Write entry to a temp file
         let entry_path = root.join(".hermes-test-entry.js");
@@ -530,7 +531,8 @@ fn run_cycle_with_depgraph(
     // Scan for mockModule() calls
     let mock_modules = bundler::find_mock_modules(test_files);
 
-    let entry_content = bundler::generate_entry(test_files, None, &mock_modules);
+    let cfg = bundler::read_config(root);
+    let entry_content = bundler::generate_entry(test_files, None, &mock_modules, &cfg);
     let entry_path = root.join(".hermes-test-entry.js");
     if std::fs::write(&entry_path, &entry_content).is_err() {
         eprintln!("Failed to write entry file");
