@@ -165,7 +165,8 @@ fn read_tsconfig_paths(base_dir: &Path, tsconfig_path: &Path, aliases: &mut Vec<
         let target = val.trim_end_matches("/*").trim_end_matches('*');
         if !alias.is_empty() && !target.is_empty() {
             let target_path = if target.starts_with("./") || target.starts_with("../") {
-                base_dir.join(target).to_string_lossy().to_string()
+                let joined = base_dir.join(target);
+                joined.canonicalize().unwrap_or(joined).to_string_lossy().to_string()
             } else {
                 target.to_string()
             };
@@ -296,20 +297,21 @@ fn bundle_esbuild_with_config(
     }
 
     // Path aliases from tsconfig (resolved by config).
-    // Skip aliases for packages that are externalized or mocked — esbuild aliases override
-    // externals, so if a package is in both, the alias wins and the code gets bundled.
-    // We want externals/mocks to win so they can be intercepted by __require at runtime.
+    // Skip aliases when:
+    // 1. The package is in the externals list (native modules)
+    // 2. Any mockModule path is a sub-path of this alias — esbuild aliases run BEFORE
+    //    external checks, so mocked imports would get inlined instead of intercepted.
+    //    Skipping the alias means ALL sub-paths go through __require → mock shim.
     for (alias, target) in &cfg.aliases {
         let is_externalized = cfg.externals.iter().any(|e| {
             let e_base = e.trim_end_matches('*').trim_end_matches('/');
             alias == e_base || alias.starts_with(&format!("{e_base}/"))
                 || (e.ends_with('*') && alias.starts_with(e_base))
         });
-        // Also skip if any mockModule path starts with this alias
-        let is_mocked = external_modules.iter().any(|m| {
+        let has_mocked_subpath = external_modules.iter().any(|m| {
             m == alias || m.starts_with(&format!("{alias}/"))
         });
-        if !is_externalized && !is_mocked {
+        if !is_externalized && !has_mocked_subpath {
             cmd.arg(format!("--alias:{alias}={target}"));
         }
     }
@@ -453,18 +455,18 @@ fn inject_mock_require_shim(code: &str) -> String {
         eprintln!("WARNING: __require shim pattern not found — externalized modules may not work");
         return code.to_string();
     }
-    // Hoist __noop outside __require so it's created once, not per call
+    // Hoist __noop outside __require so it's created once, not per call.
+    // Proxy-based noop: any property access, function call, or `new` returns __HT_noop,
+    // enabling infinite chains like `noop.foo().bar.baz()` without throwing.
     let code = code.replacen(
         "throw Error('Dynamic require",
-        "var __HT_noop = function() { return __HT_noop; }; throw Error('Dynamic require",
+        "var __HT_noop = typeof Proxy !== 'undefined' ? new Proxy(function(){}, { get: function() { return __HT_noop; }, apply: function() { return __HT_noop; }, construct: function() { return {}; } }) : function() {}; throw Error('Dynamic require",
         1,
     );
 
     throw_re.replace(&code, |caps: &regex::Captures| {
         let v = &caps[1];
-        // Proxy with get (property access) + construct (new) traps.
-        // get: returns mock values or __HT_noop for unknown properties.
-        // construct: allows `new ExternalModule()` to return a plain object (mock constructor).
+        // Proxy with get (property access) + construct (new) + apply traps.
         format!(
             r#"{{ var __r = globalThis.__HT_mocks || (globalThis.__HT_mocks = {{}}); var __k = {v}.replace(/^\.\//, ''); if (!__r[__k] && !__r[{v}]) __r[{v}] = {{}}; var __t = __r[{v}] || __r[__k] || __r['./' + __k] || {{}}; return typeof Proxy !== 'undefined' ? new Proxy(__t, {{ get: function(t,p) {{ if (p === Symbol.toPrimitive || p === 'then' || p === '$$typeof') return undefined; if (p === '__esModule') return true; var __rr = globalThis.__HT_mocks; var __m = __rr[{v}] || __rr[__k] || __rr['./' + __k]; if (p === 'default') {{ var __d = __m && __m['default']; return __d !== undefined ? __d : (__m || t); }} var val = __m ? __m[p] : t[p]; return val !== undefined ? val : __HT_noop; }}, apply: function() {{ return __HT_noop; }}, construct: function() {{ return {{}}; }} }}) : __t }}"#,
         )
