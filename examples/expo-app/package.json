@@ -8,8 +8,6 @@
     "test:prod": "hermes-test src/prod-tests"
   },
   "dependencies": {
-    "@react-native/babel-preset": "^0.82.0",
-    "@react-native/metro-babel-transformer": "^0.82.0",
     "@reduxjs/toolkit": "^2.12.0",
     "metro": "^0.82.0",
     "metro-config": "^0.82.0",

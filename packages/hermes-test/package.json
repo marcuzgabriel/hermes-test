@@ -5,8 +5,8 @@
     "registry": "https://npm.pkg.github.com"
   },
   "description": "75x faster than Jest. Test runner for React Native and Expo that runs in Hermes.",
-  "main": "dist/index.js",
-  "types": "dist/index.d.ts",
+  "main": "src/index.ts",
+  "types": "index.d.ts",
   "bin": {
     "hermes-test": "bin/hermes-test"
   },
