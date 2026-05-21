@@ -251,23 +251,13 @@ fn run_tests(files: &[PathBuf], root: &PathBuf, no_bundle: bool, bundler: Option
         std::process::exit(1);
     });
 
-    // Inject the harness — pre-compile to bytecode for faster loading
+    // Inject the harness via source eval. The minified harness has no ES6 class
+    // syntax, so bytecode compilation is unnecessary overhead (~90ms per invocation).
     suppress_hermes_stderr(|| {
-        match crate::hermes::compile_bytecode(HARNESS_JS, "hermes-test/harness.js") {
-            Ok(bytecode) => {
-                rt.eval_bytes(&bytecode, "hermes-test/harness.hbc").unwrap_or_else(|e| {
-                    eprintln!("Failed to load harness bytecode: {e}");
-                    std::process::exit(1);
-                });
-            }
-            Err(_) => {
-                // Fallback to source eval if bytecode compilation fails
-                rt.eval(HARNESS_JS, "hermes-test/harness.js").unwrap_or_else(|e| {
-                    eprintln!("Failed to load harness: {e}");
-                    std::process::exit(1);
-                });
-            }
-        }
+        rt.eval(HARNESS_JS, "hermes-test/harness.js").unwrap_or_else(|e| {
+            eprintln!("Failed to load harness: {e}");
+            std::process::exit(1);
+        });
     });
 
     if no_bundle {
