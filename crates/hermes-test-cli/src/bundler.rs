@@ -334,11 +334,21 @@ fn inject_mock_require_shim(code: &str) -> String {
     // This solves the ESM import hoisting problem: `import {X} from 'mod'` runs
     // before `mockModule('mod', () => ({X: ...}))` but the Proxy delegates reads
     // to the live mock registry entry.
-    code.replacen(
-        r#"throw Error('Dynamic require of "' + x + '" is not supported')"#,
-        r#"{ var __r = globalThis.__HT_mocks || (globalThis.__HT_mocks = {}); var __k = x.replace(/^\.\//, ''); if (!__r[__k] && !__r[x]) __r[x] = {}; var __t = __r[x] || __r[__k] || __r['./' + __k] || {}; return typeof Proxy !== 'undefined' ? new Proxy(__t, { get: function(t,p) { var __rr = globalThis.__HT_mocks; var __m = __rr[x] || __rr[__k] || __rr['./' + __k]; return __m ? __m[p] : t[p]; } }) : __t }"#,
-        1,
-    )
+    // esbuild may use different variable names (x, x2, etc.) depending on version.
+    let throw_re = regex::Regex::new(
+        r#"throw Error\('Dynamic require of "' \+ (\w+) \+ '" is not supported'\)"#
+    ).unwrap();
+
+    if !throw_re.is_match(&code) {
+        eprintln!("WARNING: __require shim pattern not found — externalized modules may not work");
+        return code.to_string();
+    }
+    throw_re.replace(&code, |caps: &regex::Captures| {
+        let v = &caps[1];
+        format!(
+            r#"{{ var __r = globalThis.__HT_mocks || (globalThis.__HT_mocks = {{}}); var __k = {v}.replace(/^\.\//, ''); if (!__r[__k] && !__r[{v}]) __r[{v}] = {{}}; var __t = __r[{v}] || __r[__k] || __r['./' + __k] || {{}}; var __noop = function() {{ return __noop; }}; return typeof Proxy !== 'undefined' ? new Proxy(__t, {{ get: function(t,p) {{ if (p === Symbol.toPrimitive || p === 'then' || p === '$$typeof') return undefined; if (p === '__esModule') return true; var __rr = globalThis.__HT_mocks; var __m = __rr[{v}] || __rr[__k] || __rr['./' + __k]; var val = __m ? __m[p] : t[p]; return val !== undefined ? val : __noop; }}, ownKeys: function(t) {{ var __rr = globalThis.__HT_mocks; var __m = __rr[{v}] || __rr[__k] || __rr['./' + __k] || t; return Object.keys(__m); }}, getOwnPropertyDescriptor: function(t,p) {{ var __rr = globalThis.__HT_mocks; var __m = __rr[{v}] || __rr[__k] || __rr['./' + __k] || t; if (p in __m) return {{ configurable: true, enumerable: true, value: __m[p] }}; return undefined; }} }}) : __t }}"#,
+        )
+    }).to_string()
 }
 
 /// Fix ALL `class Foo extends Array { ... }` patterns in bundled code.
@@ -536,7 +546,24 @@ fn patch_esbuild_for_hermes(code: &str) -> String {
         1,
     );
 
-    // Patch 3: Fix ALL `class extends Array` patterns.
+    // Patch 3: Make __toESM return mock Proxies directly (skip copy).
+    // Our __require returns Proxies with __esModule=true for externalized modules.
+    // __toESM normally copies properties into a new object, which destroys Proxy behavior.
+    // Fix: insert early return at the start of __toESM.
+    let code = {
+        let toesm_re = regex::Regex::new(r"var __toESM = \(mod, isNodeMode, target\) => \(").unwrap();
+        toesm_re.replace(&code, "var __toESM = (mod, isNodeMode, target) => (mod && mod.__esModule ? mod : (").to_string()
+    };
+    // Add closing paren for the ternary — right before the final ");".
+    // The __toESM definition ends with: ...mod\n  ));\n
+    // We need one more ")" to close our ternary.
+    let code = code.replacen(
+        "mod\n  ));",
+        "mod\n  )));",
+        1,
+    );
+
+    // Patch 4: Fix ALL `class extends Array` patterns.
     // Hermes bug: super() in derived class compiles to Array.call(this, ...args) and discards
     // the return value. The instance is a plain JSObject (not JSArray), breaking Array.isArray,
     // concat, splice, spread, etc. Fix: replace with Reflect.construct-based function that
