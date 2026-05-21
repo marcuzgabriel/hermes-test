@@ -122,8 +122,20 @@ fn json_object_entries(json: &str, key: &str) -> Option<Vec<(String, String)>> {
 }
 
 /// Read "paths" from a tsconfig.json file and add as esbuild aliases.
+/// Follows "extends" to read paths from parent tsconfigs (standard TS behavior).
 fn read_tsconfig_paths(base_dir: &Path, tsconfig_path: &Path, aliases: &mut Vec<(String, String)>) {
     let Ok(content) = std::fs::read_to_string(tsconfig_path) else { return };
+
+    // Follow "extends" first — parent paths are overridden by child paths
+    if let Some(extends_val) = json_string_value(&content, "extends") {
+        let parent_path = tsconfig_path.parent().unwrap_or(base_dir).join(&extends_val);
+        if parent_path.exists() {
+            let parent_dir = parent_path.parent().unwrap_or(base_dir);
+            read_tsconfig_paths(parent_dir, &parent_path, aliases);
+        }
+    }
+
+    // Parse "paths" from this tsconfig
     let Some(paths_start) = content.find("\"paths\"") else { return };
     let Some(brace_start) = content[paths_start..].find('{') else { return };
     let rest = &content[paths_start + brace_start..];
@@ -283,9 +295,19 @@ fn bundle_esbuild_with_config(
         }
     }
 
-    // Path aliases from tsconfig (resolved by config)
+    // Path aliases from tsconfig (resolved by config).
+    // Skip aliases for packages that are externalized — esbuild aliases override externals,
+    // so if a package is in both, the alias wins and the code gets bundled. We want externals
+    // to win so native-dependent local packages stay externalized.
     for (alias, target) in &cfg.aliases {
-        cmd.arg(format!("--alias:{alias}={target}"));
+        let is_externalized = cfg.externals.iter().any(|e| {
+            let e_base = e.trim_end_matches('*').trim_end_matches('/');
+            alias == e_base || alias.starts_with(&format!("{e_base}/"))
+                || (e.ends_with('*') && alias.starts_with(e_base))
+        });
+        if !is_externalized {
+            cmd.arg(format!("--alias:{alias}={target}"));
+        }
     }
 
     // Default externals: hermes-test (thin re-export from __HT), React Native (Flow syntax)
@@ -293,10 +315,14 @@ fn bundle_esbuild_with_config(
         cmd.arg(format!("--external:{ext}"));
     }
 
-    // Config externals
+    // Config externals — for wildcard patterns like `pkg/*`, also externalize `pkg` itself
     for ext in &cfg.externals {
         cmd.arg(format!("--external:{ext}"));
-        if !ext.ends_with('*') {
+        if ext.ends_with("/*") {
+            // Also externalize bare import: `@foo/bar/*` → also `@foo/bar`
+            let base = &ext[..ext.len() - 2];
+            cmd.arg(format!("--external:{base}"));
+        } else if !ext.ends_with('*') {
             cmd.arg(format!("--external:{ext}/*"));
         }
     }
@@ -432,8 +458,11 @@ fn inject_mock_require_shim(code: &str) -> String {
 
     throw_re.replace(&code, |caps: &regex::Captures| {
         let v = &caps[1];
+        // Proxy with get (property access) + construct (new) traps.
+        // get: returns mock values or __HT_noop for unknown properties.
+        // construct: allows `new ExternalModule()` to return a plain object (mock constructor).
         format!(
-            r#"{{ var __r = globalThis.__HT_mocks || (globalThis.__HT_mocks = {{}}); var __k = {v}.replace(/^\.\//, ''); if (!__r[__k] && !__r[{v}]) __r[{v}] = {{}}; var __t = __r[{v}] || __r[__k] || __r['./' + __k] || {{}}; return typeof Proxy !== 'undefined' ? new Proxy(__t, {{ get: function(t,p) {{ if (p === Symbol.toPrimitive || p === 'then' || p === '$$typeof') return undefined; if (p === '__esModule') return true; var __rr = globalThis.__HT_mocks; var __m = __rr[{v}] || __rr[__k] || __rr['./' + __k]; if (p === 'default') {{ var __d = __m && __m['default']; return __d !== undefined ? __d : (__m || t); }} var val = __m ? __m[p] : t[p]; return val !== undefined ? val : __HT_noop; }} }}) : __t }}"#,
+            r#"{{ var __r = globalThis.__HT_mocks || (globalThis.__HT_mocks = {{}}); var __k = {v}.replace(/^\.\//, ''); if (!__r[__k] && !__r[{v}]) __r[{v}] = {{}}; var __t = __r[{v}] || __r[__k] || __r['./' + __k] || {{}}; return typeof Proxy !== 'undefined' ? new Proxy(__t, {{ get: function(t,p) {{ if (p === Symbol.toPrimitive || p === 'then' || p === '$$typeof') return undefined; if (p === '__esModule') return true; var __rr = globalThis.__HT_mocks; var __m = __rr[{v}] || __rr[__k] || __rr['./' + __k]; if (p === 'default') {{ var __d = __m && __m['default']; return __d !== undefined ? __d : (__m || t); }} var val = __m ? __m[p] : t[p]; return val !== undefined ? val : __HT_noop; }}, apply: function() {{ return __HT_noop; }}, construct: function() {{ return {{}}; }} }}) : __t }}"#,
         )
     }).to_string()
 }
@@ -667,13 +696,38 @@ fn fix_all_class_extends(code: &str) -> String {
                 continue;
             }
 
-            // Match: `methodName(...args) {`
-            let method_name_re = regex::Regex::new(r"^([\w$]+)\s*\(([^)]*)\)\s*\{").unwrap();
-            if let Some(cap) = method_name_re.captures(method_remaining) {
+            // Match: `methodName(` — use paren-matching for params (handles nested parens/braces)
+            let method_start_re = regex::Regex::new(r"^([\w$]+)\s*\(").unwrap();
+            if let Some(cap) = method_start_re.captures(method_remaining) {
                 let name = cap.get(1).unwrap().as_str();
-                let params = cap.get(2).unwrap().as_str();
-                let brace_end = cap.get(0).unwrap().end();
-                let abs_body_start = pos + (if is_static { 7 } else { 0 }) + brace_end;
+                // Skip JS keywords — these are statements, not method definitions
+                if matches!(name, "if" | "for" | "while" | "switch" | "catch" | "with" | "do"
+                    | "return" | "throw" | "try" | "new" | "delete" | "typeof" | "void"
+                    | "function" | "var" | "let" | "const" | "class") {
+                    pos += 1;
+                    continue;
+                }
+                let paren_start = pos + (if is_static { 7 } else { 0 }) + cap.get(0).unwrap().end();
+                // Find matching close paren with balanced matching
+                let mut pd = 1;
+                let mut paren_end = paren_start;
+                for (i, ch) in class_body[paren_start..].char_indices() {
+                    match ch {
+                        '(' => pd += 1,
+                        ')' => { pd -= 1; if pd == 0 { paren_end = paren_start + i; break; } }
+                        _ => {}
+                    }
+                }
+                let params = &class_body[paren_start..paren_end];
+                // After `)`, expect whitespace then `{`
+                let after_paren = &class_body[paren_end + 1..];
+                let trimmed = after_paren.trim_start();
+                if !trimmed.starts_with('{') {
+                    pos += 1;
+                    continue;
+                }
+                let brace_offset = paren_end + 1 + (after_paren.len() - trimmed.len()) + 1;
+                let abs_body_start = brace_offset;
 
                 let mut d = 1;
                 let mut body_end = abs_body_start;
@@ -687,7 +741,13 @@ fn fix_all_class_extends(code: &str) -> String {
 
                 let body = &class_body[abs_body_start..body_end];
                 let body = body.replace("super.", &format!("{parent}.prototype."));
-                let body = body.replace(&format!("new {}", &m.internal_name), &format!("new {var_name}"));
+                // Replace ALL references to internal class name with var_name
+                // e.g. _I18n.createInstance → I18n.createInstance, new _Tuple → new Tuple
+                let body = if m.internal_name != *var_name {
+                    body.replace(&m.internal_name, var_name)
+                } else {
+                    body
+                };
 
                 let target = if is_static { var_name.to_string() } else { format!("{var_name}.prototype") };
                 methods.push(format!("{target}.{name} = function({params}) {{{body}}};"));
