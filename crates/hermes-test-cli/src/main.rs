@@ -56,6 +56,10 @@ struct Cli {
     #[arg(long)]
     eval: Option<String>,
 
+    /// Use vendor/group bundle splitting (auto-enabled for large suites)
+    #[arg(long)]
+    split: bool,
+
     #[command(subcommand)]
     command: Option<Commands>,
 }
@@ -96,7 +100,7 @@ fn main() {
                 bundler,
             } => {
                 let bundler = parse_bundler(&bundler);
-                run_tests(&files, &root, no_bundle, bundler);
+                run_tests(&files, &root, no_bundle, bundler, false);
             }
             Commands::Watch {
                 files,
@@ -126,7 +130,7 @@ fn main() {
     if cli.watch {
         watch_tests(&files, &root, bundler);
     } else {
-        run_tests(&files, &root, cli.no_bundle, bundler);
+        run_tests(&files, &root, cli.no_bundle, bundler, cli.split);
     }
 }
 
@@ -226,7 +230,7 @@ fn eval_file(path: &str) {
     }
 }
 
-fn run_tests(files: &[PathBuf], root: &PathBuf, no_bundle: bool, bundler: Option<bundler::Bundler>) {
+fn run_tests(files: &[PathBuf], root: &PathBuf, no_bundle: bool, bundler: Option<bundler::Bundler>, force_split: bool) {
     let root = std::fs::canonicalize(root).unwrap_or_else(|e| {
         eprintln!("Invalid root directory: {e}");
         std::process::exit(1);
@@ -300,69 +304,156 @@ JSON.stringify({
     } else {
         // Scan test files for mockModule() calls to determine external modules
         let mock_modules = bundler::find_mock_modules(&test_files);
-        // mock_modules detected silently
-
-        // Metro mode: generate entry, bundle via Metro, eval bundle
         let cfg = bundler::read_config(&root);
-        let entry_content = bundler::generate_entry(&test_files, None, &mock_modules, &cfg);
-
-        // Write entry to a temp file
-        let entry_path = root.join(".hermes-test-entry.js");
-        std::fs::write(&entry_path, &entry_content).unwrap_or_else(|e| {
-            eprintln!("Failed to write entry file: {e}");
-            std::process::exit(1);
-        });
-
-        let bundler_name = match bundler {
-            Some(bundler::Bundler::Metro) => "Metro",
-            Some(bundler::Bundler::Esbuild) => "esbuild",
-            None => "auto",
-        };
         let start = Instant::now();
-        // bundling silently
-        let bundle = match if let Some(b) = bundler {
-            bundler::bundle_with(b, &entry_path, &root, &mock_modules)
-        } else {
-            bundler::bundle_auto(&entry_path, &root, &mock_modules)
-        } {
-            Ok(b) => b,
-            Err(e) => {
-                let _ = std::fs::remove_file(&entry_path);
-                eprintln!("Metro bundling failed: {e}");
-                std::process::exit(1);
-            }
-        };
 
-        let _ = std::fs::remove_file(&entry_path);
+        // Use bundle splitting for large test suites or when --split is passed
+        let use_split = (force_split || test_files.len() >= 50)
+            && bundler != Some(bundler::Bundler::Metro);
 
-        // Eval the bundle — suppress Hermes [hermes-compile] noise on stderr.
-        // console.log is now collected in globalThis.__HT_logs (not stderr).
-        // Precompile via hermesc if bundle has classes, then eval bytecode via JSI
-        let eval_result = if let Some(bytecode) = bundler::compile_to_bytecode(&bundle, &entry_path) {
-            rt.eval_bytes(&bytecode, "bundle.hbc")
+        if use_split {
+            run_tests_split(&rt, &test_files, &root, &mock_modules, &cfg, start);
         } else {
-            rt.eval(&bundle, "bundle.js")
-        };
-        if let Err(e) = eval_result {
-            eprintln!("Test execution failed: {e}");
+            run_tests_single(&rt, &test_files, &root, &mock_modules, &cfg, bundler, start);
+        }
+    }
+}
+
+/// Single-bundle path: generates one entry, bundles everything together.
+fn run_tests_single(
+    rt: &hermes::Runtime,
+    test_files: &[PathBuf],
+    root: &PathBuf,
+    mock_modules: &[String],
+    cfg: &bundler::BundleConfig,
+    bundler: Option<bundler::Bundler>,
+    start: Instant,
+) {
+    let entry_content = bundler::generate_entry(test_files, None, mock_modules, cfg);
+    let entry_path = root.join(".hermes-test-entry.js");
+    std::fs::write(&entry_path, &entry_content).unwrap_or_else(|e| {
+        eprintln!("Failed to write entry file: {e}");
+        std::process::exit(1);
+    });
+
+    let bundle = match if let Some(b) = bundler {
+        bundler::bundle_with(b, &entry_path, root, mock_modules)
+    } else {
+        bundler::bundle_auto(&entry_path, root, mock_modules)
+    } {
+        Ok(b) => b,
+        Err(e) => {
+            let _ = std::fs::remove_file(&entry_path);
+            eprintln!("Bundling failed: {e}");
             std::process::exit(1);
         }
+    };
 
-        // Print any console.log output from tests
-        print_console_logs(&rt);
+    let _ = std::fs::remove_file(&entry_path);
 
-        // Read back the results from the global
-        let elapsed = start.elapsed();
-        match rt.eval("globalThis.__HT_results", "results") {
-            Ok(json) => {
-                if !print_results_with_time(&json, elapsed.as_millis(), test_files.len()) {
-                    std::process::exit(1);
-                }
-            }
-            Err(e) => {
-                eprintln!("Failed to read test results: {e}");
+    let eval_result = if let Some(bytecode) = bundler::compile_to_bytecode(&bundle, &entry_path) {
+        rt.eval_bytes(&bytecode, "bundle.hbc")
+    } else {
+        rt.eval(&bundle, "bundle.js")
+    };
+    if let Err(e) = eval_result {
+        eprintln!("Test execution failed: {e}");
+        std::process::exit(1);
+    }
+
+    print_console_logs(rt);
+
+    let elapsed = start.elapsed();
+    match rt.eval("globalThis.__HT_results", "results") {
+        Ok(json) => {
+            if !print_results_with_time(&json, elapsed.as_millis(), test_files.len()) {
                 std::process::exit(1);
             }
+        }
+        Err(e) => {
+            eprintln!("Failed to read test results: {e}");
+            std::process::exit(1);
+        }
+    }
+}
+
+/// Split-bundle path: vendor (node_modules) + group bundles (local code).
+/// Avoids Hermes super-linear scaling with large bundles.
+fn run_tests_split(
+    rt: &hermes::Runtime,
+    test_files: &[PathBuf],
+    root: &PathBuf,
+    mock_modules: &[String],
+    cfg: &bundler::BundleConfig,
+    start: Instant,
+) {
+    let bundle_start = Instant::now();
+    let split = match bundler::bundle_split(test_files, root, mock_modules, cfg) {
+        Ok(s) => s,
+        Err(e) => {
+            eprintln!("Bundle split failed: {e}");
+            std::process::exit(1);
+        }
+    };
+    let bundle_ms = bundle_start.elapsed().as_millis();
+
+    // Eval vendor (setup + all node_modules)
+    let exec_start = Instant::now();
+    let eval_vendor = if let Some(bytecode) = bundler::compile_to_bytecode(&split.vendor, &root.join("vendor.js")) {
+        rt.eval_bytes(&bytecode, "vendor.hbc")
+    } else {
+        rt.eval(&split.vendor, "vendor.js")
+    };
+    if let Err(e) = eval_vendor {
+        eprintln!("Vendor eval failed: {e}");
+        std::process::exit(1);
+    }
+
+    // Eval each group bundle
+    for (i, group) in split.groups.iter().enumerate() {
+        let name = format!("group-{i}.js");
+        let eval_result = if let Some(bytecode) = bundler::compile_to_bytecode(group, &root.join(&name)) {
+            rt.eval_bytes(&bytecode, &format!("group-{i}.hbc"))
+        } else {
+            rt.eval(group, &name)
+        };
+        if let Err(e) = eval_result {
+            eprintln!("Group {i} eval failed: {e}");
+            std::process::exit(1);
+        }
+    }
+
+    // Run all registered tests
+    let runner = r#"
+var __results = globalThis.__HT.runTests();
+globalThis.__HT_results = JSON.stringify({
+  tests: __results,
+  passed: __results.filter(function(t) { return t.status === 'pass'; }).length,
+  failed: __results.filter(function(t) { return t.status === 'fail'; }).length,
+  skipped: __results.filter(function(t) { return t.status === 'skip'; }).length,
+  total: __results.length
+});
+"#;
+    if let Err(e) = rt.eval(runner, "runner.js") {
+        eprintln!("Test runner failed: {e}");
+        std::process::exit(1);
+    }
+
+    print_console_logs(rt);
+
+    let exec_ms = exec_start.elapsed().as_millis();
+    let elapsed = start.elapsed();
+    eprintln!(" \x1b[2mSplit:\x1b[0m  bundle {bundle_ms}ms, exec {exec_ms}ms (vendor {}KB + {} groups)",
+        split.vendor.len() / 1024, split.groups.len());
+    match rt.eval("globalThis.__HT_results", "results") {
+        Ok(json) => {
+            if !print_results_with_time(&json, elapsed.as_millis(), test_files.len()) {
+                std::process::exit(1);
+            }
+        }
+        Err(e) => {
+            eprintln!("Failed to read test results: {e}");
+            std::process::exit(1);
         }
     }
 }

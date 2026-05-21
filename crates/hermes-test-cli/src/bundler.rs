@@ -219,7 +219,18 @@ fn bundle_esbuild(
 ) -> Result<String, String> {
     let project_root = entry_file.parent().unwrap_or(Path::new("."));
     let cfg = read_config(project_root);
+    bundle_esbuild_with_config(entry_file, esbuild_path, external_modules, &cfg, false)
+}
 
+/// Bundle with esbuild using provided config (avoids re-reading from disk).
+/// When `packages_external` is true, adds --packages=external to externalize all node_modules.
+fn bundle_esbuild_with_config(
+    entry_file: &Path,
+    esbuild_path: &Path,
+    external_modules: &[String],
+    cfg: &BundleConfig,
+    packages_external: bool,
+) -> Result<String, String> {
     let mut cmd = Command::new(esbuild_path);
     cmd.arg(entry_file)
         .arg("--bundle")
@@ -235,8 +246,11 @@ fn bundle_esbuild(
         .arg("--loader:.svg=empty")
         .arg("--external:console");
 
+    if packages_external {
+        cmd.arg("--packages=external");
+    }
+
     // Monorepo: add node_modules paths for resolution.
-    // Include both the project root and the monorepo root (if configured).
     {
         let mut node_paths = Vec::new();
         let project_nm = entry_file.parent().unwrap_or(Path::new(".")).join("node_modules");
@@ -264,7 +278,7 @@ fn bundle_esbuild(
         cmd.arg(format!("--external:{ext}"));
     }
 
-    // Config externals — also add wildcard for sub-path imports (e.g. @sentry/react-native/dist/...)
+    // Config externals
     for ext in &cfg.externals {
         cmd.arg(format!("--external:{ext}"));
         if !ext.ends_with('*') {
@@ -298,7 +312,7 @@ fn bundle_esbuild(
 
     // Inject __require shim when there are external modules that need runtime resolution
     let has_externals = !external_modules.is_empty() || !cfg.externals.is_empty()
-        || code.contains("Dynamic require of");
+        || packages_external || code.contains("Dynamic require of");
     if has_externals {
         code = inject_mock_require_shim(&code);
     }
@@ -353,7 +367,7 @@ fn inject_mock_require_shim(code: &str) -> String {
     throw_re.replace(&code, |caps: &regex::Captures| {
         let v = &caps[1];
         format!(
-            r#"{{ var __r = globalThis.__HT_mocks || (globalThis.__HT_mocks = {{}}); var __k = {v}.replace(/^\.\//, ''); if (!__r[__k] && !__r[{v}]) __r[{v}] = {{}}; var __t = __r[{v}] || __r[__k] || __r['./' + __k] || {{}}; return typeof Proxy !== 'undefined' ? new Proxy(__t, {{ get: function(t,p) {{ if (p === Symbol.toPrimitive || p === 'then' || p === '$$typeof') return undefined; if (p === '__esModule') return true; var __rr = globalThis.__HT_mocks; var __m = __rr[{v}] || __rr[__k] || __rr['./' + __k]; var val = __m ? __m[p] : t[p]; return val !== undefined ? val : __HT_noop; }} }}) : __t }}"#,
+            r#"{{ var __r = globalThis.__HT_mocks || (globalThis.__HT_mocks = {{}}); var __k = {v}.replace(/^\.\//, ''); if (!__r[__k] && !__r[{v}]) __r[{v}] = {{}}; var __t = __r[{v}] || __r[__k] || __r['./' + __k] || {{}}; return typeof Proxy !== 'undefined' ? new Proxy(__t, {{ get: function(t,p) {{ if (p === Symbol.toPrimitive || p === 'then' || p === '$$typeof') return undefined; if (p === '__esModule') return true; var __rr = globalThis.__HT_mocks; var __m = __rr[{v}] || __rr[__k] || __rr['./' + __k]; if (p === 'default') return __m || t; var val = __m ? __m[p] : t[p]; return val !== undefined ? val : __HT_noop; }} }}) : __t }}"#,
         )
     }).to_string()
 }
@@ -538,6 +552,7 @@ fn fix_class_extends_array(code: &str) -> String {
 ///    Fix: add configurable:true to __copyProps and __export.
 fn patch_esbuild_for_hermes(code: &str) -> String {
     let original_len = code.len();
+    let code_kb = code.len() / 1024;
 
     // Patch 1: Fix Hermes for-let-of closure bug in __copyProps
     let code = code.replacen(
@@ -557,18 +572,24 @@ fn patch_esbuild_for_hermes(code: &str) -> String {
     // Our __require returns Proxies with __esModule=true for externalized modules.
     // __toESM normally copies properties into a new object, which destroys Proxy behavior.
     // Fix: insert early return at the start of __toESM.
+    // Note: esbuild may rename `mod` to `mod2`, `mod3` etc. to avoid conflicts.
     let code = {
-        let toesm_re = regex::Regex::new(r"var __toESM = \(mod, isNodeMode, target\) => \(").unwrap();
-        toesm_re.replace(&code, "var __toESM = (mod, isNodeMode, target) => (mod && mod.__esModule ? mod : (").to_string()
+        let toesm_re = regex::Regex::new(r"var __toESM = \((\w+), isNodeMode, target\) => \(").unwrap();
+        if let Some(caps) = toesm_re.captures(&code) {
+            let mod_var = caps[1].to_string();
+            let patched = toesm_re.replace(&code, |_caps: &regex::Captures| {
+                format!("var __toESM = ({mod_var}, isNodeMode, target) => ({mod_var} && {mod_var}.__esModule ? {mod_var} : (")
+            }).to_string();
+            // Add closing paren for the ternary — right before the final ");".
+            patched.replacen(
+                &format!("{mod_var}\n  ));"),
+                &format!("{mod_var}\n  )));"),
+                1,
+            )
+        } else {
+            code
+        }
     };
-    // Add closing paren for the ternary — right before the final ");".
-    // The __toESM definition ends with: ...mod\n  ));\n
-    // We need one more ")" to close our ternary.
-    let code = code.replacen(
-        "mod\n  ));",
-        "mod\n  )));",
-        1,
-    );
 
     // Patch 4: Fix ALL `class extends Array` patterns.
     // Hermes bug: super() in derived class compiles to Array.call(this, ...args) and discards
@@ -579,8 +600,9 @@ fn patch_esbuild_for_hermes(code: &str) -> String {
 
     let code_str = code;
 
-    if code_str.len() == original_len {
-        eprintln!("WARNING: esbuild patches did not match — Hermes for-let-of bug may cause failures");
+    // Only warn if the unpatched for-let-of pattern is still present
+    if code_str.contains("for (let key of __getOwnPropNames(from))") {
+        eprintln!("WARNING: esbuild for-let-of patch did not match ({code_kb}KB bundle) — Hermes closure bug may cause failures");
     }
 
     code_str
@@ -984,4 +1006,205 @@ fn parse_depgraph(
     }
 
     graph
+}
+
+// --- Bundle splitting for large test suites ---
+
+pub struct SplitBundle {
+    pub vendor: String,
+    pub groups: Vec<String>,
+}
+
+/// Bundle with vendor/group splitting to avoid Hermes super-linear scaling.
+/// Vendor bundle: all node_modules. Group bundles: only local test code.
+pub fn bundle_split(
+    test_files: &[PathBuf],
+    project_root: &Path,
+    mock_modules: &[String],
+    cfg: &BundleConfig,
+) -> Result<SplitBundle, String> {
+    let esbuild_path = find_esbuild(project_root)
+        .map_err(|_| "esbuild not found. Install it: bun add -d esbuild".to_string())?;
+
+    let group_size = 10;
+    let mut group_bundles = Vec::new();
+    let mut all_packages = std::collections::HashSet::new();
+
+    // Modules excluded from vendor (shimmed, externalized, or handled by harness)
+    let excluded: std::collections::HashSet<&str> = {
+        let mut set = std::collections::HashSet::new();
+        set.insert("hermes-test");
+        set.insert("@marcuzgabriel/hermes-test");
+        set.insert("react-native");
+        set.insert("console");
+        for ext in &cfg.externals {
+            set.insert(ext.as_str());
+        }
+        set
+    };
+
+    // Step 1: Bundle each group with --packages=external (fast, local code only)
+    for (i, chunk) in test_files.chunks(group_size).enumerate() {
+        let entry = generate_group_entry(chunk, mock_modules);
+        let entry_path = project_root.join(format!(".hermes-test-group-{i}.js"));
+        std::fs::write(&entry_path, &entry)
+            .map_err(|e| format!("Failed to write group entry: {e}"))?;
+
+        let code = bundle_esbuild_with_config(
+            &entry_path, &esbuild_path, mock_modules, cfg, true,
+        )?;
+        let _ = std::fs::remove_file(&entry_path);
+
+        // Extract __require("...") calls to discover needed packages
+        // Skip relative paths (mock modules like ./useIsLoading) — those stay external
+        for pkg in extract_required_packages(&code) {
+            if pkg.starts_with('.') || pkg.starts_with('/') {
+                continue;
+            }
+            if !excluded.contains(pkg.as_str())
+                && !cfg.externals.iter().any(|e| pkg_matches_external(&pkg, e))
+            {
+                all_packages.insert(pkg);
+            }
+        }
+
+        group_bundles.push(code);
+    }
+
+    // Step 2: Build vendor bundle with all discovered packages
+    let setup = generate_setup_code(test_files, mock_modules, cfg);
+    let packages: Vec<String> = all_packages.into_iter().collect();
+
+    let vendor = if packages.is_empty() {
+        // No packages to vendor — just run setup code raw
+        setup
+    } else {
+        let vendor_entry = generate_vendor_entry(&packages, &setup);
+        let vendor_entry_path = project_root.join(".hermes-test-vendor.js");
+        std::fs::write(&vendor_entry_path, &vendor_entry)
+            .map_err(|e| format!("Failed to write vendor entry: {e}"))?;
+
+        let vendor_code = bundle_esbuild_with_config(
+            &vendor_entry_path, &esbuild_path, mock_modules, cfg, false,
+        )?;
+        let _ = std::fs::remove_file(&vendor_entry_path);
+        vendor_code
+    };
+
+    Ok(SplitBundle { vendor, groups: group_bundles })
+}
+
+fn pkg_matches_external(pkg: &str, external: &str) -> bool {
+    if external.ends_with('*') {
+        pkg.starts_with(&external[..external.len() - 1])
+    } else {
+        pkg == external || pkg.starts_with(&format!("{external}/"))
+    }
+}
+
+/// Minimal entry for a group: just test file requires (no setup, no runner).
+fn generate_group_entry(test_files: &[PathBuf], mock_modules: &[String]) -> String {
+    let mut entry = String::new();
+
+    // Re-register mock placeholders (needed for __require shim in each group IIFE)
+    if !mock_modules.is_empty() {
+        for path in mock_modules {
+            entry.push_str(&format!(
+                "globalThis.__HT_mocks['{}'] = globalThis.__HT_mocks['{}'] || {{}};\n",
+                path, path
+            ));
+        }
+    }
+
+    for file in test_files {
+        let path = file.to_string_lossy();
+        let require_path = if path.starts_with('/') || path.starts_with("./") {
+            path.to_string()
+        } else {
+            format!("./{path}")
+        };
+        let display_name = file.file_name()
+            .map(|n| n.to_string_lossy().to_string())
+            .unwrap_or_else(|| path.to_string());
+        entry.push_str(&format!(
+            "globalThis.__currentTestFile = '{}';\nrequire('{}');\n",
+            display_name, require_path
+        ));
+    }
+
+    entry
+}
+
+/// Setup code eval'd before vendor: shims, mock placeholders, harness mocks.
+fn generate_setup_code(
+    test_files: &[PathBuf],
+    mock_modules: &[String],
+    cfg: &BundleConfig,
+) -> String {
+    let mut code = String::new();
+
+    code.push_str("globalThis.__HT_mocks = globalThis.__HT_mocks || {};\n");
+    code.push_str("globalThis.__HT_mocks['hermes-test'] = globalThis.__HT;\n");
+    code.push_str("globalThis.__HT_mocks['@marcuzgabriel/hermes-test'] = globalThis.__HT;\n");
+
+    // Built-in react-native shim (unless user provides custom one)
+    let user_shim_modules: Vec<&str> = cfg.shims.iter().map(|(k, _)| k.as_str()).collect();
+    if !user_shim_modules.contains(&"react-native") {
+        code.push_str(&format!(
+            "globalThis.__HT_mocks['react-native'] = (function() {{ var module = {{ exports: {{}} }}; {}; return module.exports; }})();\n",
+            include_str!("../../../packages/hermes-test/src/shims/react-native.js")
+        ));
+    }
+
+    // Pre-register mock module placeholders
+    if !mock_modules.is_empty() {
+        for path in mock_modules {
+            code.push_str(&format!(
+                "globalThis.__HT_mocks['{}'] = globalThis.__HT_mocks['{}'] || {{}};\n",
+                path, path
+            ));
+        }
+    }
+
+    code
+}
+
+/// Vendor entry: requires all discovered packages and registers on __HT_mocks.
+fn generate_vendor_entry(packages: &[String], setup_code: &str) -> String {
+    let mut entry = String::new();
+
+    // Setup code runs first inside the vendor IIFE
+    entry.push_str(setup_code);
+    entry.push('\n');
+
+    // React bootstrap — vendor bundles the real React
+    entry.push_str(
+        "try { var __htReact = require('react'); globalThis.__HT_React = __htReact; globalThis.__HT_mocks['react'] = __htReact; globalThis.IS_REACT_ACT_ENVIRONMENT = true; } catch(e) {}\n"
+    );
+
+    // Require each discovered package and register on __HT_mocks
+    for pkg in packages {
+        if pkg == "react" {
+            continue; // Already handled above
+        }
+        entry.push_str(&format!(
+            "try {{ globalThis.__HT_mocks['{}'] = require('{}'); }} catch(e) {{}}\n",
+            pkg, pkg
+        ));
+    }
+
+    entry
+}
+
+/// Extract package names from __require("...") calls in bundled code.
+fn extract_required_packages(code: &str) -> Vec<String> {
+    let re = regex::Regex::new(r#"__require\("([^"]+)"\)"#).unwrap();
+    let mut packages = Vec::new();
+    for cap in re.captures_iter(code) {
+        let pkg = cap[1].to_string();
+        if !packages.contains(&pkg) {
+            packages.push(pkg);
+        }
+    }
+    packages
 }
