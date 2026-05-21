@@ -183,3 +183,57 @@ Machine: Mac arm64, Bun 1.3.14, esbuild 0.28.0, Hermes (latest main).
   src/math.test.ts src/string-utils.test.ts src/array-utils.test.ts
 # Then: touch src/useCounter.ts (in another terminal)
 ```
+
+## Scaling: Full suite (31 files, 1413 tests)
+
+Measured 2026-05-21. Real test suite with hooks, mocks, Redux, RTK Query, timers, fetch mocking.
+Machine: Mac arm64, esbuild 0.28.0, Hermes (latest main).
+
+### Full suite cold
+
+| Mode | Bundle | Exec | Total | Notes |
+|------|--------|------|-------|-------|
+| **Single bundle** (1690KB) | ~150ms | ~1300ms | **1.43s** | Default for < 50 files |
+| **Split** (1296KB vendor + 4 groups) | ~150ms | ~1350ms | **1.50s** | `--split` flag |
+| **Split + cache** (vendor bytecode cached) | ~87ms | ~1330ms | **1.42s** | 2nd+ runs |
+
+### Single file from full suite
+
+| Scenario | Time |
+|----------|------|
+| 1 pure test file (4 tests) | 50ms |
+| 1 hook test file (11 tests) | 50ms |
+| 50 hook tests | 60ms |
+| 1000 hook tests | ~900ms |
+
+### Scaling analysis
+
+| Bundle size | Exec time | Rate |
+|-------------|-----------|------|
+| 50KB (single file) | ~20ms | 0.4ms/KB |
+| 321KB (10 files) | ~300ms | 0.9ms/KB |
+| 1690KB (31 files) | ~1300ms | 0.8ms/KB |
+
+Hermes execution scales roughly linearly with bundle size at this range.
+The super-linear effect observed at Day 6 (individual files summing to 529ms vs
+combined 1300ms) is primarily caused by larger GC heap pressure, not parsing.
+
+### Bundle splitting verdict
+
+Split mode with vendor caching matches single-bundle performance (~1.42s).
+It does **not** provide a speedup at 31 files because the vendor (1.3MB)
+dominates execution time regardless of splitting strategy.
+
+Split mode will benefit:
+- **Watch mode with persistent runtime** (future): vendor stays loaded, only re-eval changed groups
+- **Very large codebases** (261+ files): where single bundle exceeds 5MB and super-linear scaling worsens
+- **CI parallelism** (future): groups could be evaluated in separate Hermes runtimes on different threads
+
+### Speed targets vs actuals
+
+| Scenario | Target | Actual | Status |
+|----------|--------|--------|--------|
+| 50 hook tests cold | < 350ms | 60ms | **6x under budget** |
+| Watch rerun (1 file) | < 200ms | 69ms | **3x under budget** |
+| 1000 mixed tests cold | < 4s | 1.43s | **2.8x under budget** |
+| vs Jest+@swc/jest | 5-10x faster | 10-47x faster | **PASS** |
