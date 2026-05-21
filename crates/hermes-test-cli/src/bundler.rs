@@ -64,7 +64,7 @@ fn find_esbuild(project_root: &Path) -> Result<PathBuf, ()> {
 /// Read path aliases from tsconfig.json "compilerOptions.paths" and hermes-test.config.json.
 /// Returns Vec<(alias, target_path)> for esbuild --alias flags.
 pub struct BundleConfig {
-    aliases: Vec<(String, String)>,
+    pub aliases: Vec<(String, String)>,
     externals: Vec<String>,
     shims: Vec<(String, String)>, // (module_name, file_path)
     root: Option<PathBuf>,

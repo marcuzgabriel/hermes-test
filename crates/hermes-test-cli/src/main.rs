@@ -302,19 +302,48 @@ JSON.stringify({
             }
         }
     } else {
-        // Scan test files for mockModule() calls to determine external modules
-        let mock_modules = bundler::find_mock_modules(&test_files);
         let cfg = bundler::read_config(&root);
         let start = Instant::now();
 
-        // Use bundle splitting when enabled via --split flag or config
-        let use_split = (force_split || cfg.split)
-            && bundler != Some(bundler::Bundler::Metro);
+        let all_mocks = bundler::find_mock_modules(&test_files);
 
-        if use_split {
-            run_tests_split(&rt, &test_files, &root, &mock_modules, &cfg, start);
+        // Split files: those with alias-conflicting mocks need per-file bundling,
+        // others can go in one batch (faster).
+        let has_alias_mock_conflict = |file: &PathBuf| -> bool {
+            let file_mocks = bundler::find_mock_modules(&[file.clone()]);
+            file_mocks.iter().any(|m| {
+                cfg.aliases.iter().any(|(alias, _)| m.starts_with(&format!("{alias}/")))
+            })
+        };
+
+        let (per_file_tests, batch_tests): (Vec<PathBuf>, Vec<PathBuf>) = if test_files.len() > 1 {
+            test_files.iter().cloned().partition(has_alias_mock_conflict)
         } else {
-            run_tests_single(&rt, &test_files, &root, &mock_modules, &cfg, bundler, start);
+            (vec![], test_files.to_vec())
+        };
+
+        if !batch_tests.is_empty() {
+            let batch_mocks = bundler::find_mock_modules(&batch_tests);
+            let use_split = (force_split || cfg.split) && bundler != Some(bundler::Bundler::Metro);
+            if use_split {
+                run_tests_split(&rt, &batch_tests, &root, &batch_mocks, &cfg, start);
+            } else {
+                run_tests_single(&rt, &batch_tests, &root, &batch_mocks, &cfg, bundler, start);
+            }
+        }
+
+        if !per_file_tests.is_empty() {
+            run_tests_per_file(&rt, &per_file_tests, &root, &cfg, bundler, start);
+        }
+
+        if batch_tests.is_empty() && per_file_tests.is_empty() {
+            let use_split = (force_split || cfg.split)
+                && bundler != Some(bundler::Bundler::Metro);
+            if use_split {
+                run_tests_split(&rt, &test_files, &root, &all_mocks, &cfg, start);
+            } else {
+                run_tests_single(&rt, &test_files, &root, &all_mocks, &cfg, bundler, start);
+            }
         }
     }
 }
@@ -374,6 +403,129 @@ fn run_tests_single(
             eprintln!("Failed to read test results: {e}");
             std::process::exit(1);
         }
+    }
+}
+
+/// Per-file bundling: each test file gets its own esbuild invocation with
+/// only its own mocks externalized. Prevents mock interference across files.
+/// The Hermes runtime is reused across files for speed.
+fn run_tests_per_file(
+    _rt: &hermes::Runtime,
+    test_files: &[PathBuf],
+    root: &PathBuf,
+    cfg: &bundler::BundleConfig,
+    bundler_opt: Option<bundler::Bundler>,
+    start: Instant,
+) {
+    let mut all_json_results: Vec<String> = Vec::new();
+    let mut total_passed = 0usize;
+    let mut total_failed = 0usize;
+    let mut total_skipped = 0usize;
+    let mut total_count = 0usize;
+    let mut any_failed = false;
+
+    for file in test_files {
+        // Fresh Hermes runtime per file — cleanest isolation, no state leaks.
+        let rt = match hermes::Runtime::new() {
+            Ok(r) => r,
+            Err(e) => { eprintln!("Runtime error: {e}"); any_failed = true; continue; }
+        };
+        suppress_hermes_stderr(|| {
+            if let Err(e) = rt.eval(HARNESS_JS, "hermes-test/harness.js") {
+                eprintln!("Failed to load harness: {e}");
+            }
+        });
+
+        let file_slice = &[file.clone()];
+        let file_mocks = bundler::find_mock_modules(file_slice);
+
+        let entry_content = bundler::generate_entry(file_slice, None, &file_mocks, cfg);
+        let entry_path = root.join(".hermes-test-entry.js");
+        if let Err(e) = std::fs::write(&entry_path, &entry_content) {
+            eprintln!("Failed to write entry: {e}");
+            continue;
+        }
+
+        let bundle = match if let Some(b) = bundler_opt {
+            bundler::bundle_with(b, &entry_path, root, &file_mocks)
+        } else {
+            bundler::bundle_auto(&entry_path, root, &file_mocks)
+        } {
+            Ok(b) => b,
+            Err(e) => {
+                let _ = std::fs::remove_file(&entry_path);
+                let name = file.file_name().map(|n| n.to_string_lossy().to_string())
+                    .unwrap_or_default();
+                eprintln!("Bundling failed for {name}: {e}");
+                any_failed = true;
+                continue;
+            }
+        };
+        let _ = std::fs::remove_file(&entry_path);
+
+        if let Err(e) = suppress_hermes_stderr(|| {
+            if let Some(bytecode) = bundler::compile_to_bytecode(&bundle, &entry_path) {
+                rt.eval_bytes(&bytecode, "bundle.hbc")
+            } else {
+                rt.eval(&bundle, "bundle.js")
+            }
+        }) {
+            let name = file.file_name().map(|n| n.to_string_lossy().to_string())
+                .unwrap_or_default();
+            eprintln!("Test execution failed for {name}: {e}");
+            any_failed = true;
+            continue;
+        }
+
+        print_console_logs(&rt);
+
+        // Collect results — Hermes rt.eval returns a JSON-encoded string,
+        // so we double-parse: first unwrap the JS string, then parse the JSON.
+        match rt.eval("globalThis.__HT_results", "results") {
+            Ok(raw) => {
+                let inner: String = serde_json::from_str(&raw).unwrap_or(raw.clone());
+                if let Ok(v) = serde_json::from_str::<serde_json::Value>(&inner) {
+                    let p = v["passed"].as_u64().unwrap_or(0) as usize;
+                    let f = v["failed"].as_u64().unwrap_or(0) as usize;
+                    let s = v["skipped"].as_u64().unwrap_or(0) as usize;
+                    let t = v["total"].as_u64().unwrap_or(0) as usize;
+                    total_passed += p;
+                    total_failed += f;
+                    total_skipped += s;
+                    total_count += t;
+
+                    // Print per-file result
+                    let name = file.file_name().map(|n| n.to_string_lossy().to_string())
+                        .unwrap_or_default();
+                    if f > 0 {
+                        any_failed = true;
+                        print_results(&raw);
+                    } else {
+                        println!("\x1b[32mPASS\x1b[0m  {name} \x1b[2m({t} tests)\x1b[0m");
+                    }
+                }
+            }
+            Err(e) => {
+                eprintln!("Failed to read results: {e}");
+                any_failed = true;
+            }
+        }
+    }
+
+    // Print summary
+    let elapsed = start.elapsed();
+    println!();
+    if total_failed > 0 {
+        print!(" \x1b[31mTests:\x1b[0m  \x1b[32m{total_passed} passed\x1b[0m, \x1b[31m{total_failed} failed\x1b[0m");
+    } else {
+        print!(" \x1b[32mTests:\x1b[0m  {total_passed} passed");
+    }
+    println!(", {total_count} total");
+    println!(" \x1b[2mFiles:\x1b[0m  {}", test_files.len());
+    println!(" \x1b[2mTime:\x1b[0m   {:.2}s", elapsed.as_secs_f64());
+
+    if any_failed {
+        std::process::exit(1);
     }
 }
 
