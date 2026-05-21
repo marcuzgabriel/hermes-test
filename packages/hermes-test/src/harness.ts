@@ -139,6 +139,9 @@ function runTests(): TestResult[] {
   const beforeAllRan = new Set<ScopedHook>();
 
   for (const entry of tests) {
+    // Set current test file for per-file mock scoping
+    (globalThis as any).__currentTestFile = entry.file;
+
     if (entry.options.skip || (hasOnly && !entry.options.only)) {
       results.push({ name: entry.name, status: 'skip', duration: 0, file: entry.file });
       continue;

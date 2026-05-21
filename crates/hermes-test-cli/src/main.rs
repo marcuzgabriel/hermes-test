@@ -307,42 +307,17 @@ JSON.stringify({
 
         let all_mocks = bundler::find_mock_modules(&test_files);
 
-        // Split files: those with alias-conflicting mocks need per-file bundling,
-        // others can go in one batch (faster).
-        let has_alias_mock_conflict = |file: &PathBuf| -> bool {
-            let file_mocks = bundler::find_mock_modules(&[file.clone()]);
-            file_mocks.iter().any(|m| {
-                cfg.aliases.iter().any(|(alias, _)| m.starts_with(&format!("{alias}/")))
-            })
-        };
-
-        let (per_file_tests, batch_tests): (Vec<PathBuf>, Vec<PathBuf>) = if test_files.len() > 1 {
-            test_files.iter().cloned().partition(has_alias_mock_conflict)
+        // All files in one batch — shadow wrappers handle aliased mock isolation.
+        // HT_PER_FILE forces per-file isolation as fallback.
+        let force_per_file = std::env::var("HT_PER_FILE").is_ok();
+        if force_per_file {
+            run_tests_per_file(&rt, &test_files, &root, &cfg, bundler, start);
         } else {
-            (vec![], test_files.to_vec())
-        };
-
-        if !batch_tests.is_empty() {
-            let batch_mocks = bundler::find_mock_modules(&batch_tests);
             let use_split = (force_split || cfg.split) && bundler != Some(bundler::Bundler::Metro);
-            if use_split {
-                run_tests_split(&rt, &batch_tests, &root, &batch_mocks, &cfg, start);
-            } else {
-                run_tests_single(&rt, &batch_tests, &root, &batch_mocks, &cfg, bundler, start);
-            }
-        }
-
-        if !per_file_tests.is_empty() {
-            run_tests_per_file(&rt, &per_file_tests, &root, &cfg, bundler, start);
-        }
-
-        if batch_tests.is_empty() && per_file_tests.is_empty() {
-            let use_split = (force_split || cfg.split)
-                && bundler != Some(bundler::Bundler::Metro);
             if use_split {
                 run_tests_split(&rt, &test_files, &root, &all_mocks, &cfg, start);
             } else {
-                run_tests_single(&rt, &test_files, &root, &all_mocks, &cfg, bundler, start);
+                run_tests_single(&rt, &test_files, &root, &all_mocks, &cfg, bundler, start, &[]);
             }
         }
     }
@@ -357,19 +332,23 @@ fn run_tests_single(
     cfg: &bundler::BundleConfig,
     bundler: Option<bundler::Bundler>,
     start: Instant,
+    transforms: &[(PathBuf, PathBuf)],
 ) {
-    let entry_content = bundler::generate_entry(test_files, None, mock_modules, cfg);
+    // Create shadow wrappers for aliased mock paths — replaces the alias target
+    // with a shadow directory where mocked files are Proxy wrappers.
+    let (shadow_cfg, shadow_dirs) = bundler::create_shadow_wrappers(root, mock_modules, cfg);
+    // Filter out aliased mock paths from externals — shadow wrappers handle them
+    let non_aliased_mocks: Vec<String> = mock_modules.iter().filter(|m| {
+        !cfg.aliases.iter().any(|(alias, _)| *m == alias || m.starts_with(&format!("{alias}/")))
+    }).cloned().collect();
+    let entry_content = bundler::generate_entry(test_files, None, mock_modules, &shadow_cfg, transforms);
     let entry_path = root.join(".hermes-test-entry.js");
     std::fs::write(&entry_path, &entry_content).unwrap_or_else(|e| {
         eprintln!("Failed to write entry file: {e}");
         std::process::exit(1);
     });
 
-    let bundle = match if let Some(b) = bundler {
-        bundler::bundle_with(b, &entry_path, root, mock_modules)
-    } else {
-        bundler::bundle_auto(&entry_path, root, mock_modules)
-    } {
+    let bundle = match bundler::bundle_auto_with_config(&entry_path, root, &non_aliased_mocks, &shadow_cfg) {
         Ok(b) => b,
         Err(e) => {
             let _ = std::fs::remove_file(&entry_path);
@@ -379,6 +358,13 @@ fn run_tests_single(
     };
 
     let _ = std::fs::remove_file(&entry_path);
+    // Clean up shadow directories and pre-transformed temp files
+    for dir in &shadow_dirs {
+        let _ = std::fs::remove_dir_all(dir);
+    }
+    for (_, temp) in transforms {
+        let _ = std::fs::remove_file(temp);
+    }
 
     let eval_result = if let Some(bytecode) = bundler::compile_to_bytecode(&bundle, &entry_path) {
         rt.eval_bytes(&bytecode, "bundle.hbc")
@@ -417,15 +403,62 @@ fn run_tests_per_file(
     bundler_opt: Option<bundler::Bundler>,
     start: Instant,
 ) {
-    let mut all_json_results: Vec<String> = Vec::new();
+    // Phase 1: Parallel esbuild — spawn all bundlers concurrently.
+    // Each file gets a unique entry path to avoid write conflicts.
+    let mut handles: Vec<std::thread::JoinHandle<(PathBuf, Result<String, String>)>> = Vec::new();
+
+    for (i, file) in test_files.iter().enumerate() {
+        let file_slice = &[file.clone()];
+        let file_mocks = bundler::find_mock_modules(file_slice);
+        let entry_content = bundler::generate_entry(file_slice, None, &file_mocks, cfg, &[]);
+        let entry_path = root.join(format!(".hermes-test-entry-{i}.js"));
+        if let Err(e) = std::fs::write(&entry_path, &entry_content) {
+            eprintln!("Failed to write entry: {e}");
+            continue;
+        }
+
+        let file_clone = file.clone();
+        let entry_clone = entry_path.clone();
+        let root_clone = root.clone();
+        let mocks_clone = file_mocks.clone();
+
+        handles.push(std::thread::spawn(move || {
+            let result = if let Some(b) = bundler_opt {
+                bundler::bundle_with(b, &entry_clone, &root_clone, &mocks_clone)
+            } else {
+                bundler::bundle_auto(&entry_clone, &root_clone, &mocks_clone)
+            };
+            let _ = std::fs::remove_file(&entry_clone);
+            (file_clone, result)
+        }));
+    }
+
+    // Collect all bundle results
+    let bundles: Vec<(PathBuf, Result<String, String>)> = handles
+        .into_iter()
+        .map(|h| h.join().expect("esbuild thread panicked"))
+        .collect();
+
+    // Phase 2: Sequential Hermes eval — run each bundle in its own runtime.
     let mut total_passed = 0usize;
     let mut total_failed = 0usize;
     let mut total_skipped = 0usize;
     let mut total_count = 0usize;
     let mut any_failed = false;
 
-    for file in test_files {
-        // Fresh Hermes runtime per file — cleanest isolation, no state leaks.
+    for (file, bundle_result) in &bundles {
+        let name = file.file_name().map(|n| n.to_string_lossy().to_string())
+            .unwrap_or_default();
+
+        let bundle = match bundle_result {
+            Ok(b) => b,
+            Err(e) => {
+                eprintln!("Bundling failed for {name}: {e}");
+                any_failed = true;
+                continue;
+            }
+        };
+
         let rt = match hermes::Runtime::new() {
             Ok(r) => r,
             Err(e) => { eprintln!("Runtime error: {e}"); any_failed = true; continue; }
@@ -436,42 +469,14 @@ fn run_tests_per_file(
             }
         });
 
-        let file_slice = &[file.clone()];
-        let file_mocks = bundler::find_mock_modules(file_slice);
-
-        let entry_content = bundler::generate_entry(file_slice, None, &file_mocks, cfg);
-        let entry_path = root.join(".hermes-test-entry.js");
-        if let Err(e) = std::fs::write(&entry_path, &entry_content) {
-            eprintln!("Failed to write entry: {e}");
-            continue;
-        }
-
-        let bundle = match if let Some(b) = bundler_opt {
-            bundler::bundle_with(b, &entry_path, root, &file_mocks)
-        } else {
-            bundler::bundle_auto(&entry_path, root, &file_mocks)
-        } {
-            Ok(b) => b,
-            Err(e) => {
-                let _ = std::fs::remove_file(&entry_path);
-                let name = file.file_name().map(|n| n.to_string_lossy().to_string())
-                    .unwrap_or_default();
-                eprintln!("Bundling failed for {name}: {e}");
-                any_failed = true;
-                continue;
-            }
-        };
-        let _ = std::fs::remove_file(&entry_path);
-
+        let dummy_path = file.with_extension("js");
         if let Err(e) = suppress_hermes_stderr(|| {
-            if let Some(bytecode) = bundler::compile_to_bytecode(&bundle, &entry_path) {
+            if let Some(bytecode) = bundler::compile_to_bytecode(bundle, &dummy_path) {
                 rt.eval_bytes(&bytecode, "bundle.hbc")
             } else {
-                rt.eval(&bundle, "bundle.js")
+                rt.eval(bundle, "bundle.js")
             }
         }) {
-            let name = file.file_name().map(|n| n.to_string_lossy().to_string())
-                .unwrap_or_default();
             eprintln!("Test execution failed for {name}: {e}");
             any_failed = true;
             continue;
@@ -479,8 +484,6 @@ fn run_tests_per_file(
 
         print_console_logs(&rt);
 
-        // Collect results — Hermes rt.eval returns a JSON-encoded string,
-        // so we double-parse: first unwrap the JS string, then parse the JSON.
         match rt.eval("globalThis.__HT_results", "results") {
             Ok(raw) => {
                 let inner: String = serde_json::from_str(&raw).unwrap_or(raw.clone());
@@ -494,9 +497,6 @@ fn run_tests_per_file(
                     total_skipped += s;
                     total_count += t;
 
-                    // Print per-file result
-                    let name = file.file_name().map(|n| n.to_string_lossy().to_string())
-                        .unwrap_or_default();
                     if f > 0 {
                         any_failed = true;
                         print_results(&raw);
@@ -854,7 +854,7 @@ globalThis.__HT_results = JSON.stringify({
         }
 
         // Build dep graph for change tracking (separate esbuild pass with metafile)
-        let entry_content = bundler::generate_entry(test_files, None, &mock_modules, cfg);
+        let entry_content = bundler::generate_entry(test_files, None, &mock_modules, cfg, &[]);
         let entry_path = root.join(".hermes-test-entry.js");
         let depgraph = if std::fs::write(&entry_path, &entry_content).is_ok() {
             let dg = match bundler::bundle_with_depgraph(&entry_path, root, test_files, &mock_modules) {
@@ -957,7 +957,7 @@ fn run_cycle_with_depgraph(
     let mock_modules = bundler::find_mock_modules(test_files);
 
     let cfg = bundler::read_config(root);
-    let entry_content = bundler::generate_entry(test_files, None, &mock_modules, &cfg);
+    let entry_content = bundler::generate_entry(test_files, None, &mock_modules, &cfg, &[]);
     let entry_path = root.join(".hermes-test-entry.js");
     if std::fs::write(&entry_path, &entry_content).is_err() {
         eprintln!("Failed to write entry file");

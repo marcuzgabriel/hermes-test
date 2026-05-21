@@ -10,34 +10,41 @@ type SavedDescriptor = { target: any; key: string; desc: PropertyDescriptor };
 let savedDescriptors: SavedDescriptor[] = [];
 
 // --- mockModule: jest.mock() equivalent ---
-// Registers a mock factory for a module path. The bundler externalizes these
-// modules and the require shim reads from this registry.
+// Registers a mock factory for a module path, scoped to the current test file.
+// The bundler wraps mocked module exports in Proxies that check the per-file
+// mock registry at access time. This allows multiple files to mock the same
+// module with different implementations in a single bundle.
 const mockRegistry: Record<string, Record<string, any>> = (globalThis as any).__HT_mocks || {};
 (globalThis as any).__HT_mocks = mockRegistry;
+
+// Per-file mock scoping: __HT_file_mocks[filename][modulePath] = mock
+const fileMocks: Record<string, Record<string, any>> =
+  (globalThis as any).__HT_file_mocks || ((globalThis as any).__HT_file_mocks = {});
 
 export function mockModule(
   modulePath: string,
   factory: () => Record<string, any>
 ): void {
   const impl = factory();
-  // When factory returns a function (e.g. default export mock like createLogger),
-  // set it directly — Object.keys() on a function returns nothing so property
-  // copying wouldn't work.
+  const value = typeof impl === 'function' ? impl : wrapWithSpies(impl);
+
+  // Register in per-file scope
+  const currentFile = (globalThis as any).__currentTestFile || '__global__';
+  if (!fileMocks[currentFile]) fileMocks[currentFile] = {};
+  fileMocks[currentFile][modulePath] = value;
+
+  // Also register globally for backward compat (__require shim, non-aliased mocks)
   if (typeof impl === 'function') {
     mockRegistry[modulePath] = impl;
-    return;
-  }
-  const wrapped = wrapWithSpies(impl);
-  // The entry file pre-creates registry objects so __require returns them
-  // before mockModule runs. Copy spy properties onto the existing object
-  // so the reference stays the same.
-  const existing = mockRegistry[modulePath];
-  if (existing && typeof existing === 'object') {
-    for (const key of Object.keys(wrapped)) {
-      existing[key] = wrapped[key];
-    }
   } else {
-    mockRegistry[modulePath] = wrapped;
+    const existing = mockRegistry[modulePath];
+    if (existing && typeof existing === 'object') {
+      for (const key of Object.keys(value)) {
+        existing[key] = (value as any)[key];
+      }
+    } else {
+      mockRegistry[modulePath] = value;
+    }
   }
 }
 

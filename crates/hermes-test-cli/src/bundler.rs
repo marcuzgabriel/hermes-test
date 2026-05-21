@@ -63,6 +63,7 @@ fn find_esbuild(project_root: &Path) -> Result<PathBuf, ()> {
 
 /// Read path aliases from tsconfig.json "compilerOptions.paths" and hermes-test.config.json.
 /// Returns Vec<(alias, target_path)> for esbuild --alias flags.
+#[derive(Clone)]
 pub struct BundleConfig {
     pub aliases: Vec<(String, String)>,
     externals: Vec<String>,
@@ -247,6 +248,19 @@ fn bundle_esbuild(
     let project_root = entry_file.parent().unwrap_or(Path::new("."));
     let cfg = read_config(project_root);
     bundle_esbuild_with_config(entry_file, esbuild_path, external_modules, &cfg, false)
+}
+
+/// Bundle with a custom config (e.g. shadow-wrapped aliases).
+pub fn bundle_auto_with_config(
+    entry_file: &Path,
+    project_root: &Path,
+    external_modules: &[String],
+    cfg: &BundleConfig,
+) -> Result<String, String> {
+    if let Ok(path) = find_esbuild(project_root) {
+        return bundle_esbuild_with_config(entry_file, &path, external_modules, cfg, false);
+    }
+    bundle_metro(entry_file, project_root)
 }
 
 /// Bundle with esbuild using provided config (avoids re-reading from disk).
@@ -466,11 +480,316 @@ fn inject_mock_require_shim(code: &str) -> String {
 
     throw_re.replace(&code, |caps: &regex::Captures| {
         let v = &caps[1];
-        // Proxy with get (property access) + construct (new) + apply traps.
+        // Proxy with get trap that checks per-file mocks first, then global mocks.
+        // Per-file mocks: __HT_file_mocks[__currentTestFile][path] — set by mockModule()
+        // Global mocks: __HT_mocks[path] — fallback for backward compat
+        // The Proxy's get trap checks per-file mocks first (for mock isolation),
+        // then global mocks. For aliased mocks, __require receives the resolved path
+        // (e.g. "/abs/src/hooks") but mockModule registers under the original path
+        // (e.g. "@scope/pkg/hooks"). __HT_mock_aliases maps resolved → original.
         format!(
-            r#"{{ var __r = globalThis.__HT_mocks || (globalThis.__HT_mocks = {{}}); var __k = {v}.replace(/^\.\//, ''); if (!__r[__k] && !__r[{v}]) __r[{v}] = {{}}; var __t = __r[{v}] || __r[__k] || __r['./' + __k] || {{}}; return typeof Proxy !== 'undefined' ? new Proxy(__t, {{ get: function(t,p) {{ if (p === Symbol.toPrimitive || p === 'then' || p === '$$typeof') return undefined; if (p === '__esModule') return true; var __rr = globalThis.__HT_mocks; var __m = __rr[{v}] || __rr[__k] || __rr['./' + __k]; if (p === 'default') {{ var __d = __m && __m['default']; return __d !== undefined ? __d : (__m || t); }} var val = __m ? __m[p] : t[p]; return val !== undefined ? val : __HT_noop; }}, apply: function() {{ return __HT_noop; }}, construct: function() {{ return {{}}; }} }}) : __t }}"#,
+            r#"{{ var __r = globalThis.__HT_mocks || (globalThis.__HT_mocks = {{}}); var __k = {v}.replace(/^\.\//, ''); if (!__r[__k] && !__r[{v}]) __r[{v}] = {{}}; var __t = __r[{v}] || __r[__k] || __r['./' + __k] || {{}}; return typeof Proxy !== 'undefined' ? new Proxy(__t, {{ get: function(t,p) {{ if (p === Symbol.toPrimitive || p === 'then' || p === '$$typeof') return undefined; if (p === '__esModule') return true; var __fm = globalThis.__HT_file_mocks; var __cf = globalThis.__currentTestFile; var __pf = __fm && __cf && __fm[__cf]; var __al = globalThis.__HT_mock_aliases || {{}}; var __orig = __al[{v}] || __al[__k]; var __m = (__pf && (__pf[{v}] || __pf[__k] || __pf['./' + __k] || (__orig && __pf[__orig]))) || globalThis.__HT_mocks[{v}] || globalThis.__HT_mocks[__k] || globalThis.__HT_mocks['./' + __k]; if (p === 'default') {{ var __d = __m && __m['default']; return __d !== undefined ? __d : (__m || t); }} var val = __m ? __m[p] : t[p]; return val !== undefined ? val : __HT_noop; }}, apply: function() {{ return __HT_noop; }}, construct: function() {{ return {{}}; }} }}) : __t }}"#,
         )
     }).to_string()
+}
+
+/// Hoist mockModule() calls before init_*() calls in esbuild's bundled output.
+/// NOTE: Currently unused. The __require Proxy handles late-binding for externalized mocks.
+/// Alias-conflicting mocks (e.g. @topdanmark/* paths) are resolved by esbuild inline,
+/// so they can't be hoisted — those files need per-file isolation instead.
+/// Kept for future use if we implement pre-bundle Vitest-style import rewriting.
+#[allow(dead_code)]
+fn hoist_mock_modules(code: &str) -> String {
+    // Pattern: (0, import_hermes_test.mockModule)("path", () => ({ ... }));
+    // or: (0, import_hermes_test2.mockModule)("path", () => ({ ... }));
+    // We need to find these, extract them, and move them before init_*() calls.
+
+    let mut result = String::with_capacity(code.len());
+    let bytes = code.as_bytes();
+    let len = bytes.len();
+    let mut i = 0;
+
+    // Process each __commonJS or __esm block that contains test files
+    // Look for the function body pattern: `"filename.test.ts"(exports) {` or `"filename.test.ts"() {`
+    while i < len {
+        // Find test file function bodies inside __commonJS/__esm
+        // Pattern: "something.test.ts"(exports) { or "something.test.ts"() {
+        if let Some(pos) = code[i..].find(".test.ts\"(") {
+            let abs_pos = i + pos;
+            // Find the opening brace of this function body
+            if let Some(brace_offset) = code[abs_pos..].find('{') {
+                let body_start = abs_pos + brace_offset + 1;
+                // Find the end of this function body by counting braces
+                let body_end = find_matching_brace(code, body_start);
+                if body_end > body_start {
+                    // Copy everything up to body_start
+                    result.push_str(&code[i..body_start]);
+
+                    // Process this function body: extract mockModule calls and hoist them
+                    let body = &code[body_start..body_end];
+                    let hoisted = hoist_mocks_in_body(body);
+                    result.push_str(&hoisted);
+
+                    i = body_end;
+                    continue;
+                }
+            }
+            // Couldn't process, copy up to and past this match
+            result.push_str(&code[i..abs_pos + pos + 10]);
+            i = abs_pos + pos + 10;
+        } else {
+            // No more test file blocks
+            result.push_str(&code[i..]);
+            break;
+        }
+    }
+
+    result
+}
+
+/// Find the position of the matching closing brace for an opening brace at `start`.
+/// `start` should be the position right after the opening `{`.
+/// Returns the position of the closing `}`.
+#[allow(dead_code)]
+fn find_matching_brace(code: &str, start: usize) -> usize {
+    let bytes = code.as_bytes();
+    let mut depth = 1;
+    let mut j = start;
+    while j < bytes.len() && depth > 0 {
+        match bytes[j] {
+            b'{' => depth += 1,
+            b'}' => {
+                depth -= 1;
+                if depth == 0 {
+                    return j;
+                }
+            }
+            b'"' | b'\'' | b'`' => {
+                // Skip string literals
+                let quote = bytes[j];
+                j += 1;
+                while j < bytes.len() {
+                    if bytes[j] == b'\\' {
+                        j += 1; // skip escaped char
+                    } else if bytes[j] == quote {
+                        break;
+                    }
+                    j += 1;
+                }
+            }
+            b'/' => {
+                // Skip comments
+                if j + 1 < bytes.len() {
+                    if bytes[j + 1] == b'/' {
+                        // Line comment
+                        while j < bytes.len() && bytes[j] != b'\n' {
+                            j += 1;
+                        }
+                        continue;
+                    } else if bytes[j + 1] == b'*' {
+                        // Block comment
+                        j += 2;
+                        while j + 1 < bytes.len() {
+                            if bytes[j] == b'*' && bytes[j + 1] == b'/' {
+                                j += 1;
+                                break;
+                            }
+                            j += 1;
+                        }
+                    }
+                }
+            }
+            _ => {}
+        }
+        j += 1;
+    }
+    j
+}
+
+/// Extract a balanced parenthesized expression starting at `start` (position of opening paren).
+/// Returns the position after the closing paren (including trailing semicolon/newline).
+#[allow(dead_code)]
+fn extract_call_end(code: &str, start: usize) -> usize {
+    let bytes = code.as_bytes();
+    let mut depth = 0;
+    let mut j = start;
+    while j < bytes.len() {
+        match bytes[j] {
+            b'(' => depth += 1,
+            b')' => {
+                depth -= 1;
+                if depth == 0 {
+                    j += 1;
+                    // Skip trailing semicolon and newline
+                    while j < bytes.len() && (bytes[j] == b';' || bytes[j] == b'\n' || bytes[j] == b'\r' || bytes[j] == b' ') {
+                        j += 1;
+                    }
+                    return j;
+                }
+            }
+            b'"' | b'\'' | b'`' => {
+                let quote = bytes[j];
+                j += 1;
+                while j < bytes.len() {
+                    if bytes[j] == b'\\' {
+                        j += 1;
+                    } else if bytes[j] == quote {
+                        break;
+                    }
+                    j += 1;
+                }
+            }
+            _ => {}
+        }
+        j += 1;
+    }
+    j
+}
+
+/// Within a single function body, find mockModule calls and move them before init_*() calls.
+#[allow(dead_code)]
+fn hoist_mocks_in_body(body: &str) -> String {
+    // Find all mockModule calls: `(0, import_xxx.mockModule)("path", () => ({ ... }));`
+    let mock_pattern = ".mockModule)(";
+
+    // First pass: collect mockModule call ranges
+    let mut mock_ranges: Vec<(usize, usize)> = Vec::new();
+    let mut search_start = 0;
+    while let Some(pos) = body[search_start..].find(mock_pattern) {
+        let abs_pos = search_start + pos;
+        // Walk back to find the start of `(0, import_xxx.mockModule)`
+        // This starts with `(0,` — find the opening paren
+        let mut start = abs_pos;
+        while start > 0 {
+            start -= 1;
+            if body.as_bytes()[start] == b'(' {
+                // Check if this looks like `(0,` pattern
+                let after = body[start..].trim_start_matches('(');
+                if after.starts_with("0,") {
+                    break;
+                }
+            }
+            // Also handle direct `mockModule(` (without (0, wrapper))
+            if body[start..].starts_with("mockModule(") {
+                break;
+            }
+        }
+
+        // Find the end: the closing paren of mockModule(...) call
+        // The call args start after `.mockModule)(`
+        let args_start = abs_pos + mock_pattern.len() - 1; // position of `(`
+        let call_end = extract_call_end(body, args_start);
+
+        // Also include the outer `)` and `;`
+        // Actually, extract_call_end handles the inner mockModule args.
+        // The full expression is: (0, import.mockModule)("path", factory);
+        // We found the (0, part at `start`, and mockModule)( at abs_pos
+        // The outer call is: ...mockModule)("path", factory)
+        // So we need to find the closing paren of the OUTER call
+        let outer_call_start = abs_pos + mock_pattern.len() - 1;
+        let outer_end = extract_call_end(body, outer_call_start);
+
+        mock_ranges.push((start, outer_end));
+        search_start = outer_end;
+    }
+
+    if mock_ranges.is_empty() {
+        return body.to_string();
+    }
+
+    // Find insertion point: after hermes-test require, before other init_*() calls
+    let insert_point = find_mock_insert_point(body);
+
+    // Collect mock call texts
+    let mut mock_texts: Vec<&str> = Vec::new();
+    for &(start, end) in &mock_ranges {
+        let text = body[start..end].trim();
+        mock_texts.push(text);
+    }
+
+    // Rebuild body: everything before insert_point, then mocks, then rest (without original mocks)
+    let mut result = String::with_capacity(body.len());
+
+    // Copy up to insert point
+    result.push_str(&body[..insert_point]);
+
+    // Insert hoisted mocks
+    for text in &mock_texts {
+        result.push_str("      ");
+        result.push_str(text);
+        if !text.ends_with(';') {
+            result.push(';');
+        }
+        result.push('\n');
+    }
+
+    // Copy the rest, skipping the original mock calls
+    let mut pos = insert_point;
+    for &(start, end) in &mock_ranges {
+        if start >= insert_point {
+            result.push_str(&body[pos..start]);
+            pos = end;
+        }
+    }
+    result.push_str(&body[pos..]);
+
+    result
+}
+
+/// Find the insertion point for hoisted mocks in a function body.
+/// Mocks must go AFTER the hermes-test require (so mockModule is defined)
+/// but BEFORE any init_*() calls (so mocks are registered before modules load).
+#[allow(dead_code)]
+fn find_mock_insert_point(body: &str) -> usize {
+    // Strategy: find the end of the hermes-test require line, insert after it.
+    // Patterns: `__require("hermes-test")` or `__require("@marcuzgabriel/hermes-test")`
+    let hermes_patterns = [
+        r#"__require("hermes-test")"#,
+        r#"__require("@marcuzgabriel/hermes-test")"#,
+    ];
+    let mut after_require = 0;
+    for pat in &hermes_patterns {
+        if let Some(pos) = body.find(pat) {
+            // Find end of this statement (next semicolon + newline)
+            let rest = &body[pos..];
+            if let Some(semi) = rest.find(";\n") {
+                let candidate = pos + semi + 2; // after ";\n"
+                if candidate > after_require {
+                    after_require = candidate;
+                }
+            } else if let Some(nl) = rest.find('\n') {
+                let candidate = pos + nl + 1;
+                if candidate > after_require {
+                    after_require = candidate;
+                }
+            }
+        }
+    }
+
+    // If we found a hermes require, also skip past any init_hermes* calls
+    if after_require > 0 {
+        let init_re = regex::Regex::new(r"(?m)^[ \t]*init_hermes\w*\(\);?\n?").unwrap();
+        let mut pos = after_require;
+        while let Some(m) = init_re.find(&body[pos..]) {
+            if m.start() == 0 || body[pos..pos + m.start()].trim().is_empty() {
+                pos += m.end();
+            } else {
+                break;
+            }
+        }
+        return pos;
+    }
+
+    // Fallback: find first non-hermes init_*() call
+    let init_re = regex::Regex::new(r"(?m)^[ \t]*(init_\w+)\(\)").unwrap();
+    for m in init_re.find_iter(body) {
+        let matched = m.as_str().trim();
+        if !matched.starts_with("init_hermes") {
+            return m.start();
+        }
+    }
+
+    0
 }
 
 /// Downlevel ALL `class Foo extends Expr { ... }` patterns to function-based constructors.
@@ -1087,17 +1406,403 @@ pub fn needs_react(test_files: &[PathBuf]) -> bool {
     false
 }
 
+/// Compute a relative path from `from_dir` to `to_file`.
+fn make_relative(from_dir: &Path, to_file: &Path) -> String {
+    let from_parts: Vec<_> = from_dir.components().collect();
+    let to_parts: Vec<_> = to_file.components().collect();
+    // Find common prefix length
+    let common = from_parts.iter().zip(to_parts.iter())
+        .take_while(|(a, b)| a == b)
+        .count();
+    // Go up from from_dir
+    let ups = from_parts.len() - common;
+    let mut result = String::new();
+    for _ in 0..ups {
+        result.push_str("../");
+    }
+    // Go down to to_file
+    for (i, part) in to_parts[common..].iter().enumerate() {
+        if i > 0 { result.push('/'); }
+        result.push_str(&part.as_os_str().to_string_lossy());
+    }
+    if result.is_empty() || !result.starts_with('.') {
+        format!("./{result}")
+    } else {
+        result
+    }
+}
+
+/// Create shadow wrapper directories for aliased mock paths.
+///
+/// For each alias that has mocked sub-paths, creates a shadow directory tree:
+/// - Non-mocked paths: symlinks to the real source
+/// - Mocked paths: Proxy wrapper files that import the real module and delegate
+///   to __HT_file_mocks[__currentTestFile] at access time
+///
+/// Returns updated BundleConfig with aliases pointing to shadow directories.
+/// Caller must clean up shadow directories after bundling.
+pub fn create_shadow_wrappers(
+    project_root: &Path,
+    mock_modules: &[String],
+    cfg: &BundleConfig,
+) -> (BundleConfig, Vec<PathBuf>) {
+    let mut new_cfg = cfg.clone();
+    let mut shadow_dirs: Vec<PathBuf> = Vec::new();
+
+    // Group mocked paths by alias
+    let mut alias_mocks: std::collections::HashMap<String, Vec<String>> = std::collections::HashMap::new();
+    for m in mock_modules {
+        for (alias, _target) in &cfg.aliases {
+            if m == alias || m.starts_with(&format!("{alias}/")) {
+                alias_mocks.entry(alias.clone()).or_default().push(m.clone());
+            }
+        }
+    }
+
+    if alias_mocks.is_empty() {
+        return (new_cfg, shadow_dirs);
+    }
+
+    for (alias, mocked_paths) in &alias_mocks {
+        let Some((_alias_name, target)) = cfg.aliases.iter().find(|(a, _)| a == alias) else { continue };
+
+        let shadow_dir = project_root.join(format!(".hermes-test-shadow-{}", alias.replace('/', "-").replace('@', "")));
+        shadow_dirs.push(shadow_dir.clone());
+
+        // Remove old shadow dir if exists, create fresh
+        let _ = std::fs::remove_dir_all(&shadow_dir);
+
+        // Create shadow by recursively symlinking from real source
+        let real_dir = PathBuf::from(target);
+        if !real_dir.exists() {
+            continue;
+        }
+        create_shadow_tree(&real_dir, &shadow_dir, target, alias, &mocked_paths);
+
+        // Add a "real" alias that wrappers use to import the actual module
+        let real_alias = format!("@__ht_real/{}", alias.trim_start_matches('@'));
+        new_cfg.aliases.push((real_alias.clone(), target.clone()));
+
+        // Update the main alias to point to shadow directory
+        for (a, t) in &mut new_cfg.aliases {
+            if a == alias {
+                *t = shadow_dir.to_string_lossy().to_string();
+            }
+        }
+    }
+
+    (new_cfg, shadow_dirs)
+}
+
+/// Recursively create a shadow directory tree:
+/// - Directories: create real directory, recurse
+/// - Files matching mocked paths: create Proxy wrapper
+/// - Other files: create symlink to real file
+fn create_shadow_tree(
+    real_dir: &Path,
+    shadow_dir: &Path,
+    alias_target: &str,
+    alias_name: &str,
+    mocked_paths: &[String],
+) {
+    let _ = std::fs::create_dir_all(shadow_dir);
+
+    let Ok(entries) = std::fs::read_dir(real_dir) else { return };
+    for entry in entries.flatten() {
+        let name = entry.file_name();
+        let name_str = name.to_string_lossy();
+        let real_path = entry.path();
+        let shadow_path = shadow_dir.join(&name);
+
+        if real_path.is_dir() {
+            // Check if any mocked path falls under this directory
+            let rel = real_path.strip_prefix(alias_target).unwrap_or(&real_path);
+            let dir_mock_prefix = format!("{alias_name}/{}", rel.to_string_lossy());
+            let has_mocked_child = mocked_paths.iter().any(|m| m.starts_with(&dir_mock_prefix));
+            if has_mocked_child {
+                // Recurse into this directory
+                create_shadow_tree(&real_path, &shadow_path, alias_target, alias_name, mocked_paths);
+            } else {
+                // Symlink entire directory
+                let _ = std::os::unix::fs::symlink(&real_path, &shadow_path);
+            }
+        } else {
+            // Check if this file matches a mocked path.
+            // Two patterns:
+            // 1. Direct: hooks/redux/useRedux.ts → @scope/hooks/redux/useRedux
+            // 2. Index/barrel: hooks/index.ts → @scope/hooks (directory import)
+            let rel = real_path.strip_prefix(alias_target).unwrap_or(&real_path);
+            let rel_no_ext = rel.with_extension("");
+            let rel_str = rel_no_ext.to_string_lossy();
+            let direct_path = format!("{alias_name}/{rel_str}");
+            // For index files, also check the parent directory path
+            let is_index = rel_str.ends_with("/index") || rel_str == "index";
+            let index_path = if is_index {
+                let parent = rel_str.trim_end_matches("/index").trim_end_matches("index");
+                if parent.is_empty() {
+                    alias_name.to_string()
+                } else {
+                    format!("{alias_name}/{}", parent.trim_end_matches('/'))
+                }
+            } else {
+                String::new()
+            };
+            let matched_mock = mocked_paths.iter().find(|m| {
+                **m == direct_path || (is_index && **m == index_path)
+            });
+
+            if let Some(mock_path_str) = matched_mock {
+                // Create Proxy wrapper. Use the @__ht_real/ alias to import the
+                // real module via esbuild's resolution (same bundled instance).
+                let real_alias = format!("@__ht_real/{}", alias_name.trim_start_matches('@'));
+                let suffix = mock_path_str.strip_prefix(alias_name).unwrap_or("");
+                let require_path = format!("{real_alias}{suffix}");
+                // Lazy Proxy wrapper: doesn't load the real module until first access.
+                // This avoids circular dependency crashes — the real module is only
+                // loaded when a property is actually read, not at wrapper init time.
+                let wrapper = format!(
+                    r#"var _loaded = null;
+function _getReal() {{ if (!_loaded) _loaded = require("{}"); return _loaded; }}
+var _h = {{ get: function(t, p) {{
+  if (p === '__esModule') return true;
+  if (typeof p === 'symbol') return undefined;
+  if (p === '__DEV__') return false;
+  var fm = globalThis.__HT_file_mocks;
+  var f = globalThis.__currentTestFile;
+  var m = fm && f && fm[f] && fm[f]['{}'];
+  if (m && p in m) return m[p];
+  return _getReal()[p];
+}}}};
+module.exports = typeof Proxy !== 'undefined' ? new Proxy({{}}, _h) : {{}};
+"#,
+                    require_path,
+                    mock_path_str,
+                );
+                let _ = std::fs::write(&shadow_path, wrapper);
+            } else {
+                // Symlink to real file
+                let _ = std::os::unix::fs::symlink(&real_path, &shadow_path);
+            }
+        }
+    }
+}
+
+/// Pre-transform test files that mock aliased paths. Vitest-style approach:
+/// uses OXC AST parser to rewrite imports of mocked modules to lazy Proxy
+/// wrappers that read from __HT_file_mocks at access time, while keeping
+/// the real module available for non-test code via the active alias.
+///
+/// Returns a map of original_path → temp_path for transformed files.
+pub fn pre_transform_test_files(
+    test_files: &[PathBuf],
+    mock_modules: &[String],
+    cfg: &BundleConfig,
+) -> Vec<(PathBuf, PathBuf)> {
+    let mut transforms: Vec<(PathBuf, PathBuf)> = Vec::new();
+
+    // Find which mock paths are aliased (those need pre-transform)
+    let aliased_mocks: Vec<&String> = mock_modules.iter().filter(|m| {
+        cfg.aliases.iter().any(|(alias, _)| {
+            *m == alias || m.starts_with(&format!("{alias}/"))
+        })
+    }).collect();
+
+    if aliased_mocks.is_empty() {
+        return transforms;
+    }
+
+    for file in test_files {
+        let Ok(source) = std::fs::read_to_string(file) else { continue };
+
+        // Check if this file uses any aliased mocks
+        let file_aliased_mocks: Vec<&&String> = aliased_mocks.iter()
+            .filter(|m| source.contains(&format!("mockModule('{m}'")))
+            .collect();
+
+        if file_aliased_mocks.is_empty() {
+            continue;
+        }
+
+        if let Some(transformed) = oxc_transform_test_file(&source, file, &file_aliased_mocks) {
+            let temp_path = file.with_extension("__ht_transformed.ts");
+            if std::fs::write(&temp_path, &transformed).is_ok() {
+                transforms.push((file.clone(), temp_path));
+            }
+        }
+    }
+
+    transforms
+}
+
+/// Use OXC to parse a test file, find imports of mocked aliased paths,
+/// and rewrite them to Proxy-based lazy accessors.
+///
+/// Transform: `import { useX, useY } from '@scope/pkg/hooks';`
+/// Becomes:   (import removed, all refs to useX → __htMock0__.useX)
+///
+/// The Proxy reads from __HT_file_mocks[__currentTestFile]['@scope/pkg/hooks']
+/// at access time, so different test files get different mocks.
+fn oxc_transform_test_file(
+    source: &str,
+    file_path: &Path,
+    aliased_mocks: &[&&String],
+) -> Option<String> {
+    use oxc::allocator::Allocator;
+    use oxc::parser::Parser;
+    use oxc::span::SourceType;
+
+    let allocator = Allocator::default();
+    let source_type = SourceType::from_path(file_path).unwrap_or_default();
+    let ret = Parser::new(&allocator, source, source_type).parse();
+
+    if ret.panicked || !ret.errors.is_empty() {
+        return None;
+    }
+
+    // Collect: for each aliased mock path, find import declarations and their local names.
+    // We'll build text replacements sorted by position (reverse order for safe string splicing).
+    struct ImportInfo {
+        mock_path: String,
+        proxy_var: String,
+        import_start: u32,
+        import_end: u32,
+        // (local_name, span_start, span_end) for all IdentifierReferences to rewrite
+        local_names: Vec<String>,
+    }
+
+    let mut imports_to_rewrite: Vec<ImportInfo> = Vec::new();
+
+    for stmt in &ret.program.body {
+        if let oxc::ast::ast::Statement::ImportDeclaration(import_decl) = stmt {
+            let import_source = import_decl.source.value.as_str();
+            // Check if this import's source matches any aliased mock
+            let mock_idx = aliased_mocks.iter().position(|m| **m == import_source);
+            if let Some(idx) = mock_idx {
+                let mut local_names = Vec::new();
+
+                // Type-only imports can be ignored (esbuild strips them)
+                if import_decl.import_kind == oxc::ast::ast::ImportOrExportKind::Type {
+                    continue;
+                }
+
+                // Collect named imports: import { a, b as c } from '...'
+                if let Some(specifiers) = &import_decl.specifiers {
+                    for spec in specifiers {
+                        match spec {
+                            oxc::ast::ast::ImportDeclarationSpecifier::ImportSpecifier(s) => {
+                                if s.import_kind == oxc::ast::ast::ImportOrExportKind::Type {
+                                    continue;
+                                }
+                                local_names.push(s.local.name.to_string());
+                            }
+                            oxc::ast::ast::ImportDeclarationSpecifier::ImportDefaultSpecifier(s) => {
+                                local_names.push(s.local.name.to_string());
+                            }
+                            oxc::ast::ast::ImportDeclarationSpecifier::ImportNamespaceSpecifier(s) => {
+                                local_names.push(s.local.name.to_string());
+                            }
+                        }
+                    }
+                }
+
+                if !local_names.is_empty() {
+                    imports_to_rewrite.push(ImportInfo {
+                        mock_path: import_source.to_string(),
+                        proxy_var: format!("__htMock{}__", idx),
+                        import_start: import_decl.span.start,
+                        import_end: import_decl.span.end,
+                        local_names,
+                    });
+                }
+            }
+        }
+    }
+
+    if imports_to_rewrite.is_empty() {
+        return None;
+    }
+
+    // Now use OXC semantic analysis to find all references to imported names
+    // and collect their spans for replacement.
+    let semantic_ret = oxc::semantic::SemanticBuilder::new()
+        .build(&ret.program);
+
+    let semantic = &semantic_ret.semantic;
+    let scoping = semantic.scoping();
+    let nodes = semantic.nodes();
+
+    // Collect all replacements: (start, end, replacement_text)
+    let mut replacements: Vec<(u32, u32, String)> = Vec::new();
+
+    // 1. Replace import declarations with Proxy wrappers
+    for info in &imports_to_rewrite {
+        let proxy_code = format!(
+            "var {} = new Proxy({{}}, {{ get: function(_t,_p) {{ \
+             var _fm = globalThis.__HT_file_mocks; \
+             var _f = globalThis.__currentTestFile; \
+             var _m = _fm && _f && _fm[_f] && _fm[_f]['{}']; \
+             return _m ? _m[_p] : _t[_p]; }} }});",
+            info.proxy_var, info.mock_path,
+        );
+        replacements.push((info.import_start, info.import_end, proxy_code));
+    }
+
+    // 2. Find all references to imported names and replace with proxy accessor.
+    for info in &imports_to_rewrite {
+        for local_name in &info.local_names {
+            for symbol_id in scoping.symbol_ids() {
+                if scoping.symbol_name(symbol_id) != local_name {
+                    continue;
+                }
+                // Only top-level bindings (root/module scope)
+                let scope_id = scoping.symbol_scope_id(symbol_id);
+                if scope_id != scoping.root_scope_id() {
+                    continue;
+                }
+                // Found the import binding — replace all references
+                for reference in scoping.get_resolved_references(symbol_id) {
+                    let node = nodes.get_node(reference.node_id());
+                    use oxc::span::GetSpan;
+                    let span = node.span();
+                    replacements.push((
+                        span.start,
+                        span.end,
+                        format!("{}.{}", info.proxy_var, local_name),
+                    ));
+                }
+                break;
+            }
+        }
+    }
+
+    // Sort replacements in reverse order by start position for safe string splicing
+    replacements.sort_by(|a, b| b.0.cmp(&a.0));
+
+    let mut result = source.to_string();
+    for (start, end, replacement) in &replacements {
+        let s = *start as usize;
+        let e = *end as usize;
+        if s <= result.len() && e <= result.len() && s <= e {
+            result = format!("{}{}{}", &result[..s], replacement, &result[e..]);
+        }
+    }
+
+    Some(result)
+}
+
 /// Generate a synthetic entry file that imports the harness and all test files.
+/// `transforms` maps original test file paths to pre-transformed temp paths.
 pub fn generate_entry(
     test_files: &[PathBuf],
     _harness_path: Option<&Path>,
     mock_modules: &[String],
     cfg: &BundleConfig,
+    transforms: &[(PathBuf, PathBuf)],
 ) -> String {
     let mut entry = String::new();
 
-    // Array.isArray polyfill is now in the harness polyfills.js (runs before bundle).
-    // class-extends-Array fix is in fix_all_class_extends() (post-process step).
+    // Common globals expected by RN libraries
+    entry.push_str("if (typeof globalThis.__DEV__ === 'undefined') globalThis.__DEV__ = false;\n");
 
     // Register hermes-test as a mock so `import { test } from 'hermes-test'` resolves to __HT
     entry.push_str("globalThis.__HT_mocks = globalThis.__HT_mocks || {};\n");
@@ -1148,6 +1853,9 @@ pub fn generate_entry(
                 "globalThis.__HT_mocks['{}'] = globalThis.__HT_mocks['{}'] || {{}};\n",
                 path, path
             ));
+
+            // Note: aliased mock paths (@scope/pkg/hooks) are handled via pre-transform
+            // on test files, not via externalization. The alias stays active for bundling.
         }
     }
 
@@ -1163,8 +1871,13 @@ pub fn generate_entry(
     }
 
     // Import test files — tag each with its filename so the harness can track source file
+    // Use pre-transformed temp files for test files with aliased mocks.
     for file in test_files {
-        let path = file.to_string_lossy();
+        let actual_file = transforms.iter()
+            .find(|(orig, _)| orig == file)
+            .map(|(_, temp)| temp.clone())
+            .unwrap_or_else(|| file.clone());
+        let path = actual_file.to_string_lossy();
         let require_path = if path.starts_with('/') || path.starts_with("./") {
             path.to_string()
         } else {
