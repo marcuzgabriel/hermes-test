@@ -1,19 +1,19 @@
+import { test, group, beforeEach, expect } from 'hermes-test';
 // Production test port: PopupManager — 10 tests
 // Original: apps/topdanmark/src/utils/popups/__tests__/PopupManager.test.ts
 //
 // State machine: popup priority queue, quarantine, condition evaluation, caching.
 
-const { test, group, beforeEach, expect } = (globalThis as any).__HT;
 import { PopupManager } from './PopupManager';
 
 beforeEach(() => { PopupManager.reset(); });
 
 group('PopupManager', () => {
-  test('returns empty when no popups registered', ({ expect }: any) => {
+  test('returns empty when no popups registered', () => {
     expect(PopupManager.getPopups()).toEqual([]);
   });
 
-  test('returns popups sorted by priority (highest first)', ({ expect }: any) => {
+  test('returns popups sorted by priority (highest first)', () => {
     PopupManager.register({ id: 'low', priority: 1, condition: () => true });
     PopupManager.register({ id: 'high', priority: 10, condition: () => true });
     PopupManager.register({ id: 'mid', priority: 5, condition: () => true });
@@ -23,7 +23,7 @@ group('PopupManager', () => {
     expect(popups[2].id).toBe('low');
   });
 
-  test('filters out popups whose condition returns false', ({ expect }: any) => {
+  test('filters out popups whose condition returns false', () => {
     PopupManager.register({ id: 'show', priority: 1, condition: () => true });
     PopupManager.register({ id: 'hide', priority: 2, condition: () => false });
     const popups = PopupManager.getPopups();
@@ -31,28 +31,28 @@ group('PopupManager', () => {
     expect(popups[0].id).toBe('show');
   });
 
-  test('quarantined popups are excluded', ({ expect }: any) => {
+  test('quarantined popups are excluded', () => {
     PopupManager.register({ id: 'popup1', priority: 1, condition: () => true });
     PopupManager.setQuarantine('popup1', 60000); // 60s quarantine
     expect(PopupManager.getPopups()).toEqual([]);
   });
 
-  test('isQuarantined returns true during quarantine', ({ expect }: any) => {
+  test('isQuarantined returns true during quarantine', () => {
     PopupManager.setQuarantine('popup1', 60000);
     expect(PopupManager.isQuarantined('popup1')).toBe(true);
   });
 
-  test('isQuarantined returns false when not quarantined', ({ expect }: any) => {
+  test('isQuarantined returns false when not quarantined', () => {
     expect(PopupManager.isQuarantined('popup1')).toBe(false);
   });
 
-  test('cleanCache clears all quarantines', ({ expect }: any) => {
+  test('cleanCache clears all quarantines', () => {
     PopupManager.setQuarantine('popup1', 60000);
     PopupManager.cleanCache();
     expect(PopupManager.isQuarantined('popup1')).toBe(false);
   });
 
-  test('reset clears configs and cache', ({ expect }: any) => {
+  test('reset clears configs and cache', () => {
     PopupManager.register({ id: 'popup1', priority: 1, condition: () => true });
     PopupManager.setQuarantine('popup2', 60000);
     PopupManager.reset();
@@ -60,14 +60,14 @@ group('PopupManager', () => {
     expect(PopupManager.isQuarantined('popup2')).toBe(false);
   });
 
-  test('multiple popups with same priority maintain order', ({ expect }: any) => {
+  test('multiple popups with same priority maintain order', () => {
     PopupManager.register({ id: 'a', priority: 5, condition: () => true });
     PopupManager.register({ id: 'b', priority: 5, condition: () => true });
     const popups = PopupManager.getPopups();
     expect(popups.length).toBe(2);
   });
 
-  test('condition can depend on external state', ({ expect }: any) => {
+  test('condition can depend on external state', () => {
     let showNps = false;
     PopupManager.register({ id: 'nps', priority: 1, condition: () => showNps });
     expect(PopupManager.getPopups().length).toBe(0);

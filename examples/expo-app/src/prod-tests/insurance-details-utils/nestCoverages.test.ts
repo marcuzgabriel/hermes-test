@@ -1,9 +1,9 @@
+import { test, group, expect } from 'hermes-test';
 // Production test port: nestCoverages + countDeductible + getDeductibleState — 9 tests
 // Original: apps/topdanmark/src/areas/Insurance/Details/utils/__tests__/index.test.ts (partial)
 //
 // Pure functions. Real insurance coverage grouping logic running in Hermes.
 
-const { test, group, expect } = (globalThis as any).__HT;
 
 import nestCoverages, {
   CoverageGrp, countDeductible, getDeductibleState, DeductibleStateType,
@@ -11,11 +11,11 @@ import nestCoverages, {
 
 // =============================================
 group('nestCoverages', () => {
-  test('returns empty if no coverages', ({ expect }: any) => {
+  test('returns empty if no coverages', () => {
     expect(nestCoverages([])).toEqual([]);
   });
 
-  test('converts flat list to nested grouped list', ({ expect }: any) => {
+  test('converts flat list to nested grouped list', () => {
     const input = [
       { name: 'Ansvar', chosen: true, coverageId: '001', originalEffectiveDate: '2015-09-17',
         deductibles: [{ code: 'FRI', textForDisplay: '4.100 kr', deductAmount: '4100' }] },
@@ -53,7 +53,7 @@ group('nestCoverages', () => {
 
 // =============================================
 group('countDeductible', () => {
-  test('counts single deductible', ({ expect }: any) => {
+  test('counts single deductible', () => {
     const map = new Map();
     countDeductible(map, {
       name: 'Ansvar', chosen: true, coverageId: '001', originalEffectiveDate: '2015-09-17',
@@ -62,7 +62,7 @@ group('countDeductible', () => {
     expect(map.get('001').size).toBe(1);
   });
 
-  test('counts multiple with same value as one', ({ expect }: any) => {
+  test('counts multiple with same value as one', () => {
     const map = new Map();
     countDeductible(map, {
       name: 'Ansvar', chosen: true, coverageId: '001', originalEffectiveDate: '2015-09-17',
@@ -74,7 +74,7 @@ group('countDeductible', () => {
     expect(map.get('001').size).toBe(1);
   });
 
-  test('handles no deductibles', ({ expect }: any) => {
+  test('handles no deductibles', () => {
     const map = new Map();
     countDeductible(map, {
       name: 'Ansvar', chosen: true, coverageId: '001', originalEffectiveDate: '2015-09-17',
@@ -86,7 +86,7 @@ group('countDeductible', () => {
 
 // =============================================
 group('getDeductibleState', () => {
-  test('returns variable when multiple deductibles', ({ expect }: any) => {
+  test('returns variable when multiple deductibles', () => {
     const map = new Map();
     map.set('001', new Set(['4.100 kr', '5.100 kr']));
     expect(getDeductibleState(map, '001')).toEqual({
@@ -94,7 +94,7 @@ group('getDeductibleState', () => {
     });
   });
 
-  test('returns specific for single value', ({ expect }: any) => {
+  test('returns specific for single value', () => {
     const map = new Map();
     map.set('001', new Set(['5.123 kr']));
     expect(getDeductibleState(map, '001')).toEqual({
@@ -102,7 +102,7 @@ group('getDeductibleState', () => {
     });
   });
 
-  test('returns none for empty string', ({ expect }: any) => {
+  test('returns none for empty string', () => {
     const map = new Map();
     map.set('001', new Set(['']));
     expect(getDeductibleState(map, '001')).toEqual({
@@ -110,7 +110,7 @@ group('getDeductibleState', () => {
     });
   });
 
-  test('returns none for empty set', ({ expect }: any) => {
+  test('returns none for empty set', () => {
     const map = new Map();
     map.set('001', new Set([]));
     expect(getDeductibleState(map, '001')).toEqual({

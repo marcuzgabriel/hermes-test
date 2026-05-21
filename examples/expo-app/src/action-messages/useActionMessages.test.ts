@@ -1,3 +1,4 @@
+import { test, group, beforeEach, renderHook, spy, mockModule, expect } from 'hermes-test';
 // Real-world test: useActionMessages — ported from Jest to hermes-test
 //
 // Original: jest.mock('./useRedux', () => ({ useAppSelector: jest.fn() }))
@@ -5,8 +6,6 @@
 //
 // 3 module-level mocks, 24 test cases, groups, beforeEach
 
-const { test, group, beforeEach, renderHook, spy, mockModule, expect } =
-  (globalThis as any).__HT;
 
 // Spies that persist across tests (like const mockFn = jest.fn())
 const mockDispatchWithErrorHandler = spy(async () => {});
@@ -82,7 +81,7 @@ beforeEach(() => {
 // basic functionality
 // =============================================
 group('basic functionality', () => {
-  test('should return default values when no messages are present', ({ expect }: any) => {
+  test('should return default values when no messages are present', () => {
     useAppSelectorReturn = undefined;
 
     const { current } = renderHook(() => useActionMessages());
@@ -92,7 +91,7 @@ group('basic functionality', () => {
     expect(current.messageItems).toEqual([]);
   });
 
-  test('should return loading state correctly', ({ expect }: any) => {
+  test('should return loading state correctly', () => {
     useAppSelectorReturn = [];
     useIsLoadingReturn = { isLoading: true };
 
@@ -101,7 +100,7 @@ group('basic functionality', () => {
     expect(current.isLoading).toBe(true);
   });
 
-  test('should return error state correctly', ({ expect }: any) => {
+  test('should return error state correctly', () => {
     useAppSelectorReturn = [];
     useErrorHandlingReturn = {
       error: 'Test error',
@@ -114,7 +113,7 @@ group('basic functionality', () => {
     expect(current.error).toBe('Test error');
   });
 
-  test('should call removeError when dismissError is invoked', ({ expect }: any) => {
+  test('should call removeError when dismissError is invoked', () => {
     useAppSelectorReturn = [];
 
     const { current } = renderHook(() => useActionMessages());
@@ -130,7 +129,7 @@ group('basic functionality', () => {
 // fetchGetActionMessages
 // =============================================
 group('fetchGetActionMessages', () => {
-  test('should dispatch without forceRefetch by default', ({ expect }: any) => {
+  test('should dispatch without forceRefetch by default', () => {
     useAppSelectorReturn = [];
 
     const { current } = renderHook(() => useActionMessages());
@@ -140,7 +139,7 @@ group('fetchGetActionMessages', () => {
     expect(mockDispatchWithErrorHandler).wasCalledOnce();
   });
 
-  test('should dispatch with forceRefetch when specified', ({ expect }: any) => {
+  test('should dispatch with forceRefetch when specified', () => {
     useAppSelectorReturn = [];
 
     const { current } = renderHook(() => useActionMessages());
@@ -155,7 +154,7 @@ group('fetchGetActionMessages', () => {
 // dismiss
 // =============================================
 group('dismiss', () => {
-  test('should dispatch dismissActionMessage', ({ expect }: any) => {
+  test('should dispatch dismissActionMessage', () => {
     useAppSelectorReturn = [];
     const mockMessage = createMockActionMessage('TEST_TYPE', 'CAR_MILLAGE_ABOVE');
 
@@ -171,7 +170,7 @@ group('dismiss', () => {
 // message filtering and parsing
 // =============================================
 group('message filtering and parsing', () => {
-  test('should exclude CLAIM_MITMESSAGE message types', ({ expect }: any) => {
+  test('should exclude CLAIM_MITMESSAGE message types', () => {
     useAppSelectorReturn = [
       createMockActionMessage('CLAIM_MITMESSAGE', 'CLAIM_MITMESSAGE'),
       createMockActionMessage('OTHER_TYPE', 'CAR_MILLAGE_ABOVE'),
@@ -183,7 +182,7 @@ group('message filtering and parsing', () => {
     expect(current.messageItems[0].docType).toBe('CAR_MILLAGE_ABOVE');
   });
 
-  test('should exclude CLAIM_MITMESSAGE_MULTIPLE message types', ({ expect }: any) => {
+  test('should exclude CLAIM_MITMESSAGE_MULTIPLE message types', () => {
     useAppSelectorReturn = [
       createMockActionMessage('CLAIM_MITMESSAGE_MULTIPLE', 'CLAIM_MITMESSAGE_MULTIPLE'),
       createMockActionMessage('OTHER_TYPE', 'CAR_MILLAGE_BELOW'),
@@ -195,7 +194,7 @@ group('message filtering and parsing', () => {
     expect(current.messageItems[0].docType).toBe('CAR_MILLAGE_BELOW');
   });
 
-  test('should parse CAR_MILLAGE_ABOVE message correctly', ({ expect }: any) => {
+  test('should parse CAR_MILLAGE_ABOVE message correctly', () => {
     useAppSelectorReturn = [
       createMockActionMessage('TEST_TYPE', 'CAR_MILLAGE_ABOVE', {
         policyNumber: 'POL123',
@@ -211,7 +210,7 @@ group('message filtering and parsing', () => {
     expect(item.policyNumber).toBe('POL123');
   });
 
-  test('should parse CAR_MILLAGE_BELOW message correctly', ({ expect }: any) => {
+  test('should parse CAR_MILLAGE_BELOW message correctly', () => {
     useAppSelectorReturn = [
       createMockActionMessage('TEST_TYPE', 'CAR_MILLAGE_BELOW', {
         policyNumber: 'POL456',
@@ -226,7 +225,7 @@ group('message filtering and parsing', () => {
     expect(item.formType).toBe(FormType.MILEAGE);
   });
 
-  test('should parse CAR_MILLAGE_MISSING message correctly', ({ expect }: any) => {
+  test('should parse CAR_MILLAGE_MISSING message correctly', () => {
     useAppSelectorReturn = [
       createMockActionMessage('TEST_TYPE', 'CAR_MILLAGE_MISSING'),
     ];
@@ -239,7 +238,7 @@ group('message filtering and parsing', () => {
     expect(item.formType).toBe(FormType.MILEAGE);
   });
 
-  test('should parse claim messages with claim number in subtitle', ({ expect }: any) => {
+  test('should parse claim messages with claim number in subtitle', () => {
     useAppSelectorReturn = [
       createMockActionMessage('TEST_TYPE', 'CLAIM_TDC', {
         claimNumber: 'CLM-789',
@@ -254,7 +253,7 @@ group('message filtering and parsing', () => {
     expect(item.subtitle).toBe('Skadenummer: CLM-789');
   });
 
-  test('should handle POA_PENDING_CPR with dynamic variables', ({ expect }: any) => {
+  test('should handle POA_PENDING_CPR with dynamic variables', () => {
     useAppSelectorReturn = [createMockActionMessage('TEST_TYPE', 'POA_PENDING_CPR')];
 
     const { current } = renderHook(() => useActionMessages());
@@ -265,7 +264,7 @@ group('message filtering and parsing', () => {
     expect(item.subtitle).toBeUndefined();
   });
 
-  test('should handle MISSING_INFO_ODOMETER_READING with dynamic variables', ({ expect }: any) => {
+  test('should handle MISSING_INFO_ODOMETER_READING with dynamic variables', () => {
     useAppSelectorReturn = [
       createMockActionMessage('TEST_TYPE', 'MISSING_INFO_ODOMETER_READING'),
     ];
@@ -278,7 +277,7 @@ group('message filtering and parsing', () => {
     expect(item.subtitle).toBeUndefined();
   });
 
-  test('should extract policyNumber from insuranceNumber', ({ expect }: any) => {
+  test('should extract policyNumber from insuranceNumber', () => {
     useAppSelectorReturn = [
       createMockActionMessage('TEST_TYPE', 'CAR_MILLAGE_ABOVE', {
         insuranceNumber: 'INS-999',
@@ -291,7 +290,7 @@ group('message filtering and parsing', () => {
     expect(current.messageItems[0].policyNumber).toBe('INS-999');
   });
 
-  test('should extract policyNumber from OdometerData', ({ expect }: any) => {
+  test('should extract policyNumber from OdometerData', () => {
     useAppSelectorReturn = [
       createMockActionMessage('TEST_TYPE', 'CAR_MILLAGE_ABOVE', {
         policyNumber: 'POL-888',
@@ -306,7 +305,7 @@ group('message filtering and parsing', () => {
     expect(current.messageItems[0].policyNumber).toBe('POL-888');
   });
 
-  test('should parse CTA button correctly', ({ expect }: any) => {
+  test('should parse CTA button correctly', () => {
     useAppSelectorReturn = [
       createMockActionMessage('TEST_TYPE', 'CAR_MILLAGE_ABOVE', {
         document: {
@@ -328,7 +327,7 @@ group('message filtering and parsing', () => {
     expect(item.ctaButton.link).toBe('https://test.com');
   });
 
-  test('should include raw message object in messageItems', ({ expect }: any) => {
+  test('should include raw message object in messageItems', () => {
     const mockMessage = createMockActionMessage('TEST_TYPE', 'CAR_MILLAGE_ABOVE');
     useAppSelectorReturn = [mockMessage];
 
@@ -343,7 +342,7 @@ group('message filtering and parsing', () => {
 // multiple messages
 // =============================================
 group('multiple messages', () => {
-  test('should parse multiple messages correctly', ({ expect }: any) => {
+  test('should parse multiple messages correctly', () => {
     useAppSelectorReturn = [
       createMockActionMessage('TYPE1', 'CAR_MILLAGE_ABOVE', { policyNumber: 'POL-1' }),
       createMockActionMessage('TYPE2', 'CLAIM_TDC', { claimNumber: 'CLM-1' }),
@@ -358,7 +357,7 @@ group('multiple messages', () => {
     expect(current.messageItems[2].policyNumber).toBe('POL-2');
   });
 
-  test('should filter excluded messages from a mixed list', ({ expect }: any) => {
+  test('should filter excluded messages from a mixed list', () => {
     useAppSelectorReturn = [
       createMockActionMessage('TYPE1', 'CAR_MILLAGE_ABOVE'),
       createMockActionMessage('CLAIM_MITMESSAGE', 'CLAIM_MITMESSAGE'),
@@ -382,7 +381,7 @@ group('multiple messages', () => {
 // edge cases
 // =============================================
 group('edge cases', () => {
-  test('should handle empty messages array', ({ expect }: any) => {
+  test('should handle empty messages array', () => {
     useAppSelectorReturn = [];
 
     const { current } = renderHook(() => useActionMessages());
@@ -390,7 +389,7 @@ group('edge cases', () => {
     expect(current.messageItems).toEqual([]);
   });
 
-  test('should handle message with missing optional data fields', ({ expect }: any) => {
+  test('should handle message with missing optional data fields', () => {
     useAppSelectorReturn = [
       createMockActionMessage('TEST_TYPE', 'CAR_MILLAGE_ABOVE', {}),
     ];
@@ -402,7 +401,7 @@ group('edge cases', () => {
     expect(current.messageItems[0].claimNumber).toBeUndefined();
   });
 
-  test('should assign unique keys to each message item', ({ expect }: any) => {
+  test('should assign unique keys to each message item', () => {
     useAppSelectorReturn = [
       createMockActionMessage('TYPE1', 'CAR_MILLAGE_ABOVE'),
       createMockActionMessage('TYPE2', 'CAR_MILLAGE_BELOW'),

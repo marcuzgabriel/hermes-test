@@ -1,4 +1,4 @@
-const { test, renderHook, act } = (globalThis as any).__HT;
+import { test, renderHook, act, expect } from 'hermes-test';
 import { useCounter } from './useCounter';
 
 test('hook 0', (ctx: any) => {

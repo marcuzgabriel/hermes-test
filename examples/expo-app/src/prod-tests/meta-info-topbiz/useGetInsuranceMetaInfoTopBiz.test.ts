@@ -1,5 +1,5 @@
+import { test, group, beforeEach, expect } from 'hermes-test';
 // Production test port: useGetInsuranceMetaInfoTopBiz — 5 tests
-const { test, group, beforeEach, expect } = (globalThis as any).__HT;
 import { withStore } from '../shared/testStore';
 import { useGetInsuranceMetaInfoTopBiz } from './useGetInsuranceMetaInfoTopBiz';
 
@@ -10,12 +10,12 @@ const stakeholders = [{ cxrNumber: '38544500', company: { name: 'TestCompany', a
 const objectList = [{ turnOver: { operatingLosses: 12 }, activityList: [{ mainActivity: true, transportActivityAmount: 159000, typeOfBusiness: { text: 'Anlæg' } }] }];
 
 group('useGetInsuranceMetaInfoTopBiz', () => {
-  test('returns null when no details', ({ expect }: any) => {
+  test('returns null when no details', () => {
     const { current } = ctx.renderHookWithReduxStore(() => useGetInsuranceMetaInfoTopBiz({ insuranceProductType: 'LIABILITY' }));
     expect(current).toBeNull();
   });
 
-  test('returns stakeholders and product type', ({ expect }: any) => {
+  test('returns stakeholders and product type', () => {
     ctx.patchState({ insuranceDetails: { topBiz: { stakeholders, insuranceObjectList: objectList, coverages: [] } } });
     const { current } = ctx.renderHookWithReduxStore(() => useGetInsuranceMetaInfoTopBiz({ insuranceProductType: 'LIABILITY' }));
     expect(current.productType).toBe('LIABILITY');
@@ -23,20 +23,20 @@ group('useGetInsuranceMetaInfoTopBiz', () => {
     expect(current.stakeholders[0].company.name).toBe('TestCompany');
   });
 
-  test('returns activities from insurance object list', ({ expect }: any) => {
+  test('returns activities from insurance object list', () => {
     ctx.patchState({ insuranceDetails: { topBiz: { stakeholders, insuranceObjectList: objectList, coverages: [] } } });
     const { current } = ctx.renderHookWithReduxStore(() => useGetInsuranceMetaInfoTopBiz({ insuranceProductType: 'TRANSPORT' }));
     expect(current.activities.length).toBe(1);
     expect(current.activities[0].typeOfBusiness.text).toBe('Anlæg');
   });
 
-  test('returns operating losses', ({ expect }: any) => {
+  test('returns operating losses', () => {
     ctx.patchState({ insuranceDetails: { topBiz: { stakeholders, insuranceObjectList: objectList, coverages: [] } } });
     const { current } = ctx.renderHookWithReduxStore(() => useGetInsuranceMetaInfoTopBiz({ insuranceProductType: 'BUSINESS_INTERRUPTION' }));
     expect(current.operatingLosses).toBe(12);
   });
 
-  test('returns coverages', ({ expect }: any) => {
+  test('returns coverages', () => {
     const coverages = [{ name: 'Ansvar', coverageAmount: 5000000 }];
     ctx.patchState({ insuranceDetails: { topBiz: { stakeholders, insuranceObjectList: objectList, coverages } } });
     const { current } = ctx.renderHookWithReduxStore(() => useGetInsuranceMetaInfoTopBiz({ insuranceProductType: 'LIABILITY' }));

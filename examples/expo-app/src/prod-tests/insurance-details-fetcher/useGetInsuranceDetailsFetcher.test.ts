@@ -1,3 +1,4 @@
+import { test, group, beforeEach, act, spy, expect } from 'hermes-test';
 // Production test port: useGetInsuranceDetailsFetcher — 11 tests
 // Original: apps/topdanmark/src/hooks/insuranceDetails/__tests__/useGetInsuranceDetailsFetcher.test.ts
 //
@@ -5,7 +6,6 @@
 // detailsFetchable guard, forceRefetch, Promise.allSettled.
 // Uses spy() for dispatch tracking, withStore for insurances state.
 
-const { test, group, beforeEach, act, spy, expect } = (globalThis as any).__HT;
 
 import { withStore } from '../shared/testStore';
 import {
@@ -53,33 +53,33 @@ beforeEach(() => {
 });
 
 group('fetching status', () => {
-  test('DID_FETCH after fetchInsuranceDetails completes', ({ expect }: any) => {
+  test('DID_FETCH after fetchInsuranceDetails completes', () => {
     const hook = ctx.renderHookWithReduxStore(() => useGetInsuranceDetailsFetcher(false, makeConfig()));
     act(() => { hook.current.fetchInsuranceDetails({ system: InsuranceSystem.PRIMO, insuranceAgreementNumber: '123', insuranceProductType: 'ACCIDENT', insuranceProductId: 123 }); });
     // After act, the hook re-renders with updated state
     expect(hook.current.fetchingStatus).toBe(FetchingStatus.DID_FETCH);
   });
 
-  test('FETCHING initially when hasDetails=false', ({ expect }: any) => {
+  test('FETCHING initially when hasDetails=false', () => {
     const { current } = ctx.renderHookWithReduxStore(() => useGetInsuranceDetailsFetcher(false, makeConfig()));
     expect(current.fetchingStatus).toBe(FetchingStatus.FETCHING);
   });
 
-  test('DID_FETCH initially when hasDetails=true', ({ expect }: any) => {
+  test('DID_FETCH initially when hasDetails=true', () => {
     const { current } = ctx.renderHookWithReduxStore(() => useGetInsuranceDetailsFetcher(true, makeConfig()));
     expect(current.fetchingStatus).toBe(FetchingStatus.DID_FETCH);
   });
 });
 
 group('fetch Primo', () => {
-  test('dispatches when fetchable', ({ expect }: any) => {
+  test('dispatches when fetchable', () => {
     const { current } = ctx.renderHookWithReduxStore(() => useGetInsuranceDetailsFetcher(false, makeConfig()));
     act(() => { current.fetchInsuranceDetails({ system: InsuranceSystem.PRIMO, insuranceAgreementNumber: '123', insuranceProductType: 'ACCIDENT', insuranceProductId: 123 }); });
     expect(dispatchMock).wasCalledOnce();
     expect(primoInitiate).wasCalledWith({ insuranceAgreementNumber: '123' }, undefined);
   });
 
-  test('does not dispatch when non-fetchable', ({ expect }: any) => {
+  test('does not dispatch when non-fetchable', () => {
     ctx.patchState({ insurances: { data: nonFetchable } });
     const { current } = ctx.renderHookWithReduxStore(() => useGetInsuranceDetailsFetcher(false, makeConfig()));
     act(() => { current.fetchInsuranceDetails({ system: InsuranceSystem.PRIMO, insuranceAgreementNumber: '123', insuranceProductType: 'ACCIDENT', insuranceProductId: 123 }); });
@@ -88,20 +88,20 @@ group('fetch Primo', () => {
 });
 
 group('fetch TopBiz', () => {
-  test('dispatches for regular TopBiz', ({ expect }: any) => {
+  test('dispatches for regular TopBiz', () => {
     const { current } = ctx.renderHookWithReduxStore(() => useGetInsuranceDetailsFetcher(false, makeConfig()));
     act(() => { current.fetchInsuranceDetails({ system: InsuranceSystem.TOP_BIZ, insuranceAgreementNumber: '123', insuranceProductType: TopBizType.PATIENT_INJURY, insuranceProductId: 123 }); });
     expect(dispatchMock.callCount).toBe(2); // details + agreement period
     expect(topBizInitiate).wasCalledWith({ insuranceAgreementNumber: '123', insuranceProductId: 123 }, undefined);
   });
 
-  test('uses machine endpoint for MACHINE type', ({ expect }: any) => {
+  test('uses machine endpoint for MACHINE type', () => {
     const { current } = ctx.renderHookWithReduxStore(() => useGetInsuranceDetailsFetcher(false, makeConfig()));
     act(() => { current.fetchInsuranceDetails({ system: InsuranceSystem.TOP_BIZ, insuranceAgreementNumber: '123', insuranceProductType: TopBizType.MACHINE, insuranceProductId: 123 }); });
     expect(topBizMachineInitiate).wasCalledWith({ insuranceAgreementNumber: '123', insuranceProductId: 123 }, undefined);
   });
 
-  test('does not dispatch when non-fetchable', ({ expect }: any) => {
+  test('does not dispatch when non-fetchable', () => {
     ctx.patchState({ insurances: { data: nonFetchable } });
     const { current } = ctx.renderHookWithReduxStore(() => useGetInsuranceDetailsFetcher(false, makeConfig()));
     act(() => { current.fetchInsuranceDetails({ system: InsuranceSystem.TOP_BIZ, insuranceAgreementNumber: '123', insuranceProductType: TopBizType.PATIENT_INJURY, insuranceProductId: 123 }); });
@@ -110,14 +110,14 @@ group('fetch TopBiz', () => {
 });
 
 group('fetch Guidewire', () => {
-  test('dispatches with lobName', ({ expect }: any) => {
+  test('dispatches with lobName', () => {
     const { current } = ctx.renderHookWithReduxStore(() => useGetInsuranceDetailsFetcher(false, makeConfig()));
     act(() => { current.fetchInsuranceDetails({ system: InsuranceSystem.GUIDEWIRE, insuranceAgreementNumber: '123', insuranceProductType: 'PET', guidewireIdentifier: { lobName: LobName.PET, lobFlavor: null, lobFlavorCoverableId: '', shouldFetchDetails: true } }); });
     expect(dispatchMock).wasCalledOnce();
     expect(guidewireInitiate).wasCalledWith({ insuranceAgreementNumber: '123', lobName: LobName.PET }, undefined);
   });
 
-  test('does not dispatch when shouldFetchDetails=false', ({ expect }: any) => {
+  test('does not dispatch when shouldFetchDetails=false', () => {
     const { current } = ctx.renderHookWithReduxStore(() => useGetInsuranceDetailsFetcher(false, makeConfig()));
     act(() => { current.fetchInsuranceDetails({ system: InsuranceSystem.GUIDEWIRE, insuranceAgreementNumber: '123', insuranceProductType: 'PET', guidewireIdentifier: { lobName: LobName.PET, lobFlavor: null, lobFlavorCoverableId: '', shouldFetchDetails: false } }); });
     expect(guidewireInitiate).wasNeverCalled();

@@ -1,8 +1,7 @@
+import { test, group, beforeEach, afterEach, http, HttpResponse, mockFetch, mockFetchUse, mockFetchReset, flushAsync, expect } from 'hermes-test';
 // RTK Query store test — real Redux store, mockFetch intercepts network
 // Mirrors: reducers/slices/api/login/__tests__/login.test.ts
 
-const { test, group, beforeEach, afterEach, http, HttpResponse, mockFetch, mockFetchUse, mockFetchReset, flushAsync, expect } =
-  (globalThis as any).__HT;
 
 import appApi from './api';
 import type { LoginPayload } from './api';
@@ -52,7 +51,7 @@ group('login endpoint', () => {
     signature: 'mock-sig',
   };
 
-  test('successful login returns tokens', ({ expect }: any) => {
+  test('successful login returns tokens', () => {
     const result = flushAsync(
       store.dispatch(appApi.endpoints.login.initiate(payload))
     );
@@ -61,7 +60,7 @@ group('login endpoint', () => {
     expect(result.data.accessToken).toBe('mock-access-token-xyz');
   });
 
-  test('failed login returns error', ({ expect }: any) => {
+  test('failed login returns error', () => {
     mockFetchUse(
       http.post('https://api.example.com/auth/login', () =>
         HttpResponse.json({ message: 'Invalid credentials' }, { status: 400 })
@@ -79,7 +78,7 @@ group('login endpoint', () => {
 
 // =============================================
 group('getProfile query', () => {
-  test('fetches user profile', ({ expect }: any) => {
+  test('fetches user profile', () => {
     const result = flushAsync(
       store.dispatch(appApi.endpoints.getProfile.initiate('user-123'))
     );
@@ -88,7 +87,7 @@ group('getProfile query', () => {
     expect(result.data.name).toBe('Test User');
   });
 
-  test('handles 404 profile', ({ expect }: any) => {
+  test('handles 404 profile', () => {
     mockFetchUse(
       http.get('https://api.example.com/users/user-123', () =>
         HttpResponse.json({ message: 'Not found' }, { status: 404 })
@@ -106,7 +105,7 @@ group('getProfile query', () => {
 
 // =============================================
 group('updateProfile mutation', () => {
-  test('updates user name', ({ expect }: any) => {
+  test('updates user name', () => {
     const result = flushAsync(
       store.dispatch(
         appApi.endpoints.updateProfile.initiate({ id: 'user-123', name: 'New Name' })
@@ -120,14 +119,14 @@ group('updateProfile mutation', () => {
 
 // =============================================
 group('store state', () => {
-  test('query result is cached in store', ({ expect }: any) => {
+  test('query result is cached in store', () => {
     flushAsync(store.dispatch(appApi.endpoints.getProfile.initiate('user-123')));
 
     const state: any = store.getState();
     expect(Object.keys(state.appApi.queries).length).toBeGreaterThan(0);
   });
 
-  test('resetApiState clears cache', ({ expect }: any) => {
+  test('resetApiState clears cache', () => {
     flushAsync(store.dispatch(appApi.endpoints.getProfile.initiate('user-123')));
 
     store.dispatch(appApi.util.resetApiState());

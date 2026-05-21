@@ -1,7 +1,7 @@
-const { test, expect, mockFetch, http, HttpResponse, flushAsync } = (globalThis as any).__HT;
+import { test, expect, mockFetch, http, HttpResponse, flushAsync } from 'hermes-test';
 
 // Test the Reflect.construct Tuple replacement in isolation
-test('Reflect.construct Tuple basics', ({ expect }: any) => {
+test('Reflect.construct Tuple basics', () => {
   // This is exactly what our new Patch 3 injects
   const Tuple = (function() {
     function Tuple() {
@@ -65,7 +65,7 @@ mockFetch(
   http.get('https://api.example.com/data', () => HttpResponse.json({ result: 'ok' })),
 );
 
-test('configureStore + dispatch with mockFetch', ({ expect }: any) => {
+test('configureStore + dispatch with mockFetch', () => {
   const api = createApi({
     reducerPath: 'testApi',
     baseQuery: fetchBaseQuery({ baseUrl: 'https://api.example.com' }),

@@ -1,10 +1,10 @@
+import { test, group, beforeEach, expect } from 'hermes-test';
 // Production test port: useActionFormData — 13 tests
 // Original: apps/topdanmark/src/areas/Claims/ActionForm/hooks/__tests__/useActionFormData.test.ts
 //
 // Hook reads RTK cache from store. Tests seed store.api.queries with action data + config.
 // Complex: datepicker ISO conversion, list merging, radio mapping, checkbox zones.
 
-const { test, group, beforeEach, expect } = (globalThis as any).__HT;
 import { withStore } from '../shared/testStore';
 import { useActionFormData } from './useActionFormData';
 
@@ -172,7 +172,7 @@ beforeEach(() => {
 });
 
 group('useActionFormData', () => {
-  test('returns null when cache is empty', ({ expect }: any) => {
+  test('returns null when cache is empty', () => {
     const { current } = ctx.renderHookWithReduxStore(() =>
       useActionFormData('group-1', 'action-1', 'UHELDET_HAENDELSEN', 'SELECTOR_INCIDENT_AUTO'));
     expect(current.actionConfig).toBeNull();
@@ -180,7 +180,7 @@ group('useActionFormData', () => {
   });
 
   group('step 1 — when/where (datepicker)', () => {
-    test('transforms DD/MM-YYYY to ISO format', ({ expect }: any) => {
+    test('transforms DD/MM-YYYY to ISO format', () => {
       mockRTKCache(whenAndWhereAction, whenAndWhereConfig);
       const { current } = ctx.renderHookWithReduxStore(() =>
         useActionFormData('group-1', 'a-when-where', 'UHELDET_HVORNAAR_HVOR', 'DATEPICKER_TIME_FREE_TEXT_INPUT'));
@@ -188,7 +188,7 @@ group('useActionFormData', () => {
       expect(dateField?.value).toMatch(/^\d{4}-\d{2}-\d{2}T/);
     });
 
-    test('preserves time field value as-is', ({ expect }: any) => {
+    test('preserves time field value as-is', () => {
       mockRTKCache(whenAndWhereAction, whenAndWhereConfig);
       const { current } = ctx.renderHookWithReduxStore(() =>
         useActionFormData('group-1', 'a-when-where', 'UHELDET_HVORNAAR_HVOR', 'DATEPICKER_TIME_FREE_TEXT_INPUT'));
@@ -196,7 +196,7 @@ group('useActionFormData', () => {
       expect(timeField?.value).toBe('01:00');
     });
 
-    test('preserves address text field', ({ expect }: any) => {
+    test('preserves address text field', () => {
       mockRTKCache(whenAndWhereAction, whenAndWhereConfig);
       const { current } = ctx.renderHookWithReduxStore(() =>
         useActionFormData('group-1', 'a-when-where', 'UHELDET_HVORNAAR_HVOR', 'DATEPICKER_TIME_FREE_TEXT_INPUT'));
@@ -206,7 +206,7 @@ group('useActionFormData', () => {
   });
 
   group('step 2 — what happened (radio + textarea)', () => {
-    test('maps radio and textarea correctly', ({ expect }: any) => {
+    test('maps radio and textarea correctly', () => {
       mockRTKCache(whatHappenedAction, whatHappenedConfig);
       const { current } = ctx.renderHookWithReduxStore(() =>
         useActionFormData('group-1', 'a-what-happened', 'UHELDET_HAENDELSEN', 'SELECTOR_INCIDENT_AUTO'));
@@ -216,7 +216,7 @@ group('useActionFormData', () => {
   });
 
   group('step 3 — fault assessment', () => {
-    test('maps radio selection correctly', ({ expect }: any) => {
+    test('maps radio selection correctly', () => {
       mockRTKCache(faultAssessmentAction, faultAssessmentConfig);
       const { current } = ctx.renderHookWithReduxStore(() =>
         useActionFormData('group-1', 'a-fault', 'UHELDET_SKYLD_OPFATTELSE', 'SELECTOR_NO_CONTENT'));
@@ -225,7 +225,7 @@ group('useActionFormData', () => {
   });
 
   group('step 4 — vehicle damage zones', () => {
-    test('maps checkbox fields correctly', ({ expect }: any) => {
+    test('maps checkbox fields correctly', () => {
       mockRTKCache(vehicleDamageAction, vehicleDamageConfig);
       const { current } = ctx.renderHookWithReduxStore(() =>
         useActionFormData('group-1', 'a-damage', 'SKADE_KOERETOEJ', 'DAMAGE_ZONES'));
@@ -237,7 +237,7 @@ group('useActionFormData', () => {
   });
 
   group('step 5 — driver info', () => {
-    test('maps radio + conditional fields', ({ expect }: any) => {
+    test('maps radio + conditional fields', () => {
       mockRTKCache(driverIsInsideHouseholdAction, driverConfig);
       const { current } = ctx.renderHookWithReduxStore(() =>
         useActionFormData('group-1', 'a-driver', 'BILENS_FOERER', 'SELECTOR_DRIVER'));
@@ -250,7 +250,7 @@ group('useActionFormData', () => {
   });
 
   group('step 6 — counter parties (dynamic list)', () => {
-    test('merges two list items into a single JSON array', ({ expect }: any) => {
+    test('merges two list items into a single JSON array', () => {
       mockRTKCache(counterPartyTwoAction, counterPartyConfig);
       const { current } = ctx.renderHookWithReduxStore(() =>
         useActionFormData('group-1', 'a-counter', 'OPLYSNINGER_OM_MODPARTER_2', 'SELECTOR_DYNAMIC_LIST'));
@@ -264,7 +264,7 @@ group('useActionFormData', () => {
       expect(parsed[1].fields.oplysningerOmModparter2NumberPlate).toBe('222');
     });
 
-    test('strips Item suffix from list field name', ({ expect }: any) => {
+    test('strips Item suffix from list field name', () => {
       mockRTKCache(counterPartyTwoAction, counterPartyConfig);
       const { current } = ctx.renderHookWithReduxStore(() =>
         useActionFormData('group-1', 'a-counter', 'OPLYSNINGER_OM_MODPARTER_2', 'SELECTOR_DYNAMIC_LIST'));
@@ -274,14 +274,14 @@ group('useActionFormData', () => {
   });
 
   group('step 7 — witnesses (dynamic list)', () => {
-    test('preserves radio selection', ({ expect }: any) => {
+    test('preserves radio selection', () => {
       mockRTKCache(independentWitnessesAction, {});
       const { current } = ctx.renderHookWithReduxStore(() =>
         useActionFormData('group-1', 'a-witness', 'UVILDIGE_VIDNER_TIL_UHELDET', 'SELECTOR_DYNAMIC_LIST'));
       expect(current.actionData?.fields.find((f: any) => f.name === 'uvildigeVidnerTilUheldetRadio')?.value).toBe('Ja');
     });
 
-    test('merges two witnesses into JSON array', ({ expect }: any) => {
+    test('merges two witnesses into JSON array', () => {
       mockRTKCache(independentWitnessesAction, {});
       const { current } = ctx.renderHookWithReduxStore(() =>
         useActionFormData('group-1', 'a-witness', 'UVILDIGE_VIDNER_TIL_UHELDET', 'SELECTOR_DYNAMIC_LIST'));
@@ -298,14 +298,14 @@ group('useActionFormData', () => {
   });
 
   group('step 9 — reported to police', () => {
-    test('maps radio with ValueID', ({ expect }: any) => {
+    test('maps radio with ValueID', () => {
       mockRTKCache(reportedToPoliceAction, reportedToPoliceConfig);
       const { current } = ctx.renderHookWithReduxStore(() =>
         useActionFormData('group-1', 'a-police', 'MELDT_TIL_POLITI_2', 'SELECTOR_NO_CONTENT'));
       expect(current.actionData?.fields.find((f: any) => f.name === 'meldtTilPoliti2Radio')?.value).toBe('Nej');
     });
 
-    test('maps config fields and options', ({ expect }: any) => {
+    test('maps config fields and options', () => {
       mockRTKCache(reportedToPoliceAction, reportedToPoliceConfig);
       const { current } = ctx.renderHookWithReduxStore(() =>
         useActionFormData('group-1', 'a-police', 'MELDT_TIL_POLITI_2', 'SELECTOR_NO_CONTENT'));

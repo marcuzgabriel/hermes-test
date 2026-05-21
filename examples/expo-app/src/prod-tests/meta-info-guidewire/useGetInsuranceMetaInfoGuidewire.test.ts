@@ -1,5 +1,5 @@
+import { test, group, beforeEach, expect } from 'hermes-test';
 // Production test port: useGetInsuranceMetaInfoGuidewire — 5 tests
-const { test, group, beforeEach, expect } = (globalThis as any).__HT;
 import { withStore } from '../shared/testStore';
 import { useGetInsuranceMetaInfoGuidewire } from './useGetInsuranceMetaInfoGuidewire';
 
@@ -17,12 +17,12 @@ const gwDetails = {
 };
 
 group('useGetInsuranceMetaInfoGuidewire', () => {
-  test('returns null when no details', ({ expect }: any) => {
+  test('returns null when no details', () => {
     const { current } = ctx.renderHookWithReduxStore(() => useGetInsuranceMetaInfoGuidewire({ guidewireIdentifier: { lobName: 'accident' } }));
     expect(current).toBeNull();
   });
 
-  test('returns coverages and lobName', ({ expect }: any) => {
+  test('returns coverages and lobName', () => {
     ctx.patchState({ insuranceDetails: { guidewire: gwDetails } });
     const { current } = ctx.renderHookWithReduxStore(() => useGetInsuranceMetaInfoGuidewire({ guidewireIdentifier: { lobName: 'accident' } }));
     expect(current.lobName).toBe('accident');
@@ -30,21 +30,21 @@ group('useGetInsuranceMetaInfoGuidewire', () => {
     expect(current.coverages[0].name).toBe('Varigt mén');
   });
 
-  test('returns terms', ({ expect }: any) => {
+  test('returns terms', () => {
     ctx.patchState({ insuranceDetails: { guidewire: gwDetails } });
     const { current } = ctx.renderHookWithReduxStore(() => useGetInsuranceMetaInfoGuidewire({ guidewireIdentifier: { lobName: 'accident' } }));
     expect(current.terms.length).toBe(2);
     expect(current.terms[0].name).toBe('Forsikringssum');
   });
 
-  test('returns insuredContentList for private content', ({ expect }: any) => {
+  test('returns insuredContentList for private content', () => {
     ctx.patchState({ insuranceDetails: { guidewire: gwDetails } });
     const { current } = ctx.renderHookWithReduxStore(() => useGetInsuranceMetaInfoGuidewire({ guidewireIdentifier: { lobName: 'private_content' } }));
     expect(current.insuredContentList.length).toBe(1);
     expect(current.insuredContentList[0].category).toBe('Smykker');
   });
 
-  test('returns title', ({ expect }: any) => {
+  test('returns title', () => {
     ctx.patchState({ insuranceDetails: { guidewire: gwDetails } });
     const { current } = ctx.renderHookWithReduxStore(() => useGetInsuranceMetaInfoGuidewire({ guidewireIdentifier: { lobName: 'pet' } }));
     expect(current.title).toBe('Ulykkesforsikring');

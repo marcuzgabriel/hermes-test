@@ -1,12 +1,12 @@
+import { test, group, renderHook, expect } from 'hermes-test';
 // Production test port: useGetCoverageInfoGuidewire — 6 tests
-const { test, group, renderHook, expect } = (globalThis as any).__HT;
 import { useGetCoverageInfoGuidewire } from './useGetCoverageInfoGuidewire';
 
 const baseCoverage = { publicID: 'cov1', name: 'Varigt mén og tandskade' };
 const baseCoverageData = [{ coverageItemId: 'cov1', title: 'Varigt mén og tandskade', subtitle: 'Subtitle text', included: { title: 'Dækker', items: ['Item 1'] }, excluded: { title: 'Dækker ikke', items: ['Item 2'] } }];
 
 group('useGetCoverageInfoGuidewire', () => {
-  test('returns title and subtitle from CMS data', ({ expect }: any) => {
+  test('returns title and subtitle from CMS data', () => {
     const { current } = renderHook(() => useGetCoverageInfoGuidewire({
       insuranceDetails: { coverages: [baseCoverage], terms: [] }, coverageData: baseCoverageData, lobName: 'accident', selectedInsuranceProduct: {},
     }));
@@ -14,7 +14,7 @@ group('useGetCoverageInfoGuidewire', () => {
     expect(current.coverageSubtitle).toBe('Subtitle text');
   });
 
-  test('returns deductibleNone when no deductible terms', ({ expect }: any) => {
+  test('returns deductibleNone when no deductible terms', () => {
     const { current } = renderHook(() => useGetCoverageInfoGuidewire({
       insuranceDetails: { coverages: [baseCoverage], terms: [] }, coverageData: baseCoverageData, lobName: 'accident', selectedInsuranceProduct: {},
     }));
@@ -22,7 +22,7 @@ group('useGetCoverageInfoGuidewire', () => {
     expect(current.deductibles.deductAmount).toBe('');
   });
 
-  test('returns deductible amount for money type', ({ expect }: any) => {
+  test('returns deductible amount for money type', () => {
     const terms = [{ modelType_Top: 'Deductible', type: 'FixedDeductible', name: 'Selvrisiko', chosenTermValue: '750', valueTypeCode_Top: 'money' }];
     const { current } = renderHook(() => useGetCoverageInfoGuidewire({
       insuranceDetails: { coverages: [baseCoverage], terms }, coverageData: baseCoverageData, lobName: 'accident', selectedInsuranceProduct: {},
@@ -31,7 +31,7 @@ group('useGetCoverageInfoGuidewire', () => {
     expect(current.deductibles.textForDisplay).toContain('750');
   });
 
-  test('returns insured sums from terms', ({ expect }: any) => {
+  test('returns insured sums from terms', () => {
     const terms = [{ modelType_Top: 'InsuredSum', name: 'Forsikringssum', chosenTermValue: '1000000', valueTypeCode_Top: 'money' }];
     const { current } = renderHook(() => useGetCoverageInfoGuidewire({
       insuranceDetails: { coverages: [baseCoverage], terms }, coverageData: baseCoverageData, lobName: 'accident', selectedInsuranceProduct: {},
@@ -41,7 +41,7 @@ group('useGetCoverageInfoGuidewire', () => {
     expect(current.coverageInsuredSums[0].content).toContain('1000000');
   });
 
-  test('returns coverage details from CMS', ({ expect }: any) => {
+  test('returns coverage details from CMS', () => {
     const { current } = renderHook(() => useGetCoverageInfoGuidewire({
       insuranceDetails: { coverages: [baseCoverage], terms: [] }, coverageData: baseCoverageData, lobName: 'accident', selectedInsuranceProduct: {},
     }));
@@ -49,7 +49,7 @@ group('useGetCoverageInfoGuidewire', () => {
     expect(current.coverageDetails.excluded.items.length).toBe(1);
   });
 
-  test('returns extend link for travel', ({ expect }: any) => {
+  test('returns extend link for travel', () => {
     const { current } = renderHook(() => useGetCoverageInfoGuidewire({
       insuranceDetails: { coverages: [baseCoverage], terms: [] }, coverageData: baseCoverageData, lobName: 'travel', selectedInsuranceProduct: { insuranceAgreementNumber: 'AG999' },
     }));

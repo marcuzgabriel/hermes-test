@@ -1,9 +1,9 @@
+import { test, group, expect } from 'hermes-test';
 // Production test port: primoCoverageHelper — 7 tests
 // Original: apps/topdanmark/src/areas/Insurance/Coverage/helpers/__tests__/primoCoverageHelper.test.ts
 //
 // Pure function. Coverage data aggregation for Primo insurance UI.
 
-const { test, group, expect } = (globalThis as any).__HT;
 import primoCoverageHelper from './primoCoverageHelper';
 
 const coverageData = [{
@@ -38,7 +38,7 @@ const baseArgs = {
 };
 
 group('primoCoverageHelper', () => {
-  test('returns expected object with valid input', ({ expect }: any) => {
+  test('returns expected object with valid input', () => {
     const result = primoCoverageHelper(baseArgs);
     expect(result.title).toBe('Coverage Name');
     expect(result.subtitle).toBe('Coverage Subtitle');
@@ -53,7 +53,7 @@ group('primoCoverageHelper', () => {
     expect(result.futureInEffectData).toBeNull();
   });
 
-  test('handles missing deductible information', ({ expect }: any) => {
+  test('handles missing deductible information', () => {
     const result = primoCoverageHelper({
       ...baseArgs,
       insuranceMetaInfo: { ...insuranceMetaInfo, coverages: [{ coverageId: 'coverage1', name: 'Coverage Name', chosen: true, originalEffectiveDate: '2020-01-01' }] },
@@ -61,7 +61,7 @@ group('primoCoverageHelper', () => {
     expect(result.deductibles).toBeUndefined();
   });
 
-  test('handles deductible percent with exceptions and notes', ({ expect }: any) => {
+  test('handles deductible percent with exceptions and notes', () => {
     const result = primoCoverageHelper({
       ...baseArgs,
       insuranceMetaInfo: {
@@ -80,7 +80,7 @@ group('primoCoverageHelper', () => {
     expect(result.deductibles.notes).toEqual(['Coverage Name: Exception']);
   });
 
-  test('handles invalid coverageId gracefully', ({ expect }: any) => {
+  test('handles invalid coverageId gracefully', () => {
     const result = primoCoverageHelper({ ...baseArgs, coverageId: 'invalidCoverageId' });
     expect(result.title).toBe('');
     expect(result.subtitle).toBe('');
@@ -89,7 +89,7 @@ group('primoCoverageHelper', () => {
     expect(result.details.excluded.items).toEqual([]);
   });
 
-  test('generates travel extend link', ({ expect }: any) => {
+  test('generates travel extend link', () => {
     const result = primoCoverageHelper({
       ...baseArgs,
       insuranceMetaInfo: { ...insuranceMetaInfo, productType: 'ANNUAL_TRAVEL' },
@@ -97,7 +97,7 @@ group('primoCoverageHelper', () => {
     expect(result.extendCoverageLink).toBe('https://mit.topdanmark.dk/travel/extend/123');
   });
 
-  test('generates car extend link', ({ expect }: any) => {
+  test('generates car extend link', () => {
     const result = primoCoverageHelper({
       ...baseArgs,
       insuranceMetaInfo: { ...insuranceMetaInfo, productType: 'PERSONAL_CAR' },
@@ -105,7 +105,7 @@ group('primoCoverageHelper', () => {
     expect(result.extendCoverageLink).toBe('https://mit.topdanmark.dk/car/extend/123');
   });
 
-  test('returns futureInEffectData when coverage item has future date', ({ expect }: any) => {
+  test('returns futureInEffectData when coverage item has future date', () => {
     const result = primoCoverageHelper({
       ...baseArgs,
       coverageItems: [{ id: 'coverage1', isSelected: true, futureInEffectDate: '2025-01-01', coveragePrice: '500' }],

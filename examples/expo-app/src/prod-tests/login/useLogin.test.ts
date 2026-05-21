@@ -1,6 +1,5 @@
+import { test, group, beforeEach, renderHook, act, flushAsync, spy, expect } from 'hermes-test';
 // Production test port: useLogin — 12 tests
-const { test, group, beforeEach, renderHook, act, flushAsync, spy, expect } =
-  (globalThis as any).__HT;
 
 import { useLogin, keychainStorage } from './useLogin';
 
@@ -20,7 +19,7 @@ beforeEach(() => {
 const makeDeps = () => ({ authenticate: authenticateMock, openAuthSession: openAuthSessionMock, fetchTokens: fetchTokensMock });
 
 group('requestTokensFromKeychain', () => {
-  test('returns stored session with successful biometric', ({ expect }: any) => {
+  test('returns stored session with successful biometric', () => {
     keychainStorage._store['session'] = mockSession;
     const hook = renderHook(() => useLogin(makeDeps()));
     const result = flushAsync(hook.current.requestTokensFromKeychain());
@@ -29,14 +28,14 @@ group('requestTokensFromKeychain', () => {
     expect(authenticateMock).wasCalledOnce();
   });
 
-  test('fails when no stored session', ({ expect }: any) => {
+  test('fails when no stored session', () => {
     const hook = renderHook(() => useLogin(makeDeps()));
     const result = flushAsync(hook.current.requestTokensFromKeychain());
     expect(result.success).toBe(false);
     expect(result.error).toContain('No stored session');
   });
 
-  test('fails when biometric fails', ({ expect }: any) => {
+  test('fails when biometric fails', () => {
     keychainStorage._store['session'] = mockSession;
     authenticateMock = spy(async () => ({ success: false }));
     const hook = renderHook(() => useLogin({ ...makeDeps(), authenticate: authenticateMock }));
@@ -45,7 +44,7 @@ group('requestTokensFromKeychain', () => {
     expect(result.error).toContain('Biometric');
   });
 
-  test('works without biometric (no authenticate dep)', ({ expect }: any) => {
+  test('works without biometric (no authenticate dep)', () => {
     keychainStorage._store['session'] = mockSession;
     const hook = renderHook(() => useLogin({ ...makeDeps(), authenticate: undefined }));
     const result = flushAsync(hook.current.requestTokensFromKeychain());
@@ -54,7 +53,7 @@ group('requestTokensFromKeychain', () => {
 });
 
 group('webViewLogin', () => {
-  test('successful web login stores session', ({ expect }: any) => {
+  test('successful web login stores session', () => {
     const hook = renderHook(() => useLogin(makeDeps()));
     const result = flushAsync(hook.current.webViewLogin('https://auth.example.com'));
     expect(result.success).toBe(true);
@@ -64,7 +63,7 @@ group('webViewLogin', () => {
     expect(keychainStorage._store['session']).toEqual(mockSession);
   });
 
-  test('fails when auth cancelled', ({ expect }: any) => {
+  test('fails when auth cancelled', () => {
     openAuthSessionMock = spy(async () => ({ type: 'cancel' }));
     const hook = renderHook(() => useLogin({ ...makeDeps(), openAuthSession: openAuthSessionMock }));
     const result = flushAsync(hook.current.webViewLogin('https://auth.example.com'));
@@ -72,7 +71,7 @@ group('webViewLogin', () => {
     expect(result.error).toContain('cancelled');
   });
 
-  test('fails when no code in callback URL', ({ expect }: any) => {
+  test('fails when no code in callback URL', () => {
     openAuthSessionMock = spy(async () => ({ type: 'success', url: 'https://callback?nocode=true' }));
     const hook = renderHook(() => useLogin({ ...makeDeps(), openAuthSession: openAuthSessionMock }));
     const result = flushAsync(hook.current.webViewLogin('https://auth.example.com'));
@@ -80,7 +79,7 @@ group('webViewLogin', () => {
     expect(result.error).toContain('No auth code');
   });
 
-  test('fails when no openAuthSession handler', ({ expect }: any) => {
+  test('fails when no openAuthSession handler', () => {
     const hook = renderHook(() => useLogin({ ...makeDeps(), openAuthSession: undefined }));
     const result = flushAsync(hook.current.webViewLogin('https://auth.example.com'));
     expect(result.success).toBe(false);
@@ -88,21 +87,21 @@ group('webViewLogin', () => {
 });
 
 group('setSession', () => {
-  test('manually sets session and stores in keychain', ({ expect }: any) => {
+  test('manually sets session and stores in keychain', () => {
     const hook = renderHook(() => useLogin(makeDeps()));
     act(() => { flushAsync(hook.current.setSession(mockSession)); });
     expect(hook.current.session).toEqual(mockSession);
     expect(keychainStorage._store['session']).toEqual(mockSession);
   });
 
-  test('overwrites previous session', ({ expect }: any) => {
+  test('overwrites previous session', () => {
     keychainStorage._store['session'] = { accessToken: 'old', refreshToken: 'old', expiresIn: 100 };
     const hook = renderHook(() => useLogin(makeDeps()));
     act(() => { flushAsync(hook.current.setSession(mockSession)); });
     expect(hook.current.session.accessToken).toBe('access-123');
   });
 
-  test('session starts as null', ({ expect }: any) => {
+  test('session starts as null', () => {
     const hook = renderHook(() => useLogin(makeDeps()));
     expect(hook.current.session).toBeNull();
     expect(hook.current.isLoading).toBe(false);

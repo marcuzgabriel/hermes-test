@@ -1,11 +1,10 @@
+import { test, group, beforeEach, renderHook, mockModule, expect } from 'hermes-test';
 // Production test port: useGetInsurancesOverview — 12 tests
 // Original: apps/topdanmark/src/hooks/insurances/__tests__/useGetInsurancesOverview.test.ts
 //
 // Uses mockModule for getInsuranceTitles + withStore for useGetIndexBySelectedInsuranceProduct.
 // Tests the main hook (pure arg), index lookup (store-backed), and product-by-index (store-backed).
 
-const { test, group, beforeEach, renderHook, mockModule, expect } =
-  (globalThis as any).__HT;
 
 import { withStore } from '../shared/testStore';
 
@@ -49,12 +48,12 @@ beforeEach(() => {
 
 // =============================================
 group('useGetInsurancesOverview', () => {
-  test('returns empty array for empty products', ({ expect }: any) => {
+  test('returns empty array for empty products', () => {
     const { current } = renderHook(() => useGetInsurancesOverview([]));
     expect(current).toEqual([]);
   });
 
-  test('returns overview with titles', ({ expect }: any) => {
+  test('returns overview with titles', () => {
     getInsuranceTitlesReturn = { title: 'Car Insurance', subtitle: 'car' };
     const products = [mkProduct({ id: '1', agr: 'AG123', type: T.PERSONAL_CAR, numbers: [123] })];
     const { current } = renderHook(() => useGetInsurancesOverview(products));
@@ -65,14 +64,14 @@ group('useGetInsurancesOverview', () => {
     expect(current[0].selectedInsuranceProduct.insuranceAgreementNumber).toBe('AG123');
   });
 
-  test('handles missing titles gracefully', ({ expect }: any) => {
+  test('handles missing titles gracefully', () => {
     getInsuranceTitlesReturn = null;
     const products = [mkProduct({})];
     const { current } = renderHook(() => useGetInsurancesOverview(products));
     expect(current).toEqual([]);
   });
 
-  test('returns showExternalLink for wage insurance', ({ expect }: any) => {
+  test('returns showExternalLink for wage insurance', () => {
     getInsuranceTitlesReturn = { title: 'Wage Insurance', subtitle: 'wage' };
     const products = [mkProduct({ type: T.WAGE_INSURANCE, displayKey: 'wageInsurance' })];
     const { current } = renderHook(() => useGetInsurancesOverview(products));
@@ -96,13 +95,13 @@ group('useGetIndexBySelectedInsuranceProduct', () => {
     };
   }
 
-  test('returns -1 for null', ({ expect }: any) => {
+  test('returns -1 for null', () => {
     setup();
     const { current } = ctx.renderHookWithReduxStore(() => useGetIndexBySelectedInsuranceProduct(null));
     expect(current).toBe(-1);
   });
 
-  test('returns correct index for first product', ({ expect }: any) => {
+  test('returns correct index for first product', () => {
     setup();
     const { current } = ctx.renderHookWithReduxStore(() => useGetIndexBySelectedInsuranceProduct({
       system: S.PRIMO, insuranceAgreementNumber: 'AG123', insuranceProductType: T.PERSONAL_CAR,
@@ -111,7 +110,7 @@ group('useGetIndexBySelectedInsuranceProduct', () => {
     expect(current).toBe(0);
   });
 
-  test('returns correct index for second product', ({ expect }: any) => {
+  test('returns correct index for second product', () => {
     setup();
     const { current } = ctx.renderHookWithReduxStore(() => useGetIndexBySelectedInsuranceProduct({
       system: S.PRIMO, insuranceAgreementNumber: 'AG456', insuranceProductType: T.WAGE_INSURANCE,
@@ -120,7 +119,7 @@ group('useGetIndexBySelectedInsuranceProduct', () => {
     expect(current).toBe(1);
   });
 
-  test('returns -1 for non-matching product', ({ expect }: any) => {
+  test('returns -1 for non-matching product', () => {
     setup();
     const { current } = ctx.renderHookWithReduxStore(() => useGetIndexBySelectedInsuranceProduct({
       system: S.PRIMO, insuranceAgreementNumber: 'AG999', insuranceProductType: T.PERSONAL_CAR,
@@ -144,19 +143,19 @@ group('useGetSelectedInsuranceProductByIndex', () => {
     };
   }
 
-  test('returns product for valid index', ({ expect }: any) => {
+  test('returns product for valid index', () => {
     setup();
     const { current } = ctx.renderHookWithReduxStore(() => useGetSelectedInsuranceProductByIndex(0));
     expect(current.insuranceAgreementNumber).toBe('AG123');
   });
 
-  test('returns product for second index', ({ expect }: any) => {
+  test('returns product for second index', () => {
     setup();
     const { current } = ctx.renderHookWithReduxStore(() => useGetSelectedInsuranceProductByIndex(1));
     expect(current.insuranceAgreementNumber).toBe('AG456');
   });
 
-  test('returns undefined for invalid index', ({ expect }: any) => {
+  test('returns undefined for invalid index', () => {
     setup();
     const { current } = ctx.renderHookWithReduxStore(() => useGetSelectedInsuranceProductByIndex(999));
     expect(current).toBeUndefined();

@@ -1,7 +1,7 @@
-const { test, renderHook, waitFor, spy } = (globalThis as any).__HT;
+import { test, renderHook, waitFor, spy, expect } from 'hermes-test';
 import { useUser } from './useUser';
 
-test('useUser loads user data', ({ expect }: any) => {
+test('useUser loads user data', () => {
   const fetchUser = spy(async (id: number) => ({ id, name: 'Test User' }));
 
   const result = renderHook(() => useUser(1, { fetchUser }));
@@ -15,7 +15,7 @@ test('useUser loads user data', ({ expect }: any) => {
   expect(fetchUser).wasCalledWith(1);
 });
 
-test('useUser handles errors', ({ expect }: any) => {
+test('useUser handles errors', () => {
   const fetchUser = spy(async () => { throw new Error('Network error'); });
 
   const result = renderHook(() => useUser(1, { fetchUser }));
@@ -27,7 +27,7 @@ test('useUser handles errors', ({ expect }: any) => {
   expect(result.current.loading).toBe(false);
 });
 
-test('useUser tracks state history', ({ expect }: any) => {
+test('useUser tracks state history', () => {
   const fetchUser = spy(async (id: number) => ({ id, name: 'User ' + id }));
 
   const result = renderHook(() => useUser(1, { fetchUser }));

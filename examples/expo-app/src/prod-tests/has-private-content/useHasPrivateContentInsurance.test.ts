@@ -1,10 +1,9 @@
+import { test, group, beforeEach, expect } from 'hermes-test';
 // Production test port: useHasPrivateContentInsurance — 8 tests
 // Original: apps/topdanmark/src/hooks/insurances/__tests__/useHasPrivateContentInsurance.test.ts
 //
 // Zero mocks. Store seeded with products, hook reads via useSelector.
 
-const { test, group, beforeEach, expect } =
-  (globalThis as any).__HT;
 
 import { withStore } from '../shared/testStore';
 import { useHasPrivateContentInsurance } from './useHasPrivateContentInsurances';
@@ -38,7 +37,7 @@ const gwIdentifier = (lobName: string, lobFlavor: string) => ({
 
 // =============================================
 group('hasPrivateContentInsurance / privateContentInsurances', () => {
-  test('returns false when no privateContent insurances', ({ expect }: any) => {
+  test('returns false when no privateContent insurances', () => {
     ctx.patchState({ insurances: { products: [
       product(System.PRIMO, PrimoType.ACCIDENT),
       product(System.UNKNOWN, TopBizType.BUILDING_DAMAGE),
@@ -49,7 +48,7 @@ group('hasPrivateContentInsurance / privateContentInsurances', () => {
     expect(current.privateContentInsurances).toEqual([]);
   });
 
-  test('returns true for Primo HOUSEHOLD_GOODS', ({ expect }: any) => {
+  test('returns true for Primo HOUSEHOLD_GOODS', () => {
     const products = [
       product(System.PRIMO, PrimoType.CAR_RENTAL),
       product(System.PRIMO, PrimoType.HOUSEHOLD_GOODS),
@@ -61,14 +60,14 @@ group('hasPrivateContentInsurance / privateContentInsurances', () => {
     expect(current.privateContentInsurances).toEqual([products[1]]);
   });
 
-  test('returns false for TopBiz business insurance', ({ expect }: any) => {
+  test('returns false for TopBiz business insurance', () => {
     ctx.patchState({ insurances: { products: [product(System.TOP_BIZ, TopBizType.BUSINESS_TRAVEL)] } });
 
     const { current } = ctx.renderHookWithReduxStore(() => useHasPrivateContentInsurance());
     expect(current.hasPrivateContentInsurance).toBe(false);
   });
 
-  test('returns true for Guidewire STANDARD', ({ expect }: any) => {
+  test('returns true for Guidewire STANDARD', () => {
     const p = [product(System.GUIDEWIRE, PrimoType.HOUSEHOLD_GOODS, gwIdentifier(LobName.PRIVATE_CONTENT, LobFlavor.STANDARD))];
     ctx.patchState({ insurances: { products: p } });
 
@@ -77,14 +76,14 @@ group('hasPrivateContentInsurance / privateContentInsurances', () => {
     expect(current.privateContentInsurances).toEqual([p[0]]);
   });
 
-  test('returns true for Guidewire COOP_STANDARD', ({ expect }: any) => {
+  test('returns true for Guidewire COOP_STANDARD', () => {
     ctx.patchState({ insurances: { products: [product(System.GUIDEWIRE, PrimoType.HOUSEHOLD_GOODS, gwIdentifier(LobName.PRIVATE_CONTENT, LobFlavor.COOP_STANDARD))] } });
 
     const { current } = ctx.renderHookWithReduxStore(() => useHasPrivateContentInsurance());
     expect(current.hasPrivateContentInsurance).toBe(true);
   });
 
-  test('returns true for Guidewire YOUTH', ({ expect }: any) => {
+  test('returns true for Guidewire YOUTH', () => {
     ctx.patchState({ insurances: { products: [product(System.GUIDEWIRE, PrimoType.HOUSEHOLD_GOODS, gwIdentifier(LobName.PRIVATE_CONTENT, LobFlavor.YOUTH))] } });
 
     const { current } = ctx.renderHookWithReduxStore(() => useHasPrivateContentInsurance());
@@ -94,7 +93,7 @@ group('hasPrivateContentInsurance / privateContentInsurances', () => {
 
 // =============================================
 group('isPrivateContentInsurance', () => {
-  test('returns true for valid privateContent selections', ({ expect }: any) => {
+  test('returns true for valid privateContent selections', () => {
     const { current } = ctx.renderHookWithReduxStore(() => useHasPrivateContentInsurance());
 
     expect(current.isPrivateContentInsurance({ system: System.PRIMO, insuranceProductType: PrimoType.HOUSEHOLD_GOODS })).toBe(true);
@@ -104,7 +103,7 @@ group('isPrivateContentInsurance', () => {
     expect(current.isPrivateContentInsurance({ system: System.GUIDEWIRE, guidewireIdentifier: gwIdentifier(LobName.PRIVATE_CONTENT, LobFlavor.YOUTH) })).toBe(true);
   });
 
-  test('returns false for non-privateContent selections', ({ expect }: any) => {
+  test('returns false for non-privateContent selections', () => {
     const { current } = ctx.renderHookWithReduxStore(() => useHasPrivateContentInsurance());
 
     expect(current.isPrivateContentInsurance({ system: System.PRIMO, insuranceProductType: PrimoType.ACCIDENT })).toBe(false);

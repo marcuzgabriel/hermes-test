@@ -27,7 +27,7 @@ function withTestActions(reducer: (state: any, action: any) => any) {
 }
 
 function makeCtx(store: any) {
-  const { renderHook } = (globalThis as any).__HT;
+  const { renderHook } = require('hermes-test');
 
   const wrapper = ({ children }: { children: React.ReactNode }) =>
     React.createElement(Provider, { store } as any, children);
