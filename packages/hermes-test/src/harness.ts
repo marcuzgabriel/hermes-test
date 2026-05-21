@@ -8,7 +8,7 @@ import { useMock, mockModule, resetMocks } from './mock';
 import { mockFetch, mockFetchUse, mockFetchReset, mockFetchClear, http, HttpResponse } from './fetch';
 import { useFakeTimers, useRealTimers, advanceTimersByTime, runAllTimers, getTimerCount, advanceTimersToNextTimer } from './timers';
 
-type TestFn = (ctx: TestContext) => void | Promise<void>;
+type TestFn = ((ctx: TestContext) => void | Promise<void>) | (() => void | Promise<void>);
 type TestContext = {
   expect: typeof expect;
   spy: typeof spy;

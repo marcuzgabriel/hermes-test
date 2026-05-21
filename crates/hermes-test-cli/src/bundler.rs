@@ -227,8 +227,8 @@ fn bundle_esbuild(
         cmd.arg(format!("--alias:{alias}={target}"));
     }
 
-    // Default externals: React Native uses Flow syntax
-    for ext in &["react-native", "react-native/*", "@react-native/*"] {
+    // Default externals: hermes-test (thin re-export from __HT), React Native (Flow syntax)
+    for ext in &["hermes-test", "@marcuzgabriel/hermes-test", "react-native", "react-native/*", "@react-native/*"] {
         cmd.arg(format!("--external:{ext}"));
     }
 
@@ -692,6 +692,11 @@ pub fn generate_entry(
 
     // Array.isArray polyfill is now in the harness polyfills.js (runs before bundle).
     // class-extends-Array fix is in fix_class_extends_array() (post-process step).
+
+    // Register hermes-test as a mock so `import { test } from 'hermes-test'` resolves to __HT
+    entry.push_str("globalThis.__HT_mocks = globalThis.__HT_mocks || {};\n");
+    entry.push_str("globalThis.__HT_mocks['hermes-test'] = globalThis.__HT;\n");
+    entry.push_str("globalThis.__HT_mocks['@marcuzgabriel/hermes-test'] = globalThis.__HT;\n");
 
     // Pre-register mock module placeholders BEFORE anything loads.
     // mockModule() in the test file will populate these objects with actual spies.

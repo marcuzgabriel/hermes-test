@@ -1,14 +1,13 @@
-const { test, renderHook, act } = (globalThis as any).__HT;
-
+import { test, expect, renderHook, act } from 'hermes-test';
 import { useCounter } from './useCounter';
 
-test('useCounter starts at initial value', ({ expect }: any) => {
+test('useCounter starts at initial value', () => {
   const { current, renderCount } = renderHook(() => useCounter(5));
   expect(current.count).toBe(5);
   expect(renderCount).toBe(1);
 });
 
-test('useCounter increments', ({ expect }: any) => {
+test('useCounter increments', () => {
   const result = renderHook(() => useCounter(0));
 
   act(() => result.current.increment());
@@ -17,7 +16,7 @@ test('useCounter increments', ({ expect }: any) => {
   expect(result.renderCount).toBe(2);
 });
 
-test('useCounter tracks state history', ({ expect }: any) => {
+test('useCounter tracks state history', () => {
   const result = renderHook(() => useCounter(0));
 
   act(() => result.current.increment());
@@ -29,7 +28,7 @@ test('useCounter tracks state history', ({ expect }: any) => {
   expect(result.renderCount).toBe(4);
 });
 
-test('useCounter resets', ({ expect }: any) => {
+test('useCounter resets', () => {
   const result = renderHook(() => useCounter(10));
 
   act(() => result.current.increment());
