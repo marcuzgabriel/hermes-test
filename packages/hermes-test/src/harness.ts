@@ -191,6 +191,16 @@ function runTests(): TestResult[] {
   return results;
 }
 
+// Reset between watch cycles (persistent runtime)
+function resetRegistry(): void {
+  tests.length = 0;
+  beforeEachHooks.length = 0;
+  afterEachHooks.length = 0;
+  beforeAllHooks.length = 0;
+  afterAllHooks.length = 0;
+  currentGroup = undefined;
+}
+
 // Expose to the global scope for the harness entry
 (globalThis as any).__HT = {
   test,
@@ -215,6 +225,7 @@ function runTests(): TestResult[] {
   http,
   HttpResponse,
   flushAsync,
+  resetRegistry,
   // Timer control
   useFakeTimers,
   useRealTimers,

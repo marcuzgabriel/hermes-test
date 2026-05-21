@@ -242,6 +242,7 @@ fn bundle_esbuild_with_config(
         .arg("--bundle")
         .arg("--format=iife")
         .arg("--target=es2020")
+        // No --minify — our Hermes compat patches match unminified esbuild output patterns.
         .arg("--supported:async-await=false")
         .arg("--define:process.env.NODE_ENV=\"test\"")
         .arg("--define:global=globalThis")
@@ -325,6 +326,7 @@ fn bundle_esbuild_with_config(
 
     Ok(code)
 }
+
 /// Compile JS to Hermes bytecode in-process via linked Hermes compiler.
 /// No subprocess, no temp files. Returns None if bundle has no classes.
 pub fn compile_to_bytecode(code: &str, _context_path: &Path) -> Option<Vec<u8>> {
@@ -1256,6 +1258,25 @@ fn generate_vendor_entry(packages: &[String], setup_code: &str) -> String {
 }
 
 /// Extract package names from __require("...") calls in bundled code.
+// Public wrappers for persistent watch mode
+pub fn generate_group_entry_pub(test_files: &[PathBuf], mock_modules: &[String]) -> String {
+    generate_group_entry(test_files, mock_modules)
+}
+
+pub fn find_esbuild_pub(project_root: &Path) -> Result<PathBuf, ()> {
+    find_esbuild(project_root)
+}
+
+pub fn bundle_esbuild_with_config_pub(
+    entry_file: &Path,
+    esbuild_path: &Path,
+    external_modules: &[String],
+    cfg: &BundleConfig,
+    packages_external: bool,
+) -> Result<String, String> {
+    bundle_esbuild_with_config(entry_file, esbuild_path, external_modules, cfg, packages_external)
+}
+
 fn extract_required_packages(code: &str) -> Vec<String> {
     let re = regex::Regex::new(r#"__require\("([^"]+)"\)"#).unwrap();
     let mut packages = Vec::new();

@@ -495,8 +495,22 @@ fn watch_tests(files: &[PathBuf], root: &PathBuf, bundler: Option<bundler::Bundl
     eprintln!("\x1b[2m[watch]\x1b[0m Watching for changes in {}", root.display());
     eprintln!("\x1b[2m[watch]\x1b[0m Press Ctrl+C to stop\n");
 
-    // Initial run — build full dep graph
-    let depgraph = run_cycle_with_depgraph(&all_test_files, &root, bundler);
+    // Persistent runtime — created once, reused across watch cycles
+    let rt = hermes::Runtime::new().unwrap_or_else(|e| {
+        eprintln!("Hermes error: {e}");
+        std::process::exit(1);
+    });
+
+    // Load harness once
+    if rt.eval(HARNESS_JS, "harness.js").is_err() {
+        eprintln!("Failed to load harness");
+        std::process::exit(1);
+    }
+
+    let cfg = bundler::read_config(&root);
+
+    // Initial run — full bundle to build dep graph + load vendor
+    let depgraph = run_persistent_cycle(&rt, &all_test_files, &root, &cfg, true);
 
     // Watch loop
     let mut current_depgraph = depgraph;
@@ -574,7 +588,8 @@ fn watch_tests(files: &[PathBuf], root: &PathBuf, bundler: Option<bundler::Bundl
                     eprintln!(
                         "\x1b[2m[watch]\x1b[0m Could not determine affected tests, running all"
                     );
-                    current_depgraph = run_cycle_with_depgraph(&all, &root, bundler);
+                    let new_graph = run_persistent_cycle(&rt, &all, &root, &cfg, false);
+                    current_depgraph = new_graph;
                 } else {
                     let affected_names: Vec<String> = affected
                         .iter()
@@ -590,8 +605,8 @@ fn watch_tests(files: &[PathBuf], root: &PathBuf, bundler: Option<bundler::Bundl
                         if affected.len() == 1 { "" } else { "s" },
                         affected_names.join(", ")
                     );
-                    let new_graph = run_cycle_with_depgraph(&affected, &root, bundler);
-                    // Merge: union test file lists (don't lose entries from other test files)
+                    let new_graph = run_persistent_cycle(&rt, &affected, &root, &cfg, false);
+                    // Merge dep graphs
                     for (k, v) in new_graph {
                         let entry = current_depgraph.entry(k).or_default();
                         for test in v {
@@ -610,6 +625,171 @@ fn watch_tests(files: &[PathBuf], root: &PathBuf, bundler: Option<bundler::Bundl
                 break;
             }
         }
+    }
+}
+
+/// Run a test cycle on a persistent runtime. On first_run, loads vendor/setup.
+/// On reruns, resets registry and only re-evals the test group bundle.
+fn run_persistent_cycle(
+    rt: &hermes::Runtime,
+    test_files: &[PathBuf],
+    root: &PathBuf,
+    cfg: &bundler::BundleConfig,
+    first_run: bool,
+) -> bundler::DepGraph {
+    let start = Instant::now();
+
+    let mock_modules = bundler::find_mock_modules(test_files);
+
+    if first_run {
+        // First run: use split mode to load vendor into __HT_mocks (persists across reruns)
+        let split = match bundler::bundle_split(test_files, root, &mock_modules, cfg) {
+            Ok(s) => s,
+            Err(e) => {
+                eprintln!("\x1b[31mBundle split failed: {e}\x1b[0m");
+                return std::collections::HashMap::new();
+            }
+        };
+
+        // Eval vendor (setup + all node_modules → __HT_mocks)
+        let eval_vendor = if let Some(bytecode) = bundler::compile_to_bytecode(&split.vendor, &root.join("vendor.js")) {
+            rt.eval_bytes(&bytecode, "vendor.hbc")
+        } else {
+            rt.eval(&split.vendor, "vendor.js")
+        };
+        if let Err(e) = eval_vendor {
+            eprintln!("\x1b[31mVendor eval failed: {e}\x1b[0m");
+            return std::collections::HashMap::new();
+        }
+
+        // Eval all group bundles
+        for (i, group) in split.groups.iter().enumerate() {
+            let name = format!("group-{i}.js");
+            let eval_result = if let Some(bytecode) = bundler::compile_to_bytecode(group, &root.join(&name)) {
+                rt.eval_bytes(&bytecode, &format!("group-{i}.hbc"))
+            } else {
+                rt.eval(group, &name)
+            };
+            if let Err(e) = eval_result {
+                eprintln!("\x1b[31mGroup {i} eval failed: {e}\x1b[0m");
+                return std::collections::HashMap::new();
+            }
+        }
+
+        // Run tests
+        let runner = r#"
+var __results = globalThis.__HT.runTests();
+globalThis.__HT_results = JSON.stringify({
+  tests: __results,
+  passed: __results.filter(function(t) { return t.status === 'pass'; }).length,
+  failed: __results.filter(function(t) { return t.status === 'fail'; }).length,
+  skipped: __results.filter(function(t) { return t.status === 'skip'; }).length,
+  total: __results.length
+});
+"#;
+        if let Err(e) = rt.eval(runner, "runner.js") {
+            eprintln!("Test runner failed: {e}");
+            return std::collections::HashMap::new();
+        }
+
+        let elapsed = start.elapsed();
+        match rt.eval("globalThis.__HT_results", "results") {
+            Ok(json) => {
+                print_results(&json);
+                eprintln!("\x1b[2mRan in {}ms\x1b[0m", elapsed.as_millis());
+            }
+            Err(e) => eprintln!("Failed to read results: {e}"),
+        }
+
+        // Build dep graph for change tracking (separate esbuild pass with metafile)
+        let entry_content = bundler::generate_entry(test_files, None, &mock_modules, cfg);
+        let entry_path = root.join(".hermes-test-entry.js");
+        let depgraph = if std::fs::write(&entry_path, &entry_content).is_ok() {
+            let dg = match bundler::bundle_with_depgraph(&entry_path, root, test_files, &mock_modules) {
+                Ok((_, d)) => d,
+                Err(_) => std::collections::HashMap::new(),
+            };
+            let _ = std::fs::remove_file(&entry_path);
+            dg
+        } else {
+            std::collections::HashMap::new()
+        };
+
+        depgraph
+    } else {
+        // Rerun: reset harness state, bundle only affected files, re-eval
+        let reset_js = "globalThis.__HT.resetRegistry(); globalThis.__HT_logs = [];";
+        if let Err(e) = rt.eval(reset_js, "reset.js") {
+            eprintln!("Failed to reset harness: {e}");
+            return std::collections::HashMap::new();
+        }
+
+        // Bundle affected test files as a group (--packages=external if vendor loaded)
+        let entry = bundler::generate_group_entry_pub(test_files, &mock_modules);
+        let entry_path = root.join(".hermes-test-rerun.js");
+        if std::fs::write(&entry_path, &entry).is_err() {
+            eprintln!("Failed to write rerun entry");
+            return std::collections::HashMap::new();
+        }
+
+        let esbuild_path = match bundler::find_esbuild_pub(root) {
+            Ok(p) => p,
+            Err(_) => {
+                eprintln!("esbuild not found");
+                return std::collections::HashMap::new();
+            }
+        };
+
+        let bundle = match bundler::bundle_esbuild_with_config_pub(
+            &entry_path, &esbuild_path, &mock_modules, cfg, true,
+        ) {
+            Ok(b) => b,
+            Err(e) => {
+                let _ = std::fs::remove_file(&entry_path);
+                eprintln!("\x1b[31mBundle failed: {e}\x1b[0m");
+                return std::collections::HashMap::new();
+            }
+        };
+        let _ = std::fs::remove_file(&entry_path);
+
+        // Eval the group bundle in the persistent runtime
+        let eval_result = if let Some(bytecode) = bundler::compile_to_bytecode(&bundle, &root.join("rerun.js")) {
+            rt.eval_bytes(&bytecode, "rerun.hbc")
+        } else {
+            rt.eval(&bundle, "rerun.js")
+        };
+        if let Err(e) = eval_result {
+            eprintln!("\x1b[31mTest execution failed: {e}\x1b[0m");
+            return std::collections::HashMap::new();
+        }
+
+        // Run tests
+        let runner = r#"
+var __results = globalThis.__HT.runTests();
+globalThis.__HT_results = JSON.stringify({
+  tests: __results,
+  passed: __results.filter(function(t) { return t.status === 'pass'; }).length,
+  failed: __results.filter(function(t) { return t.status === 'fail'; }).length,
+  skipped: __results.filter(function(t) { return t.status === 'skip'; }).length,
+  total: __results.length
+});
+"#;
+        if let Err(e) = rt.eval(runner, "runner.js") {
+            eprintln!("Test runner failed: {e}");
+            return std::collections::HashMap::new();
+        }
+
+        let elapsed = start.elapsed();
+        match rt.eval("globalThis.__HT_results", "results") {
+            Ok(json) => {
+                print_results(&json);
+                eprintln!("\x1b[2mRan in {}ms (persistent)\x1b[0m", elapsed.as_millis());
+            }
+            Err(e) => eprintln!("Failed to read results: {e}"),
+        }
+
+        // No dep graph update on reruns (would need metafile which adds overhead)
+        std::collections::HashMap::new()
     }
 }
 
