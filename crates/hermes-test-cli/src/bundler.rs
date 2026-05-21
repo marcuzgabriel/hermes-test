@@ -436,87 +436,206 @@ fn inject_mock_require_shim(code: &str) -> String {
     }).to_string()
 }
 
-/// Fix ALL `class Foo extends Array { ... }` patterns in bundled code.
+/// Downlevel ALL `class Foo extends Expr { ... }` patterns to function-based constructors.
 ///
-/// Hermes bug: `super()` in derived Array classes compiles to `Array.call(this, ...args)`
-/// which discards the return value. The instance is a plain JSObject, not a JSArray,
-/// breaking Array.isArray, concat, splice, spread, etc.
+/// Hermes has two bugs with class-extends:
+/// 1. TDZ bug: `class X extends Variable` crashes when Variable is a local/parameter
+///    (e.g. zod v4: `class Definition extends Parent {}` where Parent = params?.Parent ?? Object)
+/// 2. Native super bug: `super()` in `class X extends Array` discards the return value
 ///
-/// Fix: replace each class-extends-Array with a Reflect.construct-based function.
-/// This is the same pattern used by:
-///   - Babel: `_wrapNativeSuper` + `_construct` helpers
-///     https://github.com/babel/babel/blob/main/packages/babel-helpers/src/helpers/wrapNativeSuper.ts
-///   - SWC: `_wrap_native_super` + `_construct` helpers
-///     https://unpkg.com/@swc/helpers/esm/_wrap_native_super.js
-///   - WebReflection's original design:
-///     https://github.com/nicolo-ribaudo/babel/blob/main/packages/babel-helpers/src/helpers/wrapNativeSuper.ts
+/// Fix: replace every class-extends with Reflect.construct-based function.
+/// Same pattern as Babel's `_wrapNativeSuper` and SWC's `_wrap_native_super`.
 ///
-/// All three produce: `Reflect.construct(Array, args, DerivedClass)` which creates
-/// a real JSArray with the subclass prototype chain.
-fn fix_class_extends_array(code: &str) -> String {
-    // Match: `Name = class [_OptionalInternalName] extends Array {`
-    let re = regex::Regex::new(
-        r"(\w+)\s*=\s*class\s+(_?\w+)\s+extends\s+Array\s*\{"
+/// Handles three forms:
+/// - Assignment with named class: `Name = class InternalName extends Expr {`
+/// - Assignment with anonymous class: `var Name = class extends Expr {`
+/// - Class declaration: `class Name extends Expr {` (inside function scope)
+fn fix_all_class_extends(code: &str) -> String {
+    // Collect all matches from three patterns, storing (start, end, var_name, internal_name, parent_expr)
+    struct ClassMatch {
+        start: usize,
+        end: usize,       // end of the full class (including trailing ;)
+        var_name: String,
+        internal_name: String,
+        parent_expr: String,
+        body: String,      // everything between the opening { and closing }
+    }
+
+    let mut matches: Vec<ClassMatch> = Vec::new();
+
+    // JS identifiers can contain $ — use [\w$] instead of \w
+    // Pattern A: `Name = class InternalName extends Expr {`
+    let re_a = regex::Regex::new(
+        r"([\w$]+)\s*=\s*class\s+([\w$]+)\s+extends\s+([\w$][\w$.]*)\s*\{"
     ).unwrap();
 
-    let mut result = code.to_string();
-    // Process matches in reverse to preserve offsets
-    let matches: Vec<_> = re.captures_iter(code).collect();
+    // Pattern B: `Name = class extends Expr {` (anonymous)
+    let re_b = regex::Regex::new(
+        r"([\w$]+)\s*=\s*class\s+extends\s+([\w$][\w$.]*)\s*\{"
+    ).unwrap();
 
-    for cap in matches.iter().rev() {
-        let full = cap.get(0).unwrap();
-        let var_name = &cap[1];
-        let internal_name = &cap[2];
+    // Pattern C: class declaration `class Name extends Expr {` (not preceded by `= `)
+    let re_c = regex::Regex::new(
+        r"(?:^|[\n;{}\s])class\s+([\w$]+)\s+extends\s+([\w$][\w$.]*)\s*\{"
+    ).unwrap();
 
-        // Find the matching closing `};` for the class
+    // Helper: find matching close brace from position after opening {
+    fn find_class_end(code: &str, body_start: usize) -> usize {
         let mut depth = 1;
-        let mut class_end = full.end();
-        for (i, ch) in code[full.end()..].char_indices() {
+        for (i, ch) in code[body_start..].char_indices() {
             match ch {
                 '{' => depth += 1,
                 '}' => {
                     depth -= 1;
                     if depth == 0 {
-                        class_end = full.end() + i + 1;
-                        break;
+                        return body_start + i + 1;
                     }
                 }
                 _ => {}
             }
         }
-        // Include trailing semicolon
+        code.len()
+    }
+
+    // Collect pattern A matches
+    for cap in re_a.captures_iter(code) {
+        let full = cap.get(0).unwrap();
+        let body_start = full.end();
+        let mut class_end = find_class_end(code, body_start);
         if class_end < code.len() && code.as_bytes()[class_end] == b';' {
             class_end += 1;
         }
+        let body = code[body_start..class_end].to_string();
+        matches.push(ClassMatch {
+            start: full.start(),
+            end: class_end,
+            var_name: cap[1].to_string(),
+            internal_name: cap[2].to_string(),
+            parent_expr: cap[3].to_string(),
+            body,
 
-        // Extract class body to find instance methods (we need to fix super. references)
-        let class_body = &code[full.end()..class_end];
+        });
+    }
 
-        // Build replacement: function-based constructor + prototype methods
-        // Extract methods from class body, transform super. → Array.prototype.
+    // Collect pattern B matches (skip if overlaps with pattern A)
+    for cap in re_b.captures_iter(code) {
+        let full = cap.get(0).unwrap();
+        if matches.iter().any(|m| m.start <= full.start() && full.start() < m.end) {
+            continue; // Already matched by pattern A
+        }
+        let body_start = full.end();
+        let mut class_end = find_class_end(code, body_start);
+        if class_end < code.len() && code.as_bytes()[class_end] == b';' {
+            class_end += 1;
+        }
+        let var_name = cap[1].to_string();
+        let body = code[body_start..class_end].to_string();
+        matches.push(ClassMatch {
+            start: full.start(),
+            end: class_end,
+            var_name: var_name.clone(),
+            internal_name: var_name,
+            parent_expr: cap[2].to_string(),
+            body,
+
+        });
+    }
+
+    // Collect pattern C matches (class declarations, skip overlaps)
+    for cap in re_c.captures_iter(code) {
+        let full = cap.get(0).unwrap();
+        // Adjust start to skip the leading whitespace/newline character
+        let actual_start = code[full.start()..full.end()]
+            .find("class")
+            .map(|i| full.start() + i)
+            .unwrap_or(full.start());
+        if matches.iter().any(|m| m.start <= actual_start && actual_start < m.end) {
+            continue;
+        }
+        // Also skip if preceded by `= ` (would be pattern A/B)
+        if actual_start >= 2 && &code[actual_start - 2..actual_start] == "= " {
+            continue;
+        }
+        let body_start = full.end();
+        let mut class_end = find_class_end(code, body_start);
+        if class_end < code.len() && code.as_bytes()[class_end] == b';' {
+            class_end += 1;
+        }
+        let var_name = cap[1].to_string();
+        let body = code[body_start..class_end].to_string();
+        matches.push(ClassMatch {
+            start: actual_start,
+            end: class_end,
+            var_name: var_name.clone(),
+            internal_name: var_name,
+            parent_expr: cap[2].to_string(),
+            body,
+
+        });
+    }
+
+    if matches.is_empty() {
+        return code.to_string();
+    }
+
+    // Sort by start position descending so we can replace from end to start
+    matches.sort_by(|a, b| b.start.cmp(&a.start));
+
+    let mut result = code.to_string();
+
+    for m in &matches {
+        let var_name = &m.var_name;
+        let parent = &m.parent_expr;
+        let class_body = &m.body;
+
+        // Parse class body for constructor and methods
         let mut methods = Vec::new();
+        let mut constructor_body: Option<(String, String)> = None; // (params, body)
         let mut pos = 0;
-        let body_bytes = class_body.as_bytes();
 
-        // Simple state machine to find top-level method definitions
         while pos < class_body.len() {
-            // Skip to next method (look for identifier followed by `(`)
-            // Methods are at depth 0 in the class body (depth starts at 0 since we excluded the opening {)
             let remaining = &class_body[pos..];
 
-            // Find `constructor(` or `methodName(` or `static get [Symbol.species](` etc.
+            // Skip whitespace and closing braces
+            if remaining.starts_with('}') || remaining.starts_with('\n') || remaining.starts_with(' ') || remaining.starts_with(';') {
+                pos += 1;
+                continue;
+            }
+
+            // Constructor
             if remaining.starts_with("constructor") {
-                // Skip constructor — we replace it with Reflect.construct
-                // Find its closing brace
-                if let Some(brace) = remaining.find('{') {
-                    let mut d = 1;
-                    let start = pos + brace + 1;
-                    for (i, ch) in class_body[start..].char_indices() {
+                let after_kw = &remaining[11..];
+                if let Some(paren_start) = after_kw.find('(') {
+                    let params_start = 11 + paren_start + 1;
+                    // Find matching close paren
+                    let mut pd = 1;
+                    let mut params_end = pos + params_start;
+                    for (i, ch) in class_body[pos + params_start..].char_indices() {
                         match ch {
-                            '{' => d += 1,
-                            '}' => { d -= 1; if d == 0 { pos = start + i + 1; break; } }
+                            '(' => pd += 1,
+                            ')' => { pd -= 1; if pd == 0 { params_end = pos + params_start + i; break; } }
                             _ => {}
                         }
+                    }
+                    let params = class_body[pos + params_start..params_end].to_string();
+
+                    // Find constructor body
+                    if let Some(brace) = class_body[params_end..].find('{') {
+                        let body_start = params_end + brace + 1;
+                        let mut d = 1;
+                        let mut body_end = body_start;
+                        for (i, ch) in class_body[body_start..].char_indices() {
+                            match ch {
+                                '{' => d += 1,
+                                '}' => { d -= 1; if d == 0 { body_end = body_start + i; break; } }
+                                _ => {}
+                            }
+                        }
+                        let body = class_body[body_start..body_end].to_string();
+                        constructor_body = Some((params, body));
+                        pos = body_end + 1;
+                    } else {
+                        pos += 1;
                     }
                 } else {
                     pos += 1;
@@ -524,13 +643,12 @@ fn fix_class_extends_array(code: &str) -> String {
                 continue;
             }
 
-            // Check for method patterns at top level
+            // Static or instance methods
             let is_static = remaining.starts_with("static ");
             let method_remaining = if is_static { &remaining[7..] } else { remaining };
 
-            // Look for `get [Symbol.species]()` pattern
+            // Skip Symbol.species getter — we add our own for Array subclasses
             if is_static && method_remaining.starts_with("get [Symbol.species]") {
-                // Skip — we'll add our own Symbol.species
                 if let Some(brace) = remaining.find('{') {
                     let mut d = 1;
                     let start = pos + brace + 1;
@@ -548,14 +666,13 @@ fn fix_class_extends_array(code: &str) -> String {
             }
 
             // Match: `methodName(...args) {`
-            let method_name_re = regex::Regex::new(r"^(\w+)\s*\(([^)]*)\)\s*\{").unwrap();
-            if let Some(m) = method_name_re.captures(method_remaining) {
-                let name = m.get(1).unwrap().as_str();
-                let params = m.get(2).unwrap().as_str();
-                let brace_end = m.get(0).unwrap().end();
+            let method_name_re = regex::Regex::new(r"^([\w$]+)\s*\(([^)]*)\)\s*\{").unwrap();
+            if let Some(cap) = method_name_re.captures(method_remaining) {
+                let name = cap.get(1).unwrap().as_str();
+                let params = cap.get(2).unwrap().as_str();
+                let brace_end = cap.get(0).unwrap().end();
                 let abs_body_start = pos + (if is_static { 7 } else { 0 }) + brace_end;
 
-                // Find matching closing brace
                 let mut d = 1;
                 let mut body_end = abs_body_start;
                 for (i, ch) in class_body[abs_body_start..].char_indices() {
@@ -567,10 +684,8 @@ fn fix_class_extends_array(code: &str) -> String {
                 }
 
                 let body = &class_body[abs_body_start..body_end];
-                // Fix super.X → Array.prototype.X
-                let body = body.replace("super.", "Array.prototype.");
-                // Fix internal class name references: new _Tuple → new Tuple
-                let body = body.replace(&format!("new {internal_name}"), &format!("new {var_name}"));
+                let body = body.replace("super.", &format!("{parent}.prototype."));
+                let body = body.replace(&format!("new {}", &m.internal_name), &format!("new {var_name}"));
 
                 let target = if is_static { var_name.to_string() } else { format!("{var_name}.prototype") };
                 methods.push(format!("{target}.{name} = function({params}) {{{body}}};"));
@@ -584,22 +699,82 @@ fn fix_class_extends_array(code: &str) -> String {
 
         let methods_str = methods.join("\n");
 
+        // Build constructor function
+        let constructor_fn = if let Some((params, body)) = &constructor_body {
+            // Replace internal class name references with var_name
+            // e.g. _Tuple.prototype → Tuple.prototype, new _Tuple → new Tuple
+            let body = if m.internal_name != *var_name {
+                body.replace(&m.internal_name, var_name)
+            } else {
+                body.clone()
+            };
+            // Transform super(...args) → Reflect.construct(Parent, [args], ClassName)
+            // and this → _this for property assignments after super()
+            // Use paren-matching to handle nested parens in super() args
+            let transformed = if let Some(super_pos) = body.find("super(") {
+                let args_start = super_pos + 6; // after "super("
+                // Find matching close paren
+                let mut depth = 1;
+                let mut args_end = args_start;
+                for (i, ch) in body[args_start..].char_indices() {
+                    match ch {
+                        '(' => depth += 1,
+                        ')' => { depth -= 1; if depth == 0 { args_end = args_start + i; break; } }
+                        _ => {}
+                    }
+                }
+                let args = body[args_start..args_end].trim();
+                let super_call_end = args_end + 1; // include closing paren
+                let reflect_call = if args.is_empty() {
+                    format!("var _this = Reflect.construct({parent}, [], {var_name})")
+                } else {
+                    format!("var _this = Reflect.construct({parent}, [{args}], {var_name})")
+                };
+                format!("{}{}{}", &body[..super_pos], reflect_call, &body[super_call_end..])
+            } else {
+                // No super call — just wrap body
+                body.clone()
+            };
+            let has_super = body.contains("super(");
+            if has_super {
+                // Replace `this` as whole word with `_this` (handles this.x, this, etc.)
+                let this_re = regex::Regex::new(r"\bthis\b").unwrap();
+                let transformed = this_re.replace_all(&transformed, "_this").to_string();
+                format!("function {var_name}({params}) {{{transformed}\n    return _this;\n  }}")
+            } else {
+                // No super call — just use Reflect.construct
+                format!("function {var_name}({params}) {{\n    return Reflect.construct({parent}, [], {var_name});\n  }}")
+            }
+        } else {
+            // No constructor — default: forward all args to parent via Reflect.construct
+            format!("function {var_name}() {{\n    return Reflect.construct({parent}, Array.prototype.slice.call(arguments), new.target || {var_name});\n  }}")
+        };
+
+        // For Array subclasses, add Symbol.species
+        let species = if parent == "Array" {
+            format!("\n  Object.defineProperty({var_name}, Symbol.species, {{ get: function() {{ return {var_name}; }} }});")
+        } else {
+            String::new()
+        };
+
+        // For class declarations (Pattern C), need `var` since there's no existing assignment
+        let is_class_decl = m.start < code.len()
+            && code[m.start..].starts_with("class ");
+        let decl_prefix = if is_class_decl { "var " } else { "" };
+
         let replacement = format!(
-            r#"{var_name} = (function() {{
-  function {var_name}() {{
-    return Reflect.construct(Array, Array.prototype.slice.call(arguments), new.target || {var_name});
-  }}
-  {var_name}.prototype = Object.create(Array.prototype, {{
+            r#"{decl_prefix}{var_name} = (function() {{
+  {constructor_fn}
+  {var_name}.prototype = Object.create({parent}.prototype, {{
     constructor: {{ value: {var_name}, writable: true, configurable: true }}
   }});
-  Object.setPrototypeOf({var_name}, Array);
-  Object.defineProperty({var_name}, Symbol.species, {{ get: function() {{ return {var_name}; }} }});
+  Object.setPrototypeOf({var_name}, {parent});{species}
   {methods_str}
   return {var_name};
 }})();"#
         );
 
-        result = format!("{}{}{}", &result[..full.start()], replacement, &result[class_end..]);
+        result = format!("{}{}{}", &result[..m.start], replacement, &result[m.end..]);
     }
 
     result
@@ -655,12 +830,11 @@ fn patch_esbuild_for_hermes(code: &str) -> String {
         }
     };
 
-    // Patch 4: Fix ALL `class extends Array` patterns.
-    // Hermes bug: super() in derived class compiles to Array.call(this, ...args) and discards
-    // the return value. The instance is a plain JSObject (not JSArray), breaking Array.isArray,
-    // concat, splice, spread, etc. Fix: replace with Reflect.construct-based function that
-    // creates real JSArray instances with the correct prototype chain.
-    let code = fix_class_extends_array(&code);
+    // Patch 4: Downlevel ALL `class extends Expr` patterns to function-based constructors.
+    // Hermes bugs: (1) TDZ crash with `class X extends Variable` when Variable is local,
+    // (2) super() in Array subclasses discards return value. Fix both by converting all
+    // class-extends to Reflect.construct-based functions.
+    let code = fix_all_class_extends(&code);
 
     let code_str = code;
 
@@ -855,7 +1029,7 @@ pub fn generate_entry(
     let mut entry = String::new();
 
     // Array.isArray polyfill is now in the harness polyfills.js (runs before bundle).
-    // class-extends-Array fix is in fix_class_extends_array() (post-process step).
+    // class-extends-Array fix is in fix_all_class_extends() (post-process step).
 
     // Register hermes-test as a mock so `import { test } from 'hermes-test'` resolves to __HT
     entry.push_str("globalThis.__HT_mocks = globalThis.__HT_mocks || {};\n");
