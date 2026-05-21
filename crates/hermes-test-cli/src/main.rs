@@ -251,12 +251,23 @@ fn run_tests(files: &[PathBuf], root: &PathBuf, no_bundle: bool, bundler: Option
         std::process::exit(1);
     });
 
-    // Inject the harness (suppress Hermes debug output)
+    // Inject the harness — pre-compile to bytecode for faster loading
     suppress_hermes_stderr(|| {
-        rt.eval(HARNESS_JS, "hermes-test/harness.js").unwrap_or_else(|e| {
-            eprintln!("Failed to load harness: {e}");
-            std::process::exit(1);
-        });
+        match crate::hermes::compile_bytecode(HARNESS_JS, "hermes-test/harness.js") {
+            Ok(bytecode) => {
+                rt.eval_bytes(&bytecode, "hermes-test/harness.hbc").unwrap_or_else(|e| {
+                    eprintln!("Failed to load harness bytecode: {e}");
+                    std::process::exit(1);
+                });
+            }
+            Err(_) => {
+                // Fallback to source eval if bytecode compilation fails
+                rt.eval(HARNESS_JS, "hermes-test/harness.js").unwrap_or_else(|e| {
+                    eprintln!("Failed to load harness: {e}");
+                    std::process::exit(1);
+                });
+            }
+        }
     });
 
     if no_bundle {

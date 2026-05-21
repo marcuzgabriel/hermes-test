@@ -343,10 +343,17 @@ fn inject_mock_require_shim(code: &str) -> String {
         eprintln!("WARNING: __require shim pattern not found — externalized modules may not work");
         return code.to_string();
     }
+    // Hoist __noop outside __require so it's created once, not per call
+    let code = code.replacen(
+        "throw Error('Dynamic require",
+        "var __HT_noop = function() { return __HT_noop; }; throw Error('Dynamic require",
+        1,
+    );
+
     throw_re.replace(&code, |caps: &regex::Captures| {
         let v = &caps[1];
         format!(
-            r#"{{ var __r = globalThis.__HT_mocks || (globalThis.__HT_mocks = {{}}); var __k = {v}.replace(/^\.\//, ''); if (!__r[__k] && !__r[{v}]) __r[{v}] = {{}}; var __t = __r[{v}] || __r[__k] || __r['./' + __k] || {{}}; var __noop = function() {{ return __noop; }}; return typeof Proxy !== 'undefined' ? new Proxy(__t, {{ get: function(t,p) {{ if (p === Symbol.toPrimitive || p === 'then' || p === '$$typeof') return undefined; if (p === '__esModule') return true; var __rr = globalThis.__HT_mocks; var __m = __rr[{v}] || __rr[__k] || __rr['./' + __k]; var val = __m ? __m[p] : t[p]; return val !== undefined ? val : __noop; }}, ownKeys: function(t) {{ var __rr = globalThis.__HT_mocks; var __m = __rr[{v}] || __rr[__k] || __rr['./' + __k] || t; return Object.keys(__m); }}, getOwnPropertyDescriptor: function(t,p) {{ var __rr = globalThis.__HT_mocks; var __m = __rr[{v}] || __rr[__k] || __rr['./' + __k] || t; if (p in __m) return {{ configurable: true, enumerable: true, value: __m[p] }}; return undefined; }} }}) : __t }}"#,
+            r#"{{ var __r = globalThis.__HT_mocks || (globalThis.__HT_mocks = {{}}); var __k = {v}.replace(/^\.\//, ''); if (!__r[__k] && !__r[{v}]) __r[{v}] = {{}}; var __t = __r[{v}] || __r[__k] || __r['./' + __k] || {{}}; return typeof Proxy !== 'undefined' ? new Proxy(__t, {{ get: function(t,p) {{ if (p === Symbol.toPrimitive || p === 'then' || p === '$$typeof') return undefined; if (p === '__esModule') return true; var __rr = globalThis.__HT_mocks; var __m = __rr[{v}] || __rr[__k] || __rr['./' + __k]; var val = __m ? __m[p] : t[p]; return val !== undefined ? val : __HT_noop; }} }}) : __t }}"#,
         )
     }).to_string()
 }

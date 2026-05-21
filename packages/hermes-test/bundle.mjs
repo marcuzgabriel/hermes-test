@@ -11,7 +11,7 @@ await build({
   globalName: '__metroTestHarness',
   outfile: 'dist/harness.bundle.js',
   target: 'es2020',
-  minify: false,
+  minify: true,
   platform: 'neutral',
   banner: { js: polyfills },
   external: ['react'],
