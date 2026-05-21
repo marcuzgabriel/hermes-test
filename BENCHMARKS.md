@@ -236,4 +236,46 @@ Split mode will benefit:
 | 50 hook tests cold | < 350ms | 60ms | **6x under budget** |
 | Watch rerun (1 file) | < 200ms | 69ms | **3x under budget** |
 | 1000 mixed tests cold | < 4s | 1.43s | **2.8x under budget** |
+
+## Day 10: Shadow wrappers — single-bundle mock isolation
+
+Measured 2026-05-21. Shadow wrappers replace per-file isolation with a single-bundle
+approach using lazy Proxy wrappers for mocked aliased modules.
+
+### Topdanmark (real monorepo, 9 files, 94 tests)
+
+| Architecture | Tests | Median | Min | Max |
+|---|---|---|---|---|
+| Day 9: batch + per-file isolated | 91/94 | 0.85s | 0.81s | 0.92s |
+| Day 10: parallel esbuild (per-file) | 91/94 | 0.76s | 0.73s | 0.80s |
+| **Day 10: shadow wrappers (single bundle)** | **94/94** | **0.51s** | **0.51s** | **0.61s** |
+
+**40% faster** than Day 9, **33% faster** than parallel esbuild, and **3 more tests passing**.
+
+### expo-app (30 files, 1411 tests)
+
+| Architecture | Tests | Median |
+|---|---|---|
+| Single bundle | 1411/1411 | 1.53s |
+
+No change — expo-app has no aliased mocks, so shadow wrappers don't activate.
+
+### Combined totals
+
+| | Tests | Time |
+|---|---|---|
+| expo-app | 1411/1411 | 1.53s |
+| Topdanmark | 94/94 | 0.51s |
+| **Total** | **1505/1505** | **2.04s** |
+
+### Extrapolation
+
+| Tests | Projected time |
+|---|---|
+| 100 | ~0.54s |
+| 500 | ~2.7s |
+| 1000 | ~5.4s |
+| 2000 | ~10.8s |
+
+Based on ~5.4ms/test median across both projects.
 | vs Jest+@swc/jest | 5-10x faster | 10-47x faster | **PASS** |
