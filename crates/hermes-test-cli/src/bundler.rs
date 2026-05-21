@@ -460,7 +460,7 @@ fn inject_mock_require_shim(code: &str) -> String {
     // enabling infinite chains like `noop.foo().bar.baz()` without throwing.
     let code = code.replacen(
         "throw Error('Dynamic require",
-        "var __HT_noop = typeof Proxy !== 'undefined' ? new Proxy(function(){}, { get: function() { return __HT_noop; }, apply: function() { return __HT_noop; }, construct: function() { return {}; } }) : function() {}; throw Error('Dynamic require",
+        "var __HT_noop = typeof Proxy !== 'undefined' ? new Proxy(function(){}, { get: function(t,p) { if (p === Symbol.toPrimitive) return function() { return ''; }; if (p === 'valueOf' || p === 'toJSON') return function() { return 0; }; if (p === 'toString' || p === 'toLocaleString') return function() { return ''; }; if (p === Symbol.iterator) return function() { return { next: function() { return { done: true }; } }; }; if (p === 'length' || p === 'size') return 0; if (p === 'then' || p === '$$typeof' || p === '_isAMomentObject' || p === '__esModule') return undefined; if (p === 'constructor') return Object; if (typeof p === 'symbol') return undefined; return __HT_noop; }, apply: function() { return __HT_noop; }, construct: function() { return {}; }, ownKeys: function() { return []; }, getOwnPropertyDescriptor: function() { return { configurable: true, enumerable: false }; } }) : function() {}; throw Error('Dynamic require",
         1,
     );
 
