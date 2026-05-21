@@ -86,6 +86,25 @@ function createAssertion(actual: any, negated: boolean): any {
       );
     },
 
+    toHaveLength(expected: number) {
+      const len = actual?.length;
+      assert(
+        len === expected,
+        negated
+          ? `Expected length not to be ${expected}, but it was`
+          : `Expected length ${expected}, got ${len}`
+      );
+    },
+
+    toBeInstanceOf(expected: any) {
+      assert(
+        actual instanceof expected,
+        negated
+          ? `Expected ${formatValue(actual)} not to be instance of ${expected?.name ?? expected}`
+          : `Expected instance of ${expected?.name ?? expected}, got ${formatValue(actual)}`
+      );
+    },
+
     toBeTruthy() {
       assert(
         !!actual,
