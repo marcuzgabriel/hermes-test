@@ -47,8 +47,8 @@ function fakeClearInterval(id: number) {
   pending = pending.filter(t => t.id !== id);
 }
 
-export function useFakeTimers() {
-  fakeNow = 0;
+export function useFakeTimers(initialTime?: number) {
+  fakeNow = initialTime ?? 0;
   nextId = 1;
   pending = [];
   isFake = true;
