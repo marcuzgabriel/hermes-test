@@ -136,6 +136,89 @@ sequenceDiagram
     CLI-->>User: ✓ 8 passed, 8 total
 ```
 
+## Mock System — Shadow Wrappers & Barrel Delegation
+
+```mermaid
+flowchart TB
+    subgraph TEST["Test File"]
+        MOCK["mockModule('@scope/hooks/errorHandling/useErrorHandling', factory)"]
+        IMPORT["import { useMyHook } from '@scope/hooks'"]
+    end
+
+    subgraph SHADOW["Shadow Wrapper System (bundler.rs)"]
+        direction TB
+        SCAN["Scan test files for mockModule() calls"]
+        CREATE["Create shadow directory mirroring alias target"]
+
+        subgraph FILES["Shadow Tree"]
+            PROXY["Mocked files → Proxy wrapper\n(checks __HT_file_mocks at access time)"]
+            BARREL["Barrel index.ts → Proxy with sub-path delegation\n(scans all sub-path mocks for property access)"]
+            COPY["Sibling files → Copied\n(relative imports resolve in shadow tree)"]
+            SYMLINK["Other files → Symlinked\n(no mocked neighbors)"]
+        end
+    end
+
+    subgraph RUNTIME["Runtime Mock Resolution"]
+        direction TB
+        ACCESS["hook accesses useErrorHandling"]
+        BARREL_PROXY["Barrel Proxy get trap fires"]
+        CHECK1["Check __HT_file_mocks[file]['@scope/hooks']"]
+        CHECK2["Scan all keys starting with '@scope/hooks/'\nFind '@scope/hooks/errorHandling/useErrorHandling'"]
+        FOUND["Return mock.useErrorHandling"]
+        FALLBACK["No mock → return _getReal()[prop]"]
+    end
+
+    MOCK --> SCAN
+    SCAN --> CREATE
+    CREATE --> FILES
+    IMPORT --> BARREL_PROXY
+    BARREL_PROXY --> CHECK1
+    CHECK1 -->|"not found"| CHECK2
+    CHECK2 -->|"found"| FOUND
+    CHECK2 -->|"not found"| FALLBACK
+
+    style PROXY fill:#c44,color:#fff
+    style BARREL fill:#e80,color:#fff
+    style COPY fill:#48a,color:#fff
+    style SYMLINK fill:#4a9,color:#fff
+```
+
+### Key Design Decisions
+
+1. **Shadow wrappers over AST transforms** — No source modification, works with any bundler output
+2. **Barrel sub-path delegation** — Barrel Proxy checks ALL registered sub-path mocks, not just exact path match. Solves esbuild's barrel re-export inlining.
+3. **Copy barrel files, symlink the rest** — esbuild resolves symlinks to real paths. Copied barrels keep relative imports within the shadow tree. Only barrels + files with mocked siblings are copied.
+4. **Lazy loading via `_getReal()`** — Real module only loaded on first property access, avoiding circular dependency crashes.
+
+### withStore / withApiStore (Redux Provider)
+
+```mermaid
+flowchart LR
+    subgraph PLAIN["withStore (plain)"]
+        PS["Identity reducer\n+ __SET_STATE__ / __PATCH__"]
+        PP["Provider wraps renderHook"]
+    end
+
+    subgraph API["withApiStore (RTK Query)"]
+        AS["Per-key reducers\n+ RTK api.reducer + cms.reducer"]
+        AM["RTK middleware\n(api.middleware + cms.middleware)"]
+        AP["Provider wraps renderHook"]
+    end
+
+    PS --> PP
+    AS --> AM --> AP
+```
+
+### Polyfills (polyfills.js)
+
+Hermes lacks several Web/Node APIs. Polyfills injected via esbuild banner:
+- `process.env.NODE_ENV` — React needs this at load time
+- `process.nextTick` — Node-style async patterns
+- `crypto.getRandomValues` — uuid and crypto-dependent libs
+- `MessageChannel` — React 19 scheduler
+- `setTimeout/setImmediate` — Timer polyfills
+- `AbortController/Headers/URL/URLSearchParams/Request/Response/fetch` — Web APIs for RTK Query
+
 ## Dependency Resolution
 
 ```mermaid
