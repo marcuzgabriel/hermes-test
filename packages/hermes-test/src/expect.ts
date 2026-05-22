@@ -14,6 +14,10 @@ function deepEqual(a: any, b: any): boolean {
     return a.every((v, i) => deepEqual(v, b[i]));
   }
 
+  if (a instanceof Date && b instanceof Date) {
+    return a.getTime() === b.getTime();
+  }
+
   if (typeof a === 'object') {
     const keysA = Object.keys(a).filter((k) => a[k] !== undefined);
     const keysB = Object.keys(b).filter((k) => b[k] !== undefined);

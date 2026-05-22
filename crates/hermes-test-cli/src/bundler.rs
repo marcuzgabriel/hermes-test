@@ -1541,6 +1541,101 @@ pub fn create_shadow_wrappers(
     (new_cfg, shadow_dirs)
 }
 
+/// Create auto-generated Proxy shims for non-aliased mocked packages.
+/// Same pattern as shadow wrappers: CJS Proxy that checks per-file mocks
+/// and falls through to the real module. Replaces externalization entirely.
+///
+/// Returns (updated_cfg, wrapper_dir_to_cleanup, remaining_externals).
+/// remaining_externals = mocks that couldn't be shimmed (config externals, shims, etc.)
+pub fn create_package_shims(
+    project_root: &Path,
+    non_aliased_mocks: &[String],
+    cfg: &BundleConfig,
+) -> (BundleConfig, Option<PathBuf>, Vec<String>) {
+    let mut new_cfg = cfg.clone();
+    let mut remaining: Vec<String> = Vec::new();
+
+    if non_aliased_mocks.is_empty() {
+        return (new_cfg, None, remaining);
+    }
+
+    let mut shimmable: Vec<&String> = Vec::new();
+    for m in non_aliased_mocks {
+        let is_config_external = cfg.externals.iter().any(|e| {
+            let e_base = e.trim_end_matches('*').trim_end_matches('/');
+            m == e_base || m.starts_with(&format!("{e_base}/"))
+                || (e.ends_with('*') && m.starts_with(e_base))
+        });
+        let is_shim = cfg.shims.iter().any(|(s, _)| s == m);
+        let is_relative = m.starts_with('.') || m.starts_with('/');
+        let is_hardcoded = m == "react-native" || m.starts_with("react-native/")
+            || m.starts_with("@react-native/");
+        if is_config_external || is_shim || is_relative || is_hardcoded {
+            remaining.push(m.clone());
+        } else {
+            shimmable.push(m);
+        }
+    }
+
+    if shimmable.is_empty() {
+        return (new_cfg, None, remaining);
+    }
+
+    let shim_dir = project_root.join(".hermes-test-pkg-shims");
+    let _ = std::fs::remove_dir_all(&shim_dir);
+    let _ = std::fs::create_dir_all(&shim_dir);
+
+    for pkg in &shimmable {
+        let safe_name = pkg.replace('@', "").replace('/', "__");
+        let shim_path = shim_dir.join(format!("{safe_name}.js"));
+        let real_alias = format!("@__ht_real_pkg/{pkg}");
+
+        // CJS Proxy wrapper — same pattern as shadow wrappers
+        let wrapper = format!(
+            r#"var _loaded = null; var _loading = false;
+function _getReal() {{ if (_loaded) return _loaded; if (_loading) return {{}}; _loading = true; _loaded = require("{real_alias}"); _loading = false; return _loaded; }}
+var _h = {{
+  get: function(t, p) {{
+    if (p === '__esModule') return true;
+    if (typeof p === 'symbol') return undefined;
+    var fm = globalThis.__HT_file_mocks;
+    var f = globalThis.__currentTestFile;
+    var mocks = fm && f && fm[f];
+    var m = mocks && mocks['{pkg}'];
+    if (m && p in m) return m[p];
+    return _getReal()[p];
+  }},
+  ownKeys: function(t) {{
+    var r = _getReal();
+    try {{ return Object.getOwnPropertyNames(r); }} catch(e) {{ return []; }}
+  }},
+  getOwnPropertyDescriptor: function(t, p) {{
+    var r = _getReal();
+    try {{
+      var d = Object.getOwnPropertyDescriptor(r, p);
+      if (d) {{ return {{ configurable: true, enumerable: d.enumerable, writable: true, value: d.get ? d.get() : d.value }}; }}
+    }} catch(e) {{}}
+    return {{ configurable: true, enumerable: false, writable: true, value: undefined }};
+  }}
+}};
+module.exports = typeof Proxy !== 'undefined' ? new Proxy({{}}, _h) : {{}};
+"#,
+        );
+
+        if std::fs::write(&shim_path, &wrapper).is_err() {
+            remaining.push((*pkg).clone());
+            continue;
+        }
+
+        // Alias pkg → shim file (esbuild aliases run before externals → bundled, not external)
+        new_cfg.aliases.push(((*pkg).clone(), shim_path.to_string_lossy().to_string()));
+        // Alias @__ht_real_pkg/pkg → real package (esbuild resolves from node_modules)
+        new_cfg.aliases.push((real_alias, (*pkg).clone()));
+    }
+
+    (new_cfg, Some(shim_dir), remaining)
+}
+
 /// Recursively create a shadow directory tree:
 /// - Directories: create real directory, recurse
 /// - Files matching mocked paths: create Proxy wrapper
@@ -2364,6 +2459,16 @@ pub fn bundle_split(
         set
     };
 
+    // Create shadow wrappers for aliased mock paths (same as single-bundle mode)
+    let (shadow_cfg, shadow_dirs) = create_shadow_wrappers(project_root, mock_modules, cfg);
+    // Filter out aliased mock paths — shadow wrappers handle them
+    let non_aliased_mocks: Vec<String> = mock_modules.iter().filter(|m| {
+        !cfg.aliases.iter().any(|(alias, _)| *m == alias || m.starts_with(&format!("{alias}/")))
+    }).cloned().collect();
+    // Create package shims for non-aliased mocks (same Proxy pattern as shadow wrappers)
+    let (shim_cfg, shim_dir, remaining_externals) =
+        create_package_shims(project_root, &non_aliased_mocks, &shadow_cfg);
+
     // Step 1: Bundle each group with --packages=external (fast, local code only)
     for (i, chunk) in test_files.chunks(group_size).enumerate() {
         let entry = generate_group_entry(chunk, mock_modules);
@@ -2372,7 +2477,7 @@ pub fn bundle_split(
             .map_err(|e| format!("Failed to write group entry: {e}"))?;
 
         let code = bundle_esbuild_with_config(
-            &entry_path, &esbuild_path, mock_modules, cfg, true,
+            &entry_path, &esbuild_path, &remaining_externals, &shim_cfg, true,
         )?;
         let _ = std::fs::remove_file(&entry_path);
 
@@ -2408,12 +2513,19 @@ pub fn bundle_split(
         std::fs::write(&vendor_entry_path, &vendor_entry)
             .map_err(|e| format!("Failed to write vendor entry: {e}"))?;
 
+        // Vendor must NOT skip aliases — it needs to bundle the real source code
+        // so __HT_mocks has real implementations for aliased paths.
+        // Use empty mock_modules so aliases aren't skipped (line 326-328).
         let vendor_code = bundle_esbuild_with_config(
-            &vendor_entry_path, &esbuild_path, mock_modules, cfg, false,
+            &vendor_entry_path, &esbuild_path, &[], cfg, false,
         )?;
         let _ = std::fs::remove_file(&vendor_entry_path);
         vendor_code
     };
+
+    // Clean up shadow dirs and shim dir
+    for dir in &shadow_dirs { let _ = std::fs::remove_dir_all(dir); }
+    if let Some(ref d) = shim_dir { let _ = std::fs::remove_dir_all(d); }
 
     let result = SplitBundle { vendor, groups: group_bundles };
     save_cached_split(project_root, &cache_key, &result);

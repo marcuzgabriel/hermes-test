@@ -101,6 +101,47 @@
 - Code generates `@scope/hooks/index` which doesn't match
 - **Solution**: check both direct path AND parent-directory-for-index-files
 
+## Day 19: Split Mode + Remaining 143 Failures
+
+### Challenge: Split mode broken (233/1115)
+- `bundle_split` creates vendor + group bundles
+- Group bundles skip aliases when mock sub-paths exist (line 326-328 in bundler.rs)
+  → all aliased imports become `__require` calls hitting empty `{}` placeholders
+- Vendor bundle ALSO skipped aliases (same logic) → `require('@topdanmark/...')` in
+  vendor hit local `__require` → circular call → stack overflow (87 crashes)
+- **Solution**: vendor passes empty `mock_modules` so aliases resolve and real source is
+  bundled. Group bundles use shadow wrappers (same as single-bundle) with only non-aliased
+  mocks externalized. Shadow dirs cleaned up after split bundling.
+- **Result**: 233 → 1315 passed. Stack overflows eliminated.
+
+### Challenge: deepEqual treats all Dates as equal
+- `Object.keys(new Date())` returns `[]` — zero own properties
+- `deepEqual` compared objects by iterating `Object.keys`, so any two Dates were "equal"
+- **Solution**: `if (a instanceof Date && b instanceof Date) return a.getTime() === b.getTime()`
+
+### Challenge: 143 remaining failures (two categories)
+**39 tests fail even alone (standalone bugs):**
+- Relative imports (`../redux/useRedux`) bypass shadow wrappers entirely — esbuild resolves
+  them to the real source via shared top-level vars, no Proxy interception possible
+- Complex async (apiBaseQuery RTK middleware), UI dep crashes (useFormCoordinator)
+- Known fix for relative imports: convert test files to `withStore` pattern (proven for 21 tests)
+
+**~104 tests pass alone, fail in suite ("undefined is not a function"):**
+- `find_mock_modules` scans ALL test files → `mockModule('X')` in ANY file causes `X` to be
+  externalized globally → files that don't mock `X` get `__HT_noop` instead of real module
+- `__HT_noop` Proxy swallows errors: returns `0` for valueOf, truthy for property access,
+  functions return noop — tests get garbage values instead of crashes
+- Split mode vendor fixes this for npm packages (bundles real implementations)
+- Still affects non-aliased packages that can't be resolved by the vendor
+
+### Strategies tried and ruled out (Day 19):
+1. **FileContext** (per-file harness state) — zero impact, contamination isn't from hooks
+2. **Mock vendor** (pre-bundle non-aliased packages) — fixed 1 test, redundant with split vendor
+3. **Auto-split mode** — worse (368/1458), split has own issues
+4. **Package ESM wrappers** — esbuild requires static named exports
+5. **--preserve-symlinks** — breaks monorepo node_modules resolution
+6. **Shadow tree full copy** — zero impact, symlinks weren't the cause
+
 ## Patterns & Principles Learned
 
 1. **esbuild aliases run before externals** — can't selectively externalize aliased paths

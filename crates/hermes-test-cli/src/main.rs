@@ -337,11 +337,15 @@ fn run_tests_single(
     // Create shadow wrappers for aliased mock paths — replaces the alias target
     // with a shadow directory where mocked files are Proxy wrappers.
     let (shadow_cfg, shadow_dirs) = bundler::create_shadow_wrappers(root, mock_modules, cfg);
-    // Filter out aliased mock paths from externals — shadow wrappers handle them
+    // Filter out aliased mock paths — shadow wrappers handle them
     let non_aliased_mocks: Vec<String> = mock_modules.iter().filter(|m| {
         !cfg.aliases.iter().any(|(alias, _)| *m == alias || m.starts_with(&format!("{alias}/")))
     }).cloned().collect();
-    let entry_content = bundler::generate_entry(test_files, None, mock_modules, &shadow_cfg, transforms);
+    // Create package shims for non-aliased mocks (CJS Proxy wrappers, same as shadow wrappers)
+    // This replaces externalization — real module stays in bundle, mocks intercepted via Proxy.
+    let (shim_cfg, shim_dir, remaining_externals) =
+        bundler::create_package_shims(root, &non_aliased_mocks, &shadow_cfg);
+    let entry_content = bundler::generate_entry(test_files, None, mock_modules, &shim_cfg, transforms);
     let entry_path = root.join(".hermes-test-entry.js");
     std::fs::write(&entry_path, &entry_content).unwrap_or_else(|e| {
         eprintln!("Failed to write entry file: {e}");
@@ -352,23 +356,25 @@ fn run_tests_single(
     let cache_key = bundler::compute_single_bundle_cache_key(test_files, root, mock_modules, cfg);
     let cache_dir = root.join(".hermes-test-cache");
     let cache_path = cache_dir.join(format!("single-{cache_key}.js"));
-    let bundle = if let Ok(cached) = std::fs::read_to_string(&cache_path) {
+    let cleanup = || {
         let _ = std::fs::remove_file(&entry_path);
         for dir in &shadow_dirs { let _ = std::fs::remove_dir_all(dir); }
+        if let Some(ref d) = shim_dir { let _ = std::fs::remove_dir_all(d); }
         for (_, temp) in transforms { let _ = std::fs::remove_file(temp); }
+    };
+    let bundle = if let Ok(cached) = std::fs::read_to_string(&cache_path) {
+        cleanup();
         cached
     } else {
-        let b = match bundler::bundle_auto_with_config(&entry_path, root, &non_aliased_mocks, &shadow_cfg) {
+        let b = match bundler::bundle_auto_with_config(&entry_path, root, &remaining_externals, &shim_cfg) {
             Ok(b) => b,
             Err(e) => {
-                let _ = std::fs::remove_file(&entry_path);
+                cleanup();
                 eprintln!("Bundling failed: {e}");
                 std::process::exit(1);
             }
         };
-        let _ = std::fs::remove_file(&entry_path);
-        for dir in &shadow_dirs { let _ = std::fs::remove_dir_all(dir); }
-        for (_, temp) in transforms { let _ = std::fs::remove_file(temp); }
+        cleanup();
         // Save to cache
         let _ = std::fs::create_dir_all(&cache_dir);
         // Clean old single-bundle caches
