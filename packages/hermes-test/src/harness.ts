@@ -217,6 +217,15 @@ function runTests(): TestResult[] {
 }
 
 // Reset between watch cycles (persistent runtime)
+function registerCrash(file: string, error: string): void {
+  tests.push({
+    name: `[CRASH] ${file}`,
+    fn: () => { throw new Error(error); },
+    options: {},
+    file,
+  });
+}
+
 function resetRegistry(): void {
   tests.length = 0;
   beforeEachHooks.length = 0;
@@ -250,6 +259,7 @@ function resetRegistry(): void {
   http,
   HttpResponse,
   flushAsync,
+  registerCrash,
   resetRegistry,
   // Timer control
   useFakeTimers,

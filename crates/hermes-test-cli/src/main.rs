@@ -348,23 +348,39 @@ fn run_tests_single(
         std::process::exit(1);
     });
 
-    let bundle = match bundler::bundle_auto_with_config(&entry_path, root, &non_aliased_mocks, &shadow_cfg) {
-        Ok(b) => b,
-        Err(e) => {
-            let _ = std::fs::remove_file(&entry_path);
-            eprintln!("Bundling failed: {e}");
-            std::process::exit(1);
+    // Check single-bundle cache
+    let cache_key = bundler::compute_single_bundle_cache_key(test_files, root, mock_modules, cfg);
+    let cache_dir = root.join(".hermes-test-cache");
+    let cache_path = cache_dir.join(format!("single-{cache_key}.js"));
+    let bundle = if let Ok(cached) = std::fs::read_to_string(&cache_path) {
+        let _ = std::fs::remove_file(&entry_path);
+        for dir in &shadow_dirs { let _ = std::fs::remove_dir_all(dir); }
+        for (_, temp) in transforms { let _ = std::fs::remove_file(temp); }
+        cached
+    } else {
+        let b = match bundler::bundle_auto_with_config(&entry_path, root, &non_aliased_mocks, &shadow_cfg) {
+            Ok(b) => b,
+            Err(e) => {
+                let _ = std::fs::remove_file(&entry_path);
+                eprintln!("Bundling failed: {e}");
+                std::process::exit(1);
+            }
+        };
+        let _ = std::fs::remove_file(&entry_path);
+        for dir in &shadow_dirs { let _ = std::fs::remove_dir_all(dir); }
+        for (_, temp) in transforms { let _ = std::fs::remove_file(temp); }
+        // Save to cache
+        let _ = std::fs::create_dir_all(&cache_dir);
+        // Clean old single-bundle caches
+        if let Ok(entries) = std::fs::read_dir(&cache_dir) {
+            for entry in entries.flatten() {
+                let n = entry.file_name(); let n = n.to_string_lossy();
+                if n.starts_with("single-") && !n.contains(&cache_key) { let _ = std::fs::remove_file(entry.path()); }
+            }
         }
+        let _ = std::fs::write(&cache_path, &b);
+        b
     };
-
-    let _ = std::fs::remove_file(&entry_path);
-    // Clean up shadow directories and pre-transformed temp files
-    for dir in &shadow_dirs {
-        let _ = std::fs::remove_dir_all(dir);
-    }
-    for (_, temp) in transforms {
-        let _ = std::fs::remove_file(temp);
-    }
 
     let eval_result = if let Some(bytecode) = bundler::compile_to_bytecode(&bundle, &entry_path) {
         rt.eval_bytes(&bytecode, "bundle.hbc")
@@ -571,7 +587,7 @@ fn run_tests_split(
         };
         if let Err(e) = eval_result {
             eprintln!("Group {i} eval failed: {e}");
-            std::process::exit(1);
+            // Continue to other groups — don't exit on a single group failure
         }
     }
 

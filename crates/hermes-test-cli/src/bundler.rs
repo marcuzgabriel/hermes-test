@@ -484,7 +484,7 @@ fn inject_mock_require_shim(code: &str) -> String {
     // enabling infinite chains like `noop.foo().bar.baz()` without throwing.
     let code = code.replacen(
         "throw Error('Dynamic require",
-        "var __HT_noop = typeof Proxy !== 'undefined' ? new Proxy(function(){}, { get: function(t,p) { if (p === Symbol.toPrimitive) return function() { return ''; }; if (p === 'valueOf' || p === 'toJSON') return function() { return 0; }; if (p === 'toString' || p === 'toLocaleString') return function() { return ''; }; if (p === Symbol.iterator) return function() { return { next: function() { return { done: true }; } }; }; if (p === 'length' || p === 'size') return 0; if (p === 'then' || p === '$$typeof' || p === '_isAMomentObject' || p === '__esModule') return undefined; if (p === 'constructor') return Object; if (typeof p === 'symbol') return undefined; return __HT_noop; }, apply: function() { return __HT_noop; }, construct: function() { return {}; }, ownKeys: function() { return []; }, getOwnPropertyDescriptor: function() { return { configurable: true, enumerable: false }; } }) : function() {}; throw Error('Dynamic require",
+        "var __HT_noop_fn = function(){}; var __HT_noop = typeof Proxy !== 'undefined' ? new Proxy(__HT_noop_fn, { get: function(t,p) { if (p === Symbol.toPrimitive) return function() { return ''; }; if (p === 'valueOf' || p === 'toJSON') return function() { return 0; }; if (p === 'toString' || p === 'toLocaleString') return function() { return ''; }; if (p === Symbol.iterator) return function() { return { next: function() { return { done: true }; } }; }; if (p === 'length' || p === 'size') return 0; if (p === 'then' || p === '$$typeof' || p === '_isAMomentObject' || p === '__esModule') return undefined; if (p === 'constructor') return Object; if (typeof p === 'symbol') return undefined; return __HT_noop; }, apply: function() { return __HT_noop; }, construct: function() { return {}; }, ownKeys: function(t) { return Object.getOwnPropertyNames(t); }, getOwnPropertyDescriptor: function(t, p) { return Object.getOwnPropertyDescriptor(t, p) || { configurable: true, enumerable: false, writable: true, value: undefined }; } }) : function() {}; throw Error('Dynamic require",
         1,
     );
 
@@ -498,7 +498,7 @@ fn inject_mock_require_shim(code: &str) -> String {
         // (e.g. "/abs/src/hooks") but mockModule registers under the original path
         // (e.g. "@scope/pkg/hooks"). __HT_mock_aliases maps resolved → original.
         format!(
-            r#"{{ var __r = globalThis.__HT_mocks || (globalThis.__HT_mocks = {{}}); var __k = {v}.replace(/^\.\//, ''); if (!__r[__k] && !__r[{v}]) __r[{v}] = {{}}; var __t = __r[{v}] || __r[__k] || __r['./' + __k] || {{}}; return typeof Proxy !== 'undefined' ? new Proxy(__t, {{ get: function(t,p) {{ if (p === Symbol.toPrimitive || p === 'then' || p === '$$typeof') return undefined; if (p === '__esModule') return true; var __fm = globalThis.__HT_file_mocks; var __cf = globalThis.__currentTestFile; var __pf = __fm && __cf && __fm[__cf]; var __al = globalThis.__HT_mock_aliases || {{}}; var __orig = __al[{v}] || __al[__k]; var __m = (__pf && (__pf[{v}] || __pf[__k] || __pf['./' + __k] || (__orig && __pf[__orig]))) || globalThis.__HT_mocks[{v}] || globalThis.__HT_mocks[__k] || globalThis.__HT_mocks['./' + __k]; if (p === 'default') {{ var __d = __m && __m['default']; return __d !== undefined ? __d : (__m || t); }} var val = __m ? __m[p] : t[p]; return val !== undefined ? val : __HT_noop; }}, apply: function() {{ return __HT_noop; }}, construct: function() {{ return {{}}; }} }}) : __t }}"#,
+            r#"{{ var __r = globalThis.__HT_mocks || (globalThis.__HT_mocks = {{}}); var __k = {v}.replace(/^\.\//, ''); if (!__r[__k] && !__r[{v}]) __r[{v}] = {{}}; var __t = __r[{v}] || __r[__k] || __r['./' + __k] || {{}}; return typeof Proxy !== 'undefined' ? new Proxy(__t, {{ get: function(t,p) {{ if (p === Symbol.toPrimitive || p === 'then' || p === '$$typeof') return undefined; if (p === '__esModule') return true; var __fm = globalThis.__HT_file_mocks; var __cf = globalThis.__currentTestFile; var __pf = __fm && __cf && __fm[__cf]; var __al = globalThis.__HT_mock_aliases || {{}}; var __orig = __al[{v}] || __al[__k]; var __m = (__pf && (__pf[{v}] || __pf[__k] || __pf['./' + __k] || (__orig && __pf[__orig]))) || globalThis.__HT_mocks[{v}] || globalThis.__HT_mocks[__k] || globalThis.__HT_mocks['./' + __k]; if (p === 'default') {{ var __d = __m && __m['default']; return __d !== undefined ? __d : (__m || t); }} var val = __m ? __m[p] : t[p]; return val !== undefined ? val : __HT_noop; }}, apply: function() {{ return __HT_noop; }}, construct: function() {{ return {{}}; }}, ownKeys: function(t) {{ return Object.getOwnPropertyNames(t); }}, getOwnPropertyDescriptor: function(t, p) {{ return Object.getOwnPropertyDescriptor(t, p) || {{ configurable: true, enumerable: false, writable: true, value: undefined }}; }} }}) : __t }}"#,
         )
     }).to_string()
 }
@@ -536,6 +536,9 @@ fn hoist_mock_modules(code: &str) -> String {
                     // Process this function body: extract mockModule calls and hoist them
                     let body = &code[body_start..body_end];
                     let hoisted = hoist_mocks_in_body(body);
+                    if std::env::var("HT_DEBUG_BUNDLE").is_ok() && hoisted != body {
+                        eprintln!("[HT_HOIST] Modified body at offset {abs_pos} (body len: {})", body.len());
+                    }
                     result.push_str(&hoisted);
 
                     i = body_end;
@@ -664,7 +667,13 @@ fn hoist_mocks_in_body(body: &str) -> String {
     // Find all mockModule calls to determine if hoisting is needed
     let mock_pattern = ".mockModule)(";
     if !body.contains(mock_pattern) {
+        if std::env::var("HT_DEBUG_BUNDLE").is_ok() {
+            eprintln!("[HOIST_BODY] no mockModule calls found in body (len={})", body.len());
+        }
         return body.to_string();
+    }
+    if std::env::var("HT_DEBUG_BUNDLE").is_ok() {
+        eprintln!("[HOIST_BODY] found mockModule calls, body len={}", body.len());
     }
 
     // Find the last mockModule call's end position
@@ -684,22 +693,40 @@ fn hoist_mocks_in_body(body: &str) -> String {
     }
 
     if last_mock_end == 0 {
+        if std::env::var("HT_DEBUG_BUNDLE").is_ok() {
+            eprintln!("[HOIST_BODY] last_mock_end=0, no mocks found");
+        }
         return body.to_string();
+    }
+
+    if std::env::var("HT_DEBUG_BUNDLE").is_ok() {
+        eprintln!("[HOIST_BODY] last_mock_end={}", last_mock_end);
     }
 
     // Find init_*() calls that appear BEFORE last_mock_end and are not init_hermes*
     // These need to be moved to AFTER last_mock_end.
+    // Note: Rust regex crate doesn't support lookahead, so we filter out hermes* manually.
     // Pattern: `      init_SomeName();\n` (with leading whitespace)
-    let init_re = match regex::Regex::new(r"(?m)^([ \t]*)(init_(?!hermes)\w+)\(\);?\n?") {
+    let init_re = match regex::Regex::new(r"(?m)^([ \t]*)(init_\w+)\(\);?\n?") {
         Ok(re) => re,
         Err(_) => return body.to_string(),
     };
 
-    // Collect init_* ranges that are before last_mock_end
+    // Collect init_* ranges that are before last_mock_end and are not hermes-test internals
     let mut init_ranges: Vec<(usize, usize, &str)> = Vec::new();
     for m in init_re.find_iter(body) {
+        // Skip hermes-test internal inits like init_hermes_test
+        let text = m.as_str().trim_start();
+        if text.starts_with("init_hermes") { continue; }
         if m.start() < last_mock_end {
             init_ranges.push((m.start(), m.end(), m.as_str()));
+        }
+    }
+
+    if std::env::var("HT_DEBUG_BUNDLE").is_ok() {
+        eprintln!("[HOIST_BODY] init_ranges count={}", init_ranges.len());
+        for (s, e, t) in &init_ranges {
+            eprintln!("[HOIST_BODY]   init at {}..{}: {:?}", s, e, t.trim());
         }
     }
 
@@ -1581,17 +1608,31 @@ fn create_shadow_tree(
                 let wrapper = format!(
                     r#"var _loaded = null; var _loading = false;
 function _getReal() {{ if (_loaded) return _loaded; if (_loading) return {{}}; _loading = true; _loaded = require("{}"); _loading = false; return _loaded; }}
-var _h = {{ get: function(t, p) {{
-  if (p === '__esModule') return true;
-  if (typeof p === 'symbol') return undefined;
-  if (p === '__DEV__') return false;
-  var fm = globalThis.__HT_file_mocks;
-  var f = globalThis.__currentTestFile;
-  var mocks = fm && f && fm[f];
-  var m = mocks && mocks['{}'];
-  if (m && p in m) return m[p];{}
-  return _getReal()[p];
-}}}};
+var _h = {{
+  get: function(t, p) {{
+    if (p === '__esModule') return true;
+    if (typeof p === 'symbol') return undefined;
+    if (p === '__DEV__') return false;
+    var fm = globalThis.__HT_file_mocks;
+    var f = globalThis.__currentTestFile;
+    var mocks = fm && f && fm[f];
+    var m = mocks && mocks['{}'];
+    if (m && p in m) return m[p];{}
+    return _getReal()[p];
+  }},
+  ownKeys: function(t) {{
+    var r = _getReal();
+    try {{ return Object.getOwnPropertyNames(r); }} catch(e) {{ return []; }}
+  }},
+  getOwnPropertyDescriptor: function(t, p) {{
+    var r = _getReal();
+    try {{
+      var d = Object.getOwnPropertyDescriptor(r, p);
+      if (d) {{ return {{ configurable: true, enumerable: d.enumerable, writable: true, value: d.get ? d.get() : d.value }}; }}
+    }} catch(e) {{}}
+    return {{ configurable: true, enumerable: false, writable: true, value: undefined }};
+  }}
+}};
 module.exports = typeof Proxy !== 'undefined' ? new Proxy({{}}, _h) : {{}};
 "#,
                     require_path,
@@ -1644,18 +1685,32 @@ module.exports = typeof Proxy !== 'undefined' ? new Proxy({{}}, _h) : {{}};
                     let wrapper = format!(
                         r#"var _loaded = null; var _loading = false;
 function _getReal() {{ if (_loaded) return _loaded; if (_loading) return {{}}; _loading = true; _loaded = require("{}"); _loading = false; return _loaded; }}
-var _h = {{ get: function(t, p) {{
-  if (p === '__esModule') return true;
-  if (typeof p === 'symbol') return undefined;
-  if (p === '__DEV__') return false;
-  var fm = globalThis.__HT_file_mocks;
-  var f = globalThis.__currentTestFile;
-  var mocks = fm && f && fm[f];
-  var m = mocks && mocks['{}'];
-  if (m && p in m) return m[p];
-  if (mocks) {{ for (var k in mocks) {{ if (k.indexOf('{}') === 0 && p in mocks[k]) return mocks[k][p]; }} }}
-  return _getReal()[p];
-}}}};
+var _h = {{
+  get: function(t, p) {{
+    if (p === '__esModule') return true;
+    if (typeof p === 'symbol') return undefined;
+    if (p === '__DEV__') return false;
+    var fm = globalThis.__HT_file_mocks;
+    var f = globalThis.__currentTestFile;
+    var mocks = fm && f && fm[f];
+    var m = mocks && mocks['{}'];
+    if (m && p in m) return m[p];
+    if (mocks) {{ for (var k in mocks) {{ if (k.indexOf('{}') === 0 && p in mocks[k]) return mocks[k][p]; }} }}
+    return _getReal()[p];
+  }},
+  ownKeys: function(t) {{
+    var r = _getReal();
+    try {{ return Object.getOwnPropertyNames(r); }} catch(e) {{ return []; }}
+  }},
+  getOwnPropertyDescriptor: function(t, p) {{
+    var r = _getReal();
+    try {{
+      var d = Object.getOwnPropertyDescriptor(r, p);
+      if (d) {{ return {{ configurable: true, enumerable: d.enumerable, writable: true, value: d.get ? d.get() : d.value }}; }}
+    }} catch(e) {{}}
+    return {{ configurable: true, enumerable: false, writable: true, value: undefined }};
+  }}
+}};
 module.exports = typeof Proxy !== 'undefined' ? new Proxy({{}}, _h) : {{}};
 "#,
                         require_path,
@@ -1976,8 +2031,8 @@ pub fn generate_entry(
             .map(|n| n.to_string_lossy().to_string())
             .unwrap_or_else(|| path.to_string());
         entry.push_str(&format!(
-            "globalThis.__currentTestFile = '{}';\nrequire('{}');\n",
-            display_name, require_path
+            "globalThis.__currentTestFile = '{}';\ntry {{ require('{}'); }} catch(e) {{ if (globalThis.__HT) globalThis.__HT.registerCrash('{}', String(e && e.message || e)); }}\n",
+            display_name, require_path, display_name
         ));
     }
 
@@ -2138,14 +2193,133 @@ pub struct SplitBundle {
     pub groups: Vec<String>,
 }
 
+/// Compute a cache key from source file mtimes + config + test file list.
+/// Public alias for single-bundle caching in main.rs.
+pub fn compute_single_bundle_cache_key(
+    test_files: &[PathBuf],
+    project_root: &Path,
+    mock_modules: &[String],
+    cfg: &BundleConfig,
+) -> String {
+    compute_bundle_cache_key(test_files, project_root, mock_modules, cfg)
+}
+
+fn compute_bundle_cache_key(
+    test_files: &[PathBuf],
+    project_root: &Path,
+    mock_modules: &[String],
+    cfg: &BundleConfig,
+) -> String {
+    use std::hash::{Hash, Hasher};
+    let mut hasher = std::collections::hash_map::DefaultHasher::new();
+
+    // Hash test file paths and mtimes
+    for f in test_files {
+        f.to_string_lossy().hash(&mut hasher);
+        if let Ok(meta) = std::fs::metadata(f) {
+            if let Ok(mtime) = meta.modified() { mtime.hash(&mut hasher); }
+        }
+    }
+
+    // Hash all source files under project_root/src (mtimes only for speed)
+    let src_dir = project_root.join("src");
+    if src_dir.is_dir() {
+        let mut src_files = Vec::new();
+        collect_source_mtimes(&src_dir, &mut src_files);
+        src_files.sort();
+        for (path, mtime) in &src_files {
+            path.hash(&mut hasher);
+            mtime.hash(&mut hasher);
+        }
+    }
+
+    // Hash config mtime
+    let config_path = project_root.join("hermes-test.config.json");
+    if let Ok(meta) = std::fs::metadata(&config_path) {
+        if let Ok(mtime) = meta.modified() { mtime.hash(&mut hasher); }
+    }
+
+    // Hash mock modules + externals
+    for m in mock_modules { m.hash(&mut hasher); }
+    cfg.externals.len().hash(&mut hasher);
+    cfg.split.hash(&mut hasher);
+
+    format!("{:016x}", hasher.finish())
+}
+
+fn collect_source_mtimes(dir: &Path, out: &mut Vec<(String, u64)>) {
+    let entries = match std::fs::read_dir(dir) { Ok(e) => e, Err(_) => return };
+    for entry in entries.flatten() {
+        let path = entry.path();
+        let name = entry.file_name();
+        let n = name.to_string_lossy();
+        if path.is_dir() {
+            if n == "node_modules" { continue; }
+            collect_source_mtimes(&path, out);
+        } else if n.ends_with(".ts") || n.ends_with(".tsx") || n.ends_with(".js") {
+            if let Ok(meta) = std::fs::metadata(&path) {
+                if let Ok(mtime) = meta.modified() {
+                    let secs = mtime.duration_since(std::time::UNIX_EPOCH).unwrap_or_default().as_secs();
+                    out.push((path.to_string_lossy().to_string(), secs));
+                }
+            }
+        }
+    }
+}
+
+fn load_cached_split(project_root: &Path, cache_key: &str) -> Option<SplitBundle> {
+    let cache_dir = project_root.join(".hermes-test-cache");
+    let vendor = std::fs::read_to_string(cache_dir.join(format!("split-vendor-{cache_key}.js"))).ok()?;
+    let manifest: Vec<String> = serde_json::from_str(
+        &std::fs::read_to_string(cache_dir.join(format!("split-manifest-{cache_key}.json"))).ok()?
+    ).ok()?;
+    let mut groups = Vec::new();
+    for name in &manifest {
+        groups.push(std::fs::read_to_string(cache_dir.join(name)).ok()?);
+    }
+    Some(SplitBundle { vendor, groups })
+}
+
+fn save_cached_split(project_root: &Path, cache_key: &str, split: &SplitBundle) {
+    let cache_dir = project_root.join(".hermes-test-cache");
+    let _ = std::fs::create_dir_all(&cache_dir);
+    // Clean old split cache files
+    if let Ok(entries) = std::fs::read_dir(&cache_dir) {
+        for entry in entries.flatten() {
+            let n = entry.file_name();
+            let n = n.to_string_lossy();
+            if n.starts_with("split-") && !n.contains(cache_key) {
+                let _ = std::fs::remove_file(entry.path());
+            }
+        }
+    }
+    let _ = std::fs::write(cache_dir.join(format!("split-vendor-{cache_key}.js")), &split.vendor);
+    let mut group_names = Vec::new();
+    for (i, group) in split.groups.iter().enumerate() {
+        let name = format!("split-group-{cache_key}-{i}.js");
+        let _ = std::fs::write(cache_dir.join(&name), group);
+        group_names.push(name);
+    }
+    let _ = std::fs::write(
+        cache_dir.join(format!("split-manifest-{cache_key}.json")),
+        serde_json::to_string(&group_names).unwrap_or_default(),
+    );
+}
+
 /// Bundle with vendor/group splitting to avoid Hermes super-linear scaling.
-/// Vendor bundle: all node_modules. Group bundles: only local test code.
+/// Uses disk cache keyed on source file mtimes — skips esbuild when nothing changed.
 pub fn bundle_split(
     test_files: &[PathBuf],
     project_root: &Path,
     mock_modules: &[String],
     cfg: &BundleConfig,
 ) -> Result<SplitBundle, String> {
+    // Check esbuild output cache first
+    let cache_key = compute_bundle_cache_key(test_files, project_root, mock_modules, cfg);
+    if let Some(cached) = load_cached_split(project_root, &cache_key) {
+        return Ok(cached);
+    }
+
     let esbuild_path = find_esbuild(project_root)
         .map_err(|_| "esbuild not found. Install it: bun add -d esbuild".to_string())?;
 
@@ -2217,7 +2391,9 @@ pub fn bundle_split(
         vendor_code
     };
 
-    Ok(SplitBundle { vendor, groups: group_bundles })
+    let result = SplitBundle { vendor, groups: group_bundles };
+    save_cached_split(project_root, &cache_key, &result);
+    Ok(result)
 }
 
 fn pkg_matches_external(pkg: &str, external: &str) -> bool {
@@ -2253,8 +2429,8 @@ fn generate_group_entry(test_files: &[PathBuf], mock_modules: &[String]) -> Stri
             .map(|n| n.to_string_lossy().to_string())
             .unwrap_or_else(|| path.to_string());
         entry.push_str(&format!(
-            "globalThis.__currentTestFile = '{}';\nrequire('{}');\n",
-            display_name, require_path
+            "globalThis.__currentTestFile = '{}';\ntry {{ require('{}'); }} catch(e) {{ if (globalThis.__HT) globalThis.__HT.registerCrash('{}', String(e && e.message || e)); }}\n",
+            display_name, require_path, display_name
         ));
     }
 
@@ -2353,3 +2529,4 @@ fn extract_required_packages(code: &str) -> Vec<String> {
     }
     packages
 }
+
