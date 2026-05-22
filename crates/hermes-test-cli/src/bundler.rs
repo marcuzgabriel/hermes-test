@@ -1557,9 +1557,31 @@ fn create_shadow_tree(
                 let real_alias = format!("@__ht_real/{}", alias_name.trim_start_matches('@'));
                 let suffix = mock_path_str.strip_prefix(alias_name).unwrap_or("");
                 let require_path = format!("{real_alias}{suffix}");
-                // Lazy Proxy wrapper: doesn't load the real module until first access.
-                // This avoids circular dependency crashes — the real module is only
-                // loaded when a property is actually read, not at wrapper init time.
+
+                // For barrel/index files, also check sub-path mocks.
+                // When a barrel re-exports from sub-modules and those sub-modules are mocked,
+                // the barrel Proxy should delegate property access to the sub-path mock.
+                // Example: import { useErrorHandling } from '@scope/hooks' should check
+                // mocks registered for '@scope/hooks/errorHandling/useErrorHandling'.
+                let barrel_prefix = format!("{mock_path_str}/");
+                let has_sub_mocks = is_index && mocked_paths.iter().any(|m| m.starts_with(&barrel_prefix));
+
+                let sub_mock_check = if has_sub_mocks {
+                    // Generate code that checks all sub-path mocks under this barrel
+                    format!(
+                        r#"
+  // Barrel sub-path mock delegation: check all mocked sub-paths
+  if (mocks) {{
+    for (var k in mocks) {{
+      if (k.indexOf('{}') === 0 && p in mocks[k]) return mocks[k][p];
+    }}
+  }}"#,
+                        barrel_prefix,
+                    )
+                } else {
+                    String::new()
+                };
+
                 let wrapper = format!(
                     r#"var _loaded = null;
 function _getReal() {{ if (!_loaded) _loaded = require("{}"); return _loaded; }}
@@ -1569,19 +1591,89 @@ var _h = {{ get: function(t, p) {{
   if (p === '__DEV__') return false;
   var fm = globalThis.__HT_file_mocks;
   var f = globalThis.__currentTestFile;
-  var m = fm && f && fm[f] && fm[f]['{}'];
-  if (m && p in m) return m[p];
+  var mocks = fm && f && fm[f];
+  var m = mocks && mocks['{}'];
+  if (m && p in m) return m[p];{}
   return _getReal()[p];
 }}}};
 module.exports = typeof Proxy !== 'undefined' ? new Proxy({{}}, _h) : {{}};
 "#,
                     require_path,
                     mock_path_str,
+                    sub_mock_check,
                 );
                 let _ = std::fs::write(&shadow_path, wrapper);
             } else {
-                // Symlink to real file
-                let _ = std::os::unix::fs::symlink(&real_path, &shadow_path);
+                // Check if this file is a barrel/index file that re-exports mocked children,
+                // or sits in the same directory as a mocked sibling.
+                // esbuild resolves symlinks, so relative imports from symlinked files
+                // bypass the shadow tree. Copy these files so relative imports resolve
+                // within the shadow directory (where proxy wrappers live).
+                let same_dir_has_mock = mocked_paths.iter().any(|m| {
+                    if let Some(parent) = rel_str.rfind('/') {
+                        let dir_prefix = format!("{alias_name}/{}/", &rel_str[..parent]);
+                        m.starts_with(&dir_prefix)
+                    } else {
+                        // Root level — check if any mock is at root level
+                        !m.contains('/') || m.starts_with(&format!("{alias_name}/"))
+                    }
+                });
+                let is_barrel = is_index || name_str.ends_with("index.ts") || name_str.ends_with("index.tsx") || name_str.ends_with("index.js");
+
+                // If this barrel has mocked children, create a Proxy wrapper with
+                // sub-path delegation instead of copying. This ensures barrel imports
+                // like `import { X } from '@scope/helpers'` check sub-path mocks
+                // even when the barrel itself isn't explicitly mocked.
+                let barrel_mock_prefix = if is_barrel {
+                    let barrel_alias = if is_index {
+                        index_path.clone()
+                    } else {
+                        direct_path.clone()
+                    };
+                    let pfx = format!("{}/", if barrel_alias.is_empty() { &direct_path } else { &barrel_alias });
+                    if mocked_paths.iter().any(|m| m.starts_with(&pfx)) {
+                        Some((if barrel_alias.is_empty() { direct_path.clone() } else { barrel_alias }, pfx))
+                    } else {
+                        None
+                    }
+                } else {
+                    None
+                };
+
+                if let Some((barrel_alias_path, barrel_prefix)) = barrel_mock_prefix {
+                    // Create Proxy wrapper for barrel with sub-path delegation
+                    let real_alias = format!("@__ht_real/{}", alias_name.trim_start_matches('@'));
+                    let suffix = barrel_alias_path.strip_prefix(alias_name).unwrap_or("");
+                    let require_path = format!("{real_alias}{suffix}");
+                    let wrapper = format!(
+                        r#"var _loaded = null;
+function _getReal() {{ if (!_loaded) _loaded = require("{}"); return _loaded; }}
+var _h = {{ get: function(t, p) {{
+  if (p === '__esModule') return true;
+  if (typeof p === 'symbol') return undefined;
+  if (p === '__DEV__') return false;
+  var fm = globalThis.__HT_file_mocks;
+  var f = globalThis.__currentTestFile;
+  var mocks = fm && f && fm[f];
+  var m = mocks && mocks['{}'];
+  if (m && p in m) return m[p];
+  if (mocks) {{ for (var k in mocks) {{ if (k.indexOf('{}') === 0 && p in mocks[k]) return mocks[k][p]; }} }}
+  return _getReal()[p];
+}}}};
+module.exports = typeof Proxy !== 'undefined' ? new Proxy({{}}, _h) : {{}};
+"#,
+                        require_path,
+                        barrel_alias_path,
+                        barrel_prefix,
+                    );
+                    let _ = std::fs::write(&shadow_path, wrapper);
+                } else if is_barrel || same_dir_has_mock {
+                    // Copy: relative imports will resolve within shadow tree
+                    let _ = std::fs::copy(&real_path, &shadow_path);
+                } else {
+                    // Symlink: safe because no mocked siblings
+                    let _ = std::os::unix::fs::symlink(&real_path, &shadow_path);
+                }
             }
         }
     }

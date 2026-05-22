@@ -9,6 +9,26 @@ if (typeof globalThis.process === 'undefined') {
   globalThis.process.env = { NODE_ENV: 'test' };
 }
 
+// process.nextTick — many Node.js-style tests use this
+if (typeof globalThis.process.nextTick === 'undefined') {
+  globalThis.process.nextTick = function(fn) {
+    Promise.resolve().then(fn);
+  };
+}
+
+// crypto.getRandomValues — needed by uuid and other crypto-dependent libs
+if (typeof globalThis.crypto === 'undefined') {
+  globalThis.crypto = {};
+}
+if (typeof globalThis.crypto.getRandomValues === 'undefined') {
+  globalThis.crypto.getRandomValues = function(arr) {
+    for (var i = 0; i < arr.length; i++) {
+      arr[i] = Math.floor(Math.random() * 256);
+    }
+    return arr;
+  };
+}
+
 // MessageChannel polyfill — React 19's scheduler uses it for async work
 if (typeof globalThis.MessageChannel === 'undefined') {
   globalThis.MessageChannel = function() {
