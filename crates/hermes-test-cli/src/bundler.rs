@@ -280,6 +280,7 @@ fn bundle_esbuild_with_config(
         // No --minify — our Hermes compat patches match unminified esbuild output patterns.
         .arg("--supported:async-await=false")
         .arg("--define:process.env.NODE_ENV=\"test\"")
+        .arg("--define:process.env.JEST_WORKER_ID=\"1\"")
         .arg("--define:global=globalThis")
         .arg("--loader:.js=jsx")
         .arg("--loader:.png=empty")
@@ -377,6 +378,15 @@ fn bundle_esbuild_with_config(
     if has_externals {
         code = inject_mock_require_shim(&code);
     }
+
+    // Hoist mockModule() calls before require() calls so aliased shadow-wrapper mocks
+    // are registered before the module initializers run (captures dispatch, getState, etc.)
+    let hoisted = hoist_mock_modules(&code);
+    if std::env::var("HT_DEBUG_BUNDLE").is_ok() {
+        let _ = std::fs::write("/tmp/ht_bundle_hoisted.js", &hoisted);
+        let _ = std::fs::write("/tmp/ht_bundle_original.js", &code);
+    }
+    code = hoisted;
 
     Ok(code)
 }
@@ -494,11 +504,9 @@ fn inject_mock_require_shim(code: &str) -> String {
 }
 
 /// Hoist mockModule() calls before init_*() calls in esbuild's bundled output.
-/// NOTE: Currently unused. The __require Proxy handles late-binding for externalized mocks.
-/// Alias-conflicting mocks (e.g. @topdanmark/* paths) are resolved by esbuild inline,
-/// so they can't be hoisted — those files need per-file isolation instead.
-/// Kept for future use if we implement pre-bundle Vitest-style import rewriting.
-#[allow(dead_code)]
+/// Hoist mockModule() calls before init_*() / require() calls so that when a module's
+/// initializer runs (e.g. `const { dispatch, getState } = store`), the mock is already
+/// registered in __HT_file_mocks and the shadow-wrapper Proxy returns the mock value.
 fn hoist_mock_modules(code: &str) -> String {
     // Pattern: (0, import_hermes_test.mockModule)("path", () => ({ ... }));
     // or: (0, import_hermes_test2.mockModule)("path", () => ({ ... }));
@@ -550,7 +558,6 @@ fn hoist_mock_modules(code: &str) -> String {
 /// Find the position of the matching closing brace for an opening brace at `start`.
 /// `start` should be the position right after the opening `{`.
 /// Returns the position of the closing `}`.
-#[allow(dead_code)]
 fn find_matching_brace(code: &str, start: usize) -> usize {
     let bytes = code.as_bytes();
     let mut depth = 1;
@@ -608,7 +615,6 @@ fn find_matching_brace(code: &str, start: usize) -> usize {
 
 /// Extract a balanced parenthesized expression starting at `start` (position of opening paren).
 /// Returns the position after the closing paren (including trailing semicolon/newline).
-#[allow(dead_code)]
 fn extract_call_end(code: &str, start: usize) -> usize {
     let bytes = code.as_bytes();
     let mut depth = 0;
@@ -646,92 +652,83 @@ fn extract_call_end(code: &str, start: usize) -> usize {
     j
 }
 
-/// Within a single function body, find mockModule calls and move them before init_*() calls.
-#[allow(dead_code)]
+/// Within a single function body, move init_*() calls for non-hermes modules to AFTER
+/// the last mockModule() call. This ensures that:
+/// 1. Variable declarations (mockDispatch, mockGetState etc.) execute before mockModule() factories
+/// 2. mockModule() registers its mock values before modules initialize (init_*() runs)
+/// 3. When a module's initializer captures values like `const { dispatch } = store`, the mock is live
+///
+/// Strategy: "push init_* calls down" rather than "pull mockModule calls up".
+/// This preserves the relative order of variable declarations and mockModule calls.
 fn hoist_mocks_in_body(body: &str) -> String {
-    // Find all mockModule calls: `(0, import_xxx.mockModule)("path", () => ({ ... }));`
+    // Find all mockModule calls to determine if hoisting is needed
     let mock_pattern = ".mockModule)(";
-
-    // First pass: collect mockModule call ranges
-    let mut mock_ranges: Vec<(usize, usize)> = Vec::new();
-    let mut search_start = 0;
-    while let Some(pos) = body[search_start..].find(mock_pattern) {
-        let abs_pos = search_start + pos;
-        // Walk back to find the start of `(0, import_xxx.mockModule)`
-        // This starts with `(0,` — find the opening paren
-        let mut start = abs_pos;
-        while start > 0 {
-            start -= 1;
-            if body.as_bytes()[start] == b'(' {
-                // Check if this looks like `(0,` pattern
-                let after = body[start..].trim_start_matches('(');
-                if after.starts_with("0,") {
-                    break;
-                }
-            }
-            // Also handle direct `mockModule(` (without (0, wrapper))
-            if body[start..].starts_with("mockModule(") {
-                break;
-            }
-        }
-
-        // Find the end: the closing paren of mockModule(...) call
-        // The call args start after `.mockModule)(`
-        let args_start = abs_pos + mock_pattern.len() - 1; // position of `(`
-        let call_end = extract_call_end(body, args_start);
-
-        // Also include the outer `)` and `;`
-        // Actually, extract_call_end handles the inner mockModule args.
-        // The full expression is: (0, import.mockModule)("path", factory);
-        // We found the (0, part at `start`, and mockModule)( at abs_pos
-        // The outer call is: ...mockModule)("path", factory)
-        // So we need to find the closing paren of the OUTER call
-        let outer_call_start = abs_pos + mock_pattern.len() - 1;
-        let outer_end = extract_call_end(body, outer_call_start);
-
-        mock_ranges.push((start, outer_end));
-        search_start = outer_end;
-    }
-
-    if mock_ranges.is_empty() {
+    if !body.contains(mock_pattern) {
         return body.to_string();
     }
 
-    // Find insertion point: after hermes-test require, before other init_*() calls
-    let insert_point = find_mock_insert_point(body);
-
-    // Collect mock call texts
-    let mut mock_texts: Vec<&str> = Vec::new();
-    for &(start, end) in &mock_ranges {
-        let text = body[start..end].trim();
-        mock_texts.push(text);
+    // Find the last mockModule call's end position
+    let mut last_mock_end = 0;
+    let mut search_start = 0;
+    while let Some(pos) = body[search_start..].find(mock_pattern) {
+        let abs_pos = search_start + pos;
+        let outer_call_start = abs_pos + mock_pattern.len() - 1;
+        let outer_end = extract_call_end(body, outer_call_start);
+        // Extend to include trailing semicolon and newline
+        let mut end = outer_end;
+        let bytes = body.as_bytes();
+        if end < bytes.len() && bytes[end] == b';' { end += 1; }
+        if end < bytes.len() && bytes[end] == b'\n' { end += 1; }
+        if end > last_mock_end { last_mock_end = end; }
+        search_start = outer_end;
     }
 
-    // Rebuild body: everything before insert_point, then mocks, then rest (without original mocks)
-    let mut result = String::with_capacity(body.len());
+    if last_mock_end == 0 {
+        return body.to_string();
+    }
 
-    // Copy up to insert point
-    result.push_str(&body[..insert_point]);
+    // Find init_*() calls that appear BEFORE last_mock_end and are not init_hermes*
+    // These need to be moved to AFTER last_mock_end.
+    // Pattern: `      init_SomeName();\n` (with leading whitespace)
+    let init_re = match regex::Regex::new(r"(?m)^([ \t]*)(init_(?!hermes)\w+)\(\);?\n?") {
+        Ok(re) => re,
+        Err(_) => return body.to_string(),
+    };
 
-    // Insert hoisted mocks
-    for text in &mock_texts {
-        result.push_str("      ");
-        result.push_str(text);
-        if !text.ends_with(';') {
-            result.push(';');
+    // Collect init_* ranges that are before last_mock_end
+    let mut init_ranges: Vec<(usize, usize, &str)> = Vec::new();
+    for m in init_re.find_iter(body) {
+        if m.start() < last_mock_end {
+            init_ranges.push((m.start(), m.end(), m.as_str()));
         }
-        result.push('\n');
     }
 
-    // Copy the rest, skipping the original mock calls
-    let mut pos = insert_point;
-    for &(start, end) in &mock_ranges {
-        if start >= insert_point {
-            result.push_str(&body[pos..start]);
-            pos = end;
-        }
+    if init_ranges.is_empty() {
+        return body.to_string();
     }
-    result.push_str(&body[pos..]);
+
+    // Rebuild body: copy everything, skipping init_* calls before last_mock_end,
+    // then insert the collected init_* calls right after last_mock_end.
+    let mut result = String::with_capacity(body.len() + 64);
+    let mut pos = 0;
+    let mut collected_inits = String::new();
+
+    for &(start, end, text) in &init_ranges {
+        result.push_str(&body[pos..start]);
+        collected_inits.push_str(text);
+        if !text.ends_with('\n') { collected_inits.push('\n'); }
+        pos = end;
+    }
+
+    // Copy up to last_mock_end (might include some content after the last init_* we skipped)
+    // We need to handle the case where last_mock_end > pos
+    result.push_str(&body[pos..last_mock_end]);
+
+    // Insert collected init_* calls after all mockModule calls
+    result.push_str(&collected_inits);
+
+    // Copy the rest
+    result.push_str(&body[last_mock_end..]);
 
     result
 }
@@ -739,7 +736,6 @@ fn hoist_mocks_in_body(body: &str) -> String {
 /// Find the insertion point for hoisted mocks in a function body.
 /// Mocks must go AFTER the hermes-test require (so mockModule is defined)
 /// but BEFORE any init_*() calls (so mocks are registered before modules load).
-#[allow(dead_code)]
 fn find_mock_insert_point(body: &str) -> usize {
     // Strategy: find the end of the hermes-test require line, insert after it.
     // Patterns: `__require("hermes-test")` or `__require("@marcuzgabriel/hermes-test")`
@@ -1583,8 +1579,8 @@ fn create_shadow_tree(
                 };
 
                 let wrapper = format!(
-                    r#"var _loaded = null;
-function _getReal() {{ if (!_loaded) _loaded = require("{}"); return _loaded; }}
+                    r#"var _loaded = null; var _loading = false;
+function _getReal() {{ if (_loaded) return _loaded; if (_loading) return {{}}; _loading = true; _loaded = require("{}"); _loading = false; return _loaded; }}
 var _h = {{ get: function(t, p) {{
   if (p === '__esModule') return true;
   if (typeof p === 'symbol') return undefined;
@@ -1646,8 +1642,8 @@ module.exports = typeof Proxy !== 'undefined' ? new Proxy({{}}, _h) : {{}};
                     let suffix = barrel_alias_path.strip_prefix(alias_name).unwrap_or("");
                     let require_path = format!("{real_alias}{suffix}");
                     let wrapper = format!(
-                        r#"var _loaded = null;
-function _getReal() {{ if (!_loaded) _loaded = require("{}"); return _loaded; }}
+                        r#"var _loaded = null; var _loading = false;
+function _getReal() {{ if (_loaded) return _loaded; if (_loading) return {{}}; _loading = true; _loaded = require("{}"); _loading = false; return _loaded; }}
 var _h = {{ get: function(t, p) {{
   if (p === '__esModule') return true;
   if (typeof p === 'symbol') return undefined;
@@ -2023,6 +2019,7 @@ pub fn bundle_with_depgraph(
         .arg("--target=es2020")
         .arg("--supported:async-await=false")
         .arg("--define:process.env.NODE_ENV=\"test\"")
+        .arg("--define:process.env.JEST_WORKER_ID=\"1\"")
         .arg("--define:global=globalThis")
         .arg(format!("--metafile={}", metafile_path.to_string_lossy()))
         .arg(format!("--outfile={}", outfile_path.to_string_lossy()));
@@ -2051,6 +2048,10 @@ pub fn bundle_with_depgraph(
     if !external_modules.is_empty() {
         code = inject_mock_require_shim(&code);
     }
+
+    // Hoist mockModule() calls before require() calls so aliased shadow-wrapper mocks
+    // are registered before the module initializers run
+    code = hoist_mock_modules(&code);
 
     // Parse the metafile to build a dependency graph
     let depgraph = parse_depgraph(&metafile_path, project_root, test_files);

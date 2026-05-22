@@ -4,9 +4,15 @@
 
 // React checks process.env.NODE_ENV at load time
 if (typeof globalThis.process === 'undefined') {
-  globalThis.process = { env: { NODE_ENV: 'test' } };
+  globalThis.process = { env: { NODE_ENV: 'test', JEST_WORKER_ID: '1' } };
 } else if (!globalThis.process.env) {
-  globalThis.process.env = { NODE_ENV: 'test' };
+  globalThis.process.env = { NODE_ENV: 'test', JEST_WORKER_ID: '1' };
+} else {
+  // Always set JEST_WORKER_ID so RTK Query apiBaseQuery uses the mock domain (apiMockDomain)
+  // rather than the real AWS domain. Runs before any bundled module-level code.
+  if (!globalThis.process.env.JEST_WORKER_ID) {
+    globalThis.process.env.JEST_WORKER_ID = '1';
+  }
 }
 
 // process.nextTick — many Node.js-style tests use this

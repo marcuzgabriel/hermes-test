@@ -174,8 +174,13 @@ export const HttpResponse = {
 };
 
 // Per-test overrides (like MSW server.use())
+// Also installs fakeFetch on globalThis if not already done (handlers-only path).
 export function mockFetchUse(...newHandlers: MockHandler[]): void {
   overrideHandlers.push(...newHandlers);
+  // Ensure fakeFetch is installed — mockFetchUse may be called without a prior mockFetch call
+  if ((globalThis as any).fetch !== fakeFetch) {
+    (globalThis as any).fetch = fakeFetch;
+  }
 }
 
 // Reset per-test overrides (like MSW server.resetHandlers())

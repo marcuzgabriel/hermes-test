@@ -11,8 +11,10 @@ function deepEqual(a: any, b: any): boolean {
   }
 
   if (typeof a === 'object') {
-    const keysA = Object.keys(a);
-    const keysB = Object.keys(b);
+    // Jest-compatible: ignore keys whose value is undefined (treat them as absent).
+    // This matches Jest's toEqual behavior where { a: 1, b: undefined } deep-equals { a: 1 }.
+    const keysA = Object.keys(a).filter((k) => a[k] !== undefined);
+    const keysB = Object.keys(b).filter((k) => b[k] !== undefined);
     if (keysA.length !== keysB.length) return false;
     return keysA.every((k) => deepEqual(a[k], b[k]));
   }
