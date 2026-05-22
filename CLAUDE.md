@@ -12,6 +12,10 @@ When Claude Code opens this repo, before doing anything else:
 2. Read `.claude/references/scope.md` to know what's in v0 vs deferred
 3. Read `.claude/references/decisions.md` to avoid relitigating settled choices
 4. Read `.claude/references/roadmap.md` to know which week of work we're on
+5. Read `.claude/references/mock-strategies.md` for current mock strategy and what's been tried
+6. Read `.claude/references/mock-strategy.md` for detailed strategy history with all 11+ approaches
+7. Read `.claude/references/shadow-wrappers.md` for how shadow wrappers and package shims work
+8. Read `.claude/references/challenges.md` for the full journey of challenges and solutions
 
 The references are the source of truth. If something in this README disagrees with them, trust the references and ask the user.
 
