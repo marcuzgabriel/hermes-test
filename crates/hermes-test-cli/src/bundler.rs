@@ -332,7 +332,31 @@ fn bundle_esbuild_with_config(
     }
 
     // Default externals: hermes-test (thin re-export from __HT), React Native (Flow syntax)
-    for ext in &["hermes-test", "@marcuzgabriel/hermes-test", "react-native", "react-native/*", "@react-native/*"] {
+    cmd.arg("--external:hermes-test");
+    cmd.arg("--external:@marcuzgabriel/hermes-test");
+    // Alias hermes-test/store to the actual file so it gets BUNDLED (not externalized).
+    // esbuild aliases run before external checks, so this resolves before the external match.
+    {
+        let store_paths = [
+            entry_file.parent().unwrap_or(std::path::Path::new(".")).join("node_modules/hermes-test/src/store.ts"),
+            entry_file.parent().unwrap_or(std::path::Path::new(".")).join("node_modules/@marcuzgabriel/hermes-test/src/store.ts"),
+        ];
+        for sp in &store_paths {
+            if sp.exists() {
+                cmd.arg(format!("--alias:hermes-test/store={}", sp.to_string_lossy()));
+                cmd.arg(format!("--alias:@marcuzgabriel/hermes-test/store={}", sp.to_string_lossy()));
+                break;
+            }
+        }
+        // Also check project root node_modules
+        if let Some(ref root) = cfg.root {
+            let root_store = root.join("node_modules/hermes-test/src/store.ts");
+            if root_store.exists() {
+                cmd.arg(format!("--alias:hermes-test/store={}", root_store.to_string_lossy()));
+            }
+        }
+    }
+    for ext in &["react-native", "react-native/*", "@react-native/*"] {
         cmd.arg(format!("--external:{ext}"));
     }
 
@@ -498,7 +522,7 @@ fn inject_mock_require_shim(code: &str) -> String {
         // (e.g. "/abs/src/hooks") but mockModule registers under the original path
         // (e.g. "@scope/pkg/hooks"). __HT_mock_aliases maps resolved → original.
         format!(
-            r#"{{ var __r = globalThis.__HT_mocks || (globalThis.__HT_mocks = {{}}); var __k = {v}.replace(/^\.\//, ''); if (!__r[__k] && !__r[{v}]) __r[{v}] = {{}}; var __t = __r[{v}] || __r[__k] || __r['./' + __k] || {{}}; return typeof Proxy !== 'undefined' ? new Proxy(__t, {{ get: function(t,p) {{ if (p === Symbol.toPrimitive || p === 'then' || p === '$$typeof') return undefined; if (p === '__esModule') return true; var __fm = globalThis.__HT_file_mocks; var __cf = globalThis.__currentTestFile; var __pf = __fm && __cf && __fm[__cf]; var __al = globalThis.__HT_mock_aliases || {{}}; var __orig = __al[{v}] || __al[__k]; var __m = (__pf && (__pf[{v}] || __pf[__k] || __pf['./' + __k] || (__orig && __pf[__orig]))) || globalThis.__HT_mocks[{v}] || globalThis.__HT_mocks[__k] || globalThis.__HT_mocks['./' + __k]; if (p === 'default') {{ var __d = __m && __m['default']; return __d !== undefined ? __d : (__m || t); }} var val = __m ? __m[p] : t[p]; return val !== undefined ? val : __HT_noop; }}, apply: function() {{ return __HT_noop; }}, construct: function() {{ return {{}}; }}, ownKeys: function(t) {{ return Object.getOwnPropertyNames(t); }}, getOwnPropertyDescriptor: function(t, p) {{ return Object.getOwnPropertyDescriptor(t, p) || {{ configurable: true, enumerable: false, writable: true, value: undefined }}; }} }}) : __t }}"#,
+            r#"{{ var __r = globalThis.__HT_mocks || (globalThis.__HT_mocks = {{}}); var __k = {v}.replace(/^\.\//, ''); var __t = __r[{v}] || __r[__k] || __r['./' + __k] || {{}}; return typeof Proxy !== 'undefined' ? new Proxy(__t, {{ get: function(t,p) {{ if (p === Symbol.toPrimitive || p === 'then' || p === '$$typeof') return undefined; if (p === '__esModule') return true; var __fm = globalThis.__HT_file_mocks; var __cf = globalThis.__currentTestFile; var __pf = __fm && __cf && __fm[__cf]; var __al = globalThis.__HT_mock_aliases || {{}}; var __orig = __al[{v}] || __al[__k]; var __m = (__pf && (__pf[{v}] || __pf[__k] || __pf['./' + __k] || (__orig && __pf[__orig]))) || __r[{v}] || __r[__k] || __r['./' + __k]; if (p === 'default') {{ var __d = __m && __m['default']; return __d !== undefined ? __d : (__m || t); }} var val = __m ? __m[p] : t[p]; return val !== undefined ? val : __HT_noop; }}, apply: function() {{ return __HT_noop; }}, construct: function() {{ return {{}}; }}, ownKeys: function(t) {{ return Object.getOwnPropertyNames(t); }}, getOwnPropertyDescriptor: function(t, p) {{ return Object.getOwnPropertyDescriptor(t, p) || {{ configurable: true, enumerable: false, writable: true, value: undefined }}; }} }}) : __t }}"#,
         )
     }).to_string()
 }

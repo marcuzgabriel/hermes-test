@@ -1,6 +1,10 @@
 import type { Spy } from './spy';
 
 function deepEqual(a: any, b: any): boolean {
+  // Support asymmetric matchers (expect.anything(), expect.any(), expect.objectContaining())
+  if (b != null && typeof b === 'object' && b.__htMatcher && typeof b.matches === 'function') return b.matches(a);
+  if (a != null && typeof a === 'object' && a.__htMatcher && typeof a.matches === 'function') return a.matches(b);
+
   if (a === b) return true;
   if (a == null || b == null) return a === b;
   if (typeof a !== typeof b) return false;
@@ -11,8 +15,6 @@ function deepEqual(a: any, b: any): boolean {
   }
 
   if (typeof a === 'object') {
-    // Jest-compatible: ignore keys whose value is undefined (treat them as absent).
-    // This matches Jest's toEqual behavior where { a: 1, b: undefined } deep-equals { a: 1 }.
     const keysA = Object.keys(a).filter((k) => a[k] !== undefined);
     const keysB = Object.keys(b).filter((k) => b[k] !== undefined);
     if (keysA.length !== keysB.length) return false;
@@ -157,6 +159,26 @@ function createAssertion(actual: any, negated: boolean): any {
       );
     },
 
+    toContainEqual(item: any) {
+      const contains = Array.isArray(actual) && actual.some((v: any) => deepEqual(v, item));
+      assert(
+        contains,
+        negated
+          ? `Expected array not to contain equal ${formatValue(item)}`
+          : `Expected array to contain equal ${formatValue(item)}, got ${formatValue(actual)}`
+      );
+    },
+
+    toBeCloseTo(expected: number, precision: number = 2) {
+      const pass = Math.abs(actual - expected) < Math.pow(10, -precision) / 2;
+      assert(
+        pass,
+        negated
+          ? `Expected ${actual} not to be close to ${expected}`
+          : `Expected ${actual} to be close to ${expected} (precision ${precision})`
+      );
+    },
+
     toMatch(pattern: RegExp | string) {
       const regex = typeof pattern === 'string' ? new RegExp(pattern) : pattern;
       assert(
@@ -274,6 +296,54 @@ function createAssertion(actual: any, negated: boolean): any {
   return assertion;
 }
 
-export function expect(actual: any): any {
-  return createAssertion(actual, false);
+// --- Asymmetric matchers ---
+// Asymmetric matchers — plain objects with __htMatcher flag
+function makeMatcher(matchFn: (v: any) => boolean) {
+  return { __htMatcher: true, matches: matchFn };
 }
+
+export function expect(actual: any): any {
+  const base = createAssertion(actual, false);
+
+  // resolves / rejects for promise assertions
+  base.resolves = {
+    toBeUndefined: async () => { const r = await actual; if (r !== undefined) throw new Error(`Expected undefined, got ${formatValue(r)}`); },
+    toBe: async (expected: any) => { const r = await actual; if (r !== expected) throw new Error(`Expected ${formatValue(expected)}, got ${formatValue(r)}`); },
+    toEqual: async (expected: any) => { const r = await actual; if (!deepEqual(r, expected)) throw new Error(`Expected deep equal to ${formatValue(expected)}, got ${formatValue(r)}`); },
+    toBeDefined: async () => { const r = await actual; if (r === undefined) throw new Error(`Expected value to be defined`); },
+    toBeTruthy: async () => { const r = await actual; if (!r) throw new Error(`Expected truthy, got ${formatValue(r)}`); },
+    toBeFalsy: async () => { const r = await actual; if (r) throw new Error(`Expected falsy, got ${formatValue(r)}`); },
+  };
+
+  base.rejects = {
+    toThrow: async (msg?: string | RegExp) => {
+      try { await actual; throw new Error('Expected promise to reject'); }
+      catch (e: any) { if (msg) { const m = e?.message ?? String(e); const ok = typeof msg === 'string' ? m.includes(msg) : msg.test(m); if (!ok) throw new Error(`Expected rejection matching ${msg}, got "${m}"`); } }
+    },
+  };
+
+  return base;
+}
+
+// Static matchers on expect
+expect.anything = () => makeMatcher((v) => v !== null && v !== undefined);
+expect.any = (ctor: any) => makeMatcher((v) => {
+  if (ctor === String) return typeof v === 'string';
+  if (ctor === Number) return typeof v === 'number';
+  if (ctor === Boolean) return typeof v === 'boolean';
+  if (ctor === Function) return typeof v === 'function';
+  return v instanceof ctor;
+});
+expect.objectContaining = (subset: Record<string, any>) => makeMatcher((v) => {
+  if (typeof v !== 'object' || v === null) return false;
+  return Object.keys(subset).every((k) => deepEqual(v[k], subset[k]));
+});
+expect.arrayContaining = (expected: any[]) => makeMatcher((v) => {
+  if (!Array.isArray(v)) return false;
+  return expected.every((e) => v.some((item: any) => deepEqual(item, e)));
+});
+expect.stringContaining = (substr: string) => makeMatcher((v) => typeof v === 'string' && v.includes(substr));
+expect.stringMatching = (pattern: RegExp | string) => makeMatcher((v) => {
+  const re = typeof pattern === 'string' ? new RegExp(pattern) : pattern;
+  return typeof v === 'string' && re.test(v);
+});

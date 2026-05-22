@@ -28,24 +28,10 @@ export function mockModule(
   const impl = factory();
   const value = typeof impl === 'function' ? impl : wrapWithSpies(impl);
 
-  // Register in per-file scope
+  // Register in per-file scope only — no global registry pollution
   const currentFile = (globalThis as any).__currentTestFile || '__global__';
   if (!fileMocks[currentFile]) fileMocks[currentFile] = {};
   fileMocks[currentFile][modulePath] = value;
-
-  // Also register globally for backward compat (__require shim, non-aliased mocks)
-  if (typeof impl === 'function') {
-    mockRegistry[modulePath] = impl;
-  } else {
-    const existing = mockRegistry[modulePath];
-    if (existing && typeof existing === 'object') {
-      for (const key of Object.keys(value)) {
-        existing[key] = (value as any)[key];
-      }
-    } else {
-      mockRegistry[modulePath] = value;
-    }
-  }
 }
 
 function wrapWithSpies<T extends Record<string, any>>(impl: T): T {
