@@ -334,9 +334,13 @@ fn run_tests_single(
     start: Instant,
     transforms: &[(PathBuf, PathBuf)],
 ) {
+    // Create wrapper shims for built-in ecosystem shims (hermes-test/shims/*)
+    // These must be created FIRST because they add esbuild aliases that affect
+    // subsequent shadow wrapper and package shim creation.
+    let (wrapper_cfg, wrapper_shim_dir) = bundler::create_wrapper_shims(root, cfg);
     // Create shadow wrappers for aliased mock paths — replaces the alias target
     // with a shadow directory where mocked files are Proxy wrappers.
-    let (shadow_cfg, shadow_dirs) = bundler::create_shadow_wrappers(root, mock_modules, cfg);
+    let (shadow_cfg, shadow_dirs) = bundler::create_shadow_wrappers(root, mock_modules, &wrapper_cfg);
     // Filter out aliased mock paths — shadow wrappers handle them
     let non_aliased_mocks: Vec<String> = mock_modules.iter().filter(|m| {
         !cfg.aliases.iter().any(|(alias, _)| *m == alias || m.starts_with(&format!("{alias}/")))
@@ -360,6 +364,7 @@ fn run_tests_single(
         let _ = std::fs::remove_file(&entry_path);
         for dir in &shadow_dirs { let _ = std::fs::remove_dir_all(dir); }
         if let Some(ref d) = shim_dir { let _ = std::fs::remove_dir_all(d); }
+        if let Some(ref d) = wrapper_shim_dir { let _ = std::fs::remove_dir_all(d); }
         for (_, temp) in transforms { let _ = std::fs::remove_file(temp); }
     };
     let bundle = if let Ok(cached) = std::fs::read_to_string(&cache_path) {

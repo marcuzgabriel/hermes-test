@@ -67,7 +67,8 @@ fn find_esbuild(project_root: &Path) -> Result<PathBuf, ()> {
 pub struct BundleConfig {
     pub aliases: Vec<(String, String)>,
     externals: Vec<String>,
-    shims: Vec<(String, String)>, // (module_name, file_path)
+    shims: Vec<(String, String)>, // (module_name, file_path) — replacement shims
+    wrapper_shims: Vec<(String, String)>, // (module_name, builtin_name) — hermes-test/shims/*
     root: Option<PathBuf>,
     pub split: bool,
     pub test_match: Option<String>, // e.g. ".hermes.test.ts" — only discover matching files
@@ -180,7 +181,7 @@ fn read_tsconfig_paths(base_dir: &Path, tsconfig_path: &Path, aliases: &mut Vec<
 /// Read hermes-test.config.json and resolve tsconfig paths.
 /// Config: { "root": "../..", "tsconfig": "../../tsconfig.json", "external": ["zod", ...] }
 pub fn read_config(project_root: &Path) -> BundleConfig {
-    let mut config = BundleConfig { aliases: Vec::new(), externals: Vec::new(), shims: Vec::new(), root: None, split: false, test_match: None };
+    let mut config = BundleConfig { aliases: Vec::new(), externals: Vec::new(), shims: Vec::new(), wrapper_shims: Vec::new(), root: None, split: false, test_match: None };
 
     // Find hermes-test.config.json — check project root, then walk up
     let mut search_dir = project_root.canonicalize().unwrap_or_else(|_| project_root.to_path_buf());
@@ -219,10 +220,17 @@ pub fn read_config(project_root: &Path) -> BundleConfig {
     }
 
     // "shims" — custom shim files for native modules { "react-native": "./shims/rn.js" }
+    // Values starting with "hermes-test/shims/" are built-in wrapper shims (esbuild alias mechanism).
+    // Other values are user-provided replacement shims (__HT_mocks mechanism).
     if let Some(obj) = json_object_entries(&content, "shims") {
         for (key, val) in obj {
-            let resolved = config_dir.join(&val).to_string_lossy().to_string();
-            config.shims.push((key, resolved));
+            if val.starts_with("hermes-test/shims/") {
+                let builtin_name = val.trim_start_matches("hermes-test/shims/").to_string();
+                config.wrapper_shims.push((key, builtin_name));
+            } else {
+                let resolved = config_dir.join(&val).to_string_lossy().to_string();
+                config.shims.push((key, resolved));
+            }
         }
     }
 
@@ -1567,10 +1575,11 @@ pub fn create_package_shims(
                 || (e.ends_with('*') && m.starts_with(e_base))
         });
         let is_shim = cfg.shims.iter().any(|(s, _)| s == m);
+        let is_wrapper_shim = cfg.wrapper_shims.iter().any(|(s, _)| s == m);
         let is_relative = m.starts_with('.') || m.starts_with('/');
         let is_hardcoded = m == "react-native" || m.starts_with("react-native/")
             || m.starts_with("@react-native/");
-        if is_config_external || is_shim || is_relative || is_hardcoded {
+        if is_config_external || is_shim || is_wrapper_shim || is_relative || is_hardcoded {
             remaining.push(m.clone());
         } else {
             shimmable.push(m);
@@ -1634,6 +1643,128 @@ module.exports = typeof Proxy !== 'undefined' ? new Proxy({{}}, _h) : {{}};
     }
 
     (new_cfg, Some(shim_dir), remaining)
+}
+
+/// Create wrapper shims for built-in hermes-test ecosystem shims.
+/// These are thin wrappers around real packages (not replacements) that fix
+/// module identity issues and add test instrumentation.
+///
+/// Shim resolution is agnostic: hermes-test/shims/<name> resolves to
+/// <hermes-test-package>/shims/<name>.js on disk. No hardcoded registry.
+///
+/// Each shim file uses `require('@__ht_real_pkg/<module>')` to access
+/// the real package. The bundler adds esbuild aliases to wire this up.
+///
+/// Returns (updated_cfg, wrapper_dir_to_cleanup).
+pub fn create_wrapper_shims(
+    project_root: &Path,
+    cfg: &BundleConfig,
+) -> (BundleConfig, Option<PathBuf>) {
+    let mut new_cfg = cfg.clone();
+
+    if cfg.wrapper_shims.is_empty() {
+        return (new_cfg, None);
+    }
+
+    // Find all candidate shims directories (node_modules, monorepo root, dev source).
+    let shims_dirs = find_hermes_test_shims_dirs(project_root, cfg);
+
+    let shim_dir = project_root.join(".hermes-test-wrapper-shims");
+    let _ = std::fs::remove_dir_all(&shim_dir);
+    let _ = std::fs::create_dir_all(&shim_dir);
+
+    let mut created = false;
+
+    for (module_name, builtin_name) in &cfg.wrapper_shims {
+        // Resolve the shim file from all candidate directories
+        let content = resolve_shim_content(&shims_dirs, builtin_name);
+        let content = match content {
+            Some(c) => c,
+            None => {
+                eprintln!("Warning: shim 'hermes-test/shims/{builtin_name}' not found. \
+                    Looked in: {:?}", shims_dirs);
+                continue;
+            }
+        };
+
+        let safe_name = module_name.replace('@', "").replace('/', "__");
+        let shim_path = shim_dir.join(format!("{safe_name}.js"));
+        let real_alias = format!("@__ht_real_pkg/{module_name}");
+
+        if std::fs::write(&shim_path, &content).is_err() {
+            eprintln!("Warning: failed to write wrapper shim for {module_name}");
+            continue;
+        }
+
+        // esbuild alias: module → shim file
+        new_cfg.aliases.push((module_name.clone(), shim_path.to_string_lossy().to_string()));
+        // esbuild alias: @__ht_real_pkg/module → real package
+        new_cfg.aliases.push((real_alias, module_name.clone()));
+
+        // Remove from externals if present — the real package must be bundled
+        new_cfg.externals.retain(|e| {
+            let e_base = e.trim_end_matches('*').trim_end_matches('/');
+            !(module_name == e_base || (e.ends_with('*') && module_name.starts_with(e_base)))
+        });
+
+        created = true;
+    }
+
+    if created {
+        (new_cfg, Some(shim_dir))
+    } else {
+        let _ = std::fs::remove_dir_all(&shim_dir);
+        (new_cfg, None)
+    }
+}
+
+/// Find ALL hermes-test shims directories on disk.
+/// Returns all found directories — file resolution tries each in order.
+fn find_hermes_test_shims_dirs(project_root: &Path, cfg: &BundleConfig) -> Vec<PathBuf> {
+    let mut dirs = Vec::new();
+    let nm_candidates = [
+        "node_modules/hermes-test/shims",
+        "node_modules/hermes-test/src/shims",
+        "node_modules/@marcuzgabriel/hermes-test/shims",
+        "node_modules/@marcuzgabriel/hermes-test/src/shims",
+    ];
+    // Check project root node_modules
+    for c in &nm_candidates {
+        let p = project_root.join(c);
+        if p.is_dir() { dirs.push(p); }
+    }
+    // Check monorepo root node_modules
+    if let Some(ref root) = cfg.root {
+        for c in &nm_candidates {
+            let p = root.join(c);
+            if p.is_dir() && !dirs.contains(&p) { dirs.push(p); }
+        }
+    }
+    // Dev fallback: resolve relative to the binary (repo layout)
+    if let Ok(exe) = std::env::current_exe() {
+        if let Some(exe_dir) = exe.parent() {
+            for ancestor in exe_dir.ancestors().skip(1) {
+                let dev_shims = ancestor.join("packages/hermes-test/src/shims");
+                if dev_shims.is_dir() && !dirs.contains(&dev_shims) {
+                    dirs.push(dev_shims);
+                    break;
+                }
+            }
+        }
+    }
+    dirs
+}
+
+/// Resolve shim content by name. Purely file-based — no hardcoded registry.
+/// Searches ALL candidate shims directories for <name>.js (not just the first dir found).
+fn resolve_shim_content(shims_dirs: &[PathBuf], name: &str) -> Option<String> {
+    for dir in shims_dirs {
+        let path = dir.join(format!("{name}.js"));
+        if let Ok(content) = std::fs::read_to_string(&path) {
+            return Some(content);
+        }
+    }
+    None
 }
 
 /// Recursively create a shadow directory tree:
@@ -2459,8 +2590,10 @@ pub fn bundle_split(
         set
     };
 
+    // Create wrapper shims for built-in ecosystem shims (hermes-test/shims/*)
+    let (wrapper_cfg, wrapper_shim_dir) = create_wrapper_shims(project_root, cfg);
     // Create shadow wrappers for aliased mock paths (same as single-bundle mode)
-    let (shadow_cfg, shadow_dirs) = create_shadow_wrappers(project_root, mock_modules, cfg);
+    let (shadow_cfg, shadow_dirs) = create_shadow_wrappers(project_root, mock_modules, &wrapper_cfg);
     // Filter out aliased mock paths — shadow wrappers handle them
     let non_aliased_mocks: Vec<String> = mock_modules.iter().filter(|m| {
         !cfg.aliases.iter().any(|(alias, _)| *m == alias || m.starts_with(&format!("{alias}/")))
@@ -2523,9 +2656,10 @@ pub fn bundle_split(
         vendor_code
     };
 
-    // Clean up shadow dirs and shim dir
+    // Clean up shadow dirs, shim dirs, and wrapper shim dir
     for dir in &shadow_dirs { let _ = std::fs::remove_dir_all(dir); }
     if let Some(ref d) = shim_dir { let _ = std::fs::remove_dir_all(d); }
+    if let Some(ref d) = wrapper_shim_dir { let _ = std::fs::remove_dir_all(d); }
 
     let result = SplitBundle { vendor, groups: group_bundles };
     save_cached_split(project_root, &cache_key, &result);

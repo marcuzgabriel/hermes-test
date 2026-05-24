@@ -151,6 +151,82 @@
 5. **Shadow tree full copy** — zero impact, symlinks weren't the cause
 6. **Mock vendor** (pre-bundle non-aliased packages) — worked but redundant once package shims landed
 
+## Day 20: Ecosystem Shims + RTK Contamination Fix (1367 → 1385)
+
+### Challenge: RTK slice tests fail in full suite (27 tests, 6 files)
+- primo, topBiz, topBizMachine, guidewire* — "Actions must be plain objects, type was 'undefined'"
+- Pass alone, fail in full suite
+- Initially suspected dual-instance problem (shadow wrapper `_getReal()` re-entrancy)
+
+### Investigation: What didn't cause it
+- **NOT dual-instance**: debug proved `insuranceDetailsPrimoApi === primoFromRequire` (same object)
+- **NOT shadow wrapper re-entrancy**: api module has no circular deps, `_loading` never fires
+- **NOT missing middleware**: `withApiStore` receives valid `{ reducerPath, reducer, middleware }`
+- **NOT createApi singleton**: RTK shim's `_apiCache` works but doesn't fix it
+- **Key clue**: `initiate()` returns `function` when alone, `undefined` in full suite —
+  same api object, different return value → something mutates the endpoint at runtime
+
+### Root cause: `useGetInsuranceDetailsFetcher.hermes.test.ts`
+This test directly **overwrites** `endpoint.initiate` on the shared RTK API singleton in
+`beforeEach`, without restoring in `afterEach`:
+```ts
+// beforeEach — replaces real initiate with spy
+insuranceDetailsPrimoApi.endpoints.getInsuranceDetailsPrimo.initiate = spy();
+insuranceDetailsTopBizApi.endpoints.getInsuranceDetailsTopBiz.initiate = spy();
+insuranceDetailsTopBizApi.endpoints.getInsuranceDetailsTopBizMachine.initiate = spy();
+insuranceDetailsGuidewireApi.endpoints.getInsuranceDetailsGuidewire.initiate = spy();
+// NO afterEach to restore originals!
+```
+Since all modules share ONE api singleton (createApi is called once), the spy persists
+across all subsequent test files. Any test that calls `endpoint.initiate(...)` gets
+`undefined` (spy's default return value) instead of the real thunk.
+
+### How I found it
+1. Confirmed primo passes alone (7/7), fails in suite (2/7)
+2. Confirmed passing when listed first (esbuild entry order changes module init)
+3. Added debug test: api object is correct (`hasInitiate: "function"`)
+4. Added debug test: `initiate()` returns `undefined` even though function exists
+5. Searched bundle for `.initiate =` assignments → found line 186656 in cached bundle
+6. Traced back to `useGetInsuranceDetailsFetcher.hermes.test.ts` line 91
+
+### Fix
+Save originals before mutating, restore in `afterEach`:
+```ts
+const _orig = insuranceDetailsPrimoApi.endpoints.getInsuranceDetailsPrimo.initiate;
+afterEach(() => {
+  insuranceDetailsPrimoApi.endpoints.getInsuranceDetailsPrimo.initiate = _orig;
+});
+```
+**Result**: 1367 → 1385 (+18 tests). primo 7/7, topBiz 3/3, topBizMachine 5/5.
+
+### Challenge: Ecosystem shim infrastructure
+- **Goal**: let users add `"hermes-test/shims/rtk-query"` to config for package-level wrappers
+- **Problem**: shims that need the real package can't use `__HT_mocks` (externalization)
+- **Solution**: esbuild alias mechanism — `pkg → shim file`, `@__ht_real_pkg/pkg → real`
+- Agnostic resolution: shim files discovered from `packages/hermes-test/src/shims/` on disk
+- No hardcoded registry in Rust — any `.js` file in the shims directory works
+- `create_wrapper_shims()` in bundler.rs, called before shadow wrappers + package shims
+- BundleConfig gains `wrapper_shims: Vec<(String, String)>` field
+
+### Shims created
+- `rtk-query.js` — Proxy wrapper with singleton `createApi` cache by reducerPath
+- `reduxjs-toolkit.js`, `react-redux.js` — transparent pass-through (single-instance)
+- `tanstack-query.js` — test defaults (retry:false) + `withQueryClient` helper
+
+### Research: how other test runners handle state management
+- **No test runner ships built-in state management utilities** (Jest, Vitest, Bun)
+- Patterns come from library docs: fresh store per test + Provider wrapper + afterEach cleanup
+- RTK dual-instance is a module identity problem — Vitest hit same bug (issue #4180)
+- Zustand: library ships own `__mocks__/zustand.ts` with auto-reset
+- hermes-test's `withStore`/`withApiStore` already follows standard patterns
+
+### TanStack Query: blocked by class-extends edge case
+- TanStack Query v5 uses private class fields → esbuild downlevels to WeakMap + comma expr
+- `_a = class extends X {...}, _focused = new WeakMap(), _a` pattern
+- `fix_all_class_extends` adds `;` after IIFE → breaks comma expression syntax
+- Also `(class X extends Y {...})` wrapped in parens creates extra `)` after transform
+- Deferred — needs fix to `fix_all_class_extends` for comma-expression and paren-wrapped classes
+
 ## Patterns & Principles Learned
 
 1. **esbuild aliases run before externals** — can't selectively externalize aliased paths
@@ -162,3 +238,10 @@
 7. **Circular deps need lazy wrappers** — eager require in wrapper deadlocks module init
 8. **Hermes compat needs post-bundle patches** — can't rely on esbuild/SWC class transforms
 9. **Per-file isolation is the fallback** — parallel esbuild makes it acceptable (~60ms/file)
+10. **Shared singletons + mutation = silent contamination** — RTK's `endpoint.initiate` is a
+    mutable property on a singleton. Any test that overwrites it without restoring poisons all
+    subsequent tests. In Jest this is masked by per-file VM isolation; in single-bundle runners
+    (hermes-test, Vitest inline mode) it's fatal. Always `afterEach` restore.
+11. **Search the bundle, not the source** — when debugging "pass alone, fail in suite", grep the
+    cached bundle for property assignments (`.initiate =`, `.dispatch =`) to find mutations
+    on shared objects. The contaminator may be a completely unrelated test file.
