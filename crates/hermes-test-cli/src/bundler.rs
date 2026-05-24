@@ -2235,20 +2235,30 @@ pub fn generate_entry(
     }
 
     // Pre-register mock module placeholders BEFORE anything loads.
-    // mockModule() in the test file will populate these objects with actual spies.
-    // The __require shim returns these same objects, so the hook sees the mocks.
+    // Each placeholder is a live Proxy that checks __HT_file_mocks on every property
+    // access. This is critical: shared modules (e.g. keyValueStorage) cache the result
+    // of __require("externalized-pkg") at module init time. If the placeholder is a
+    // plain {}, per-file mocks registered later can't intercept property access.
+    // By making it a Proxy, property access is always live — the Proxy checks
+    // __currentTestFile's mock at access time, not at init time.
     if !mock_modules.is_empty() {
         entry.push_str("globalThis.__HT_mocks = globalThis.__HT_mocks || {};\n");
         for path in mock_modules {
-            // Pre-create the registry entry as an empty object.
-            // mockModule() will copy spy properties onto it later.
             entry.push_str(&format!(
-                "globalThis.__HT_mocks['{}'] = globalThis.__HT_mocks['{}'] || {{}};\n",
-                path, path
+                r#"globalThis.__HT_mocks['{path}'] = globalThis.__HT_mocks['{path}'] || (typeof Proxy !== 'undefined' ? new Proxy({{}}, {{
+  get: function(t, p) {{
+    if (p === '__esModule') return true;
+    if (typeof p === 'symbol') return void 0;
+    var fm = globalThis.__HT_file_mocks;
+    var f = globalThis.__currentTestFile;
+    var m = fm && f && fm[f] && fm[f]['{path}'];
+    if (m && p in m) return m[p];
+    return t[p];
+  }},
+  set: function(t, p, v) {{ t[p] = v; return true; }}
+}}) : {{}});
+"#,
             ));
-
-            // Note: aliased mock paths (@scope/pkg/hooks) are handled via pre-transform
-            // on test files, not via externalization. The alias stays active for bundling.
         }
     }
 
@@ -2678,12 +2688,23 @@ fn pkg_matches_external(pkg: &str, external: &str) -> bool {
 fn generate_group_entry(test_files: &[PathBuf], mock_modules: &[String]) -> String {
     let mut entry = String::new();
 
-    // Re-register mock placeholders (needed for __require shim in each group IIFE)
+    // Re-register mock placeholders as live Proxies (same as generate_entry)
     if !mock_modules.is_empty() {
         for path in mock_modules {
             entry.push_str(&format!(
-                "globalThis.__HT_mocks['{}'] = globalThis.__HT_mocks['{}'] || {{}};\n",
-                path, path
+                r#"globalThis.__HT_mocks['{path}'] = globalThis.__HT_mocks['{path}'] || (typeof Proxy !== 'undefined' ? new Proxy({{}}, {{
+  get: function(t, p) {{
+    if (p === '__esModule') return true;
+    if (typeof p === 'symbol') return void 0;
+    var fm = globalThis.__HT_file_mocks;
+    var f = globalThis.__currentTestFile;
+    var m = fm && f && fm[f] && fm[f]['{path}'];
+    if (m && p in m) return m[p];
+    return t[p];
+  }},
+  set: function(t, p, v) {{ t[p] = v; return true; }}
+}}) : {{}});
+"#,
             ));
         }
     }
@@ -2728,12 +2749,23 @@ fn generate_setup_code(
         ));
     }
 
-    // Pre-register mock module placeholders
+    // Pre-register mock module placeholders as live Proxies
     if !mock_modules.is_empty() {
         for path in mock_modules {
             code.push_str(&format!(
-                "globalThis.__HT_mocks['{}'] = globalThis.__HT_mocks['{}'] || {{}};\n",
-                path, path
+                r#"globalThis.__HT_mocks['{path}'] = globalThis.__HT_mocks['{path}'] || (typeof Proxy !== 'undefined' ? new Proxy({{}}, {{
+  get: function(t, p) {{
+    if (p === '__esModule') return true;
+    if (typeof p === 'symbol') return void 0;
+    var fm = globalThis.__HT_file_mocks;
+    var f = globalThis.__currentTestFile;
+    var m = fm && f && fm[f] && fm[f]['{path}'];
+    if (m && p in m) return m[p];
+    return t[p];
+  }},
+  set: function(t, p, v) {{ t[p] = v; return true; }}
+}}) : {{}});
+"#,
             ));
         }
     }
