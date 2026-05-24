@@ -75,12 +75,15 @@ export function mockModule(
   }
 }
 
-// Called between test files to undo mockModule patches
+// Called between test files to undo mockModule patches and mark
+// source modules for re-initialization (so they re-read from Proxies
+// with the new __currentTestFile).
 export function resetMockModulePatches(): void {
   for (const { target, key, original } of mockModulePatches) {
     try { target[key] = original; } catch { /* best effort */ }
   }
   mockModulePatches = [];
+
 }
 
 function wrapWithSpies<T extends Record<string, any>>(impl: T): T {
