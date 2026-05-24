@@ -312,15 +312,24 @@ afterEach(() => {
 - **~3 FirebaseAnalyticsTracker**: console.warn spy not called (console externalized)
 - **~3 misc**: useFormCoordinator crash, usePrimoPurchase, useContactInfo
 
-### What would fix the remaining ~30 "destructured non-function" failures
-The function Proxy `apply` trap only works for functions. Selectors and objects captured
-at module scope need a different approach:
-- **Option A**: Convert tests to `withStore` pattern — provide real Redux state instead of
-  mocking selectors. Manual per-test work but architecturally correct.
-- **Option B**: Wrap non-function exports in getter Proxies — return an object whose
-  properties delegate to per-file mocks. Only works for object-typed exports.
-- **Option C**: Use `spyOn`-style patching from within the test — directly overwrite the
-  captured local variable. Requires knowing the esbuild variable name (fragile).
+### Strategy 17: withApiStore+mockFetch rewrite (SUCCESS — +21 tests, 1388→1409)
+- Rewrote `useActionMessages.hermes.test.ts` from mockModule pattern to withApiStore+mockFetch
+- Instead of mocking `useIsLoading`, `useErrorHandling`, `actionMessagesSelector` (all relative
+  imports that can't be intercepted), provide real Redux store with seeded state
+- Seed `app.loading.tags` for loading state, `app.errorHandling.currentErrors` for errors
+- Use `mockFetch(http.get(url, () => HttpResponse.json(data)))` for API responses
+- Wrap fetch calls in `act(async () => { await ... })` for RTK Query cache updates
+- Added `loading` and `errorHandling` to testStore's `defaultAppState`
+- Key: use `apiMockDomain` from environment constants for correct URL matching
+- **Result**: useActionMessages 3/26 → 24/24. Total 1388 → 1409.
+
+### Remaining 47 failures (16 files)
+- **~12 relative imports + complex mocking**: useMarketingConsent(7), useTopGPTConsent(4), usePrimoPurchase(1)
+  → need same withApiStore+mockFetch rewrite as useActionMessages
+- **~18 standalone bugs**: apiBaseQuery(6), useSsoLogin(5), useFetchOverviewDetails(3), useFileUpload(3),
+  useFormCoordinator(1), useGetInsuranceMetaInfoGuidewire(1) → fail even alone
+- **~12 data-shape/contamination**: guidewire(5), keyValueStorage(4), FirebaseAnalyticsTracker(3)
+- **~5 misc**: resourceBundle(2), useContactInfo(1), useUserPanelParticipation(1)
 
 ## Updated Patterns & Principles
 
