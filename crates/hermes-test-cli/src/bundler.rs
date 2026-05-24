@@ -1603,6 +1603,7 @@ pub fn create_package_shims(
         let wrapper = format!(
             r#"var _loaded = null; var _loading = false;
 function _getReal() {{ if (_loaded) return _loaded; if (_loading) return {{}}; _loading = true; _loaded = require("{real_alias}"); _loading = false; return _loaded; }}
+var _fnCache = {{}};
 var _h = {{
   get: function(t, p) {{
     if (p === '__esModule') return true;
@@ -1612,7 +1613,17 @@ var _h = {{
     var mocks = fm && f && fm[f];
     var m = mocks && mocks['{pkg}'];
     if (m && p in m) return m[p];
-    return _getReal()[p];
+    var real = _getReal()[p];
+    if (typeof real === 'function' && !_fnCache[p]) {{
+      _fnCache[p] = new Proxy(real, {{ apply: function(target, thisArg, args) {{
+        var fm2 = globalThis.__HT_file_mocks;
+        var f2 = globalThis.__currentTestFile;
+        var m2 = fm2 && f2 && fm2[f2] && fm2[f2]['{pkg}'];
+        if (m2 && p in m2) return m2[p].apply(thisArg, args);
+        return target.apply(thisArg, args);
+      }} }});
+    }}
+    return _fnCache[p] || real;
   }},
   ownKeys: function(t) {{
     var r = _getReal();
@@ -1858,6 +1869,7 @@ fn create_shadow_tree(
                 let wrapper = format!(
                     r#"var _loaded = null; var _loading = false;
 function _getReal() {{ if (_loaded) return _loaded; if (_loading) return {{}}; _loading = true; _loaded = require("{}"); _loading = false; return _loaded; }}
+var _fnCache = {{}};
 var _h = {{
   get: function(t, p) {{
     if (p === '__esModule') return true;
@@ -1868,7 +1880,17 @@ var _h = {{
     var mocks = fm && f && fm[f];
     var m = mocks && mocks['{}'];
     if (m && p in m) return m[p];{}
-    return _getReal()[p];
+    var real = _getReal()[p];
+    if (typeof real === 'function' && !_fnCache[p]) {{
+      _fnCache[p] = new Proxy(real, {{ apply: function(target, thisArg, args) {{
+        var fm2 = globalThis.__HT_file_mocks;
+        var f2 = globalThis.__currentTestFile;
+        var m2 = fm2 && f2 && fm2[f2] && fm2[f2]['{}'];
+        if (m2 && p in m2) return m2[p].apply(thisArg, args);
+        return target.apply(thisArg, args);
+      }} }});
+    }}
+    return _fnCache[p] || real;
   }},
   ownKeys: function(t) {{
     var r = _getReal();
@@ -1888,6 +1910,7 @@ module.exports = typeof Proxy !== 'undefined' ? new Proxy({{}}, _h) : {{}};
                     require_path,
                     mock_path_str,
                     sub_mock_check,
+                    mock_path_str,
                 );
                 let _ = std::fs::write(&shadow_path, wrapper);
             } else {
