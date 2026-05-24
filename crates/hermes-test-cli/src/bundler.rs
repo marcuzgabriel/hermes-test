@@ -2220,6 +2220,38 @@ pub fn generate_entry(
     // Common globals expected by RN libraries
     entry.push_str("if (typeof globalThis.__DEV__ === 'undefined') globalThis.__DEV__ = false;\n");
 
+    // Patch URLSearchParams: (1) constructor to accept plain objects, (2) add iterator.
+    // Hermes's native URLSearchParams doesn't support object constructor or [Symbol.iterator],
+    // causing "iterator method is not callable" with Object.fromEntries(urlSearchParams).
+    entry.push_str(r#"(function() {
+  var _Orig = globalThis.URLSearchParams;
+  if (!_Orig) return;
+  globalThis.URLSearchParams = function URLSearchParams(init) {
+    if (init && typeof init === 'object' && !(init instanceof _Orig) && !Array.isArray(init) && typeof init !== 'string') {
+      var pairs = [];
+      var keys = Object.keys(init);
+      for (var i = 0; i < keys.length; i++) {
+        if (init[keys[i]] !== undefined) pairs.push([keys[i], String(init[keys[i]])]);
+      }
+      return new _Orig(pairs);
+    }
+    return new _Orig(init);
+  };
+  globalThis.URLSearchParams.prototype = _Orig.prototype;
+  if (!_Orig.prototype[Symbol.iterator]) {
+    _Orig.prototype[Symbol.iterator] = function() {
+      var entries = [];
+      this.forEach(function(v, k) { entries.push([k, v]); });
+      var idx = 0;
+      return { next: function() { return idx < entries.length ? { value: entries[idx++], done: false } : { done: true }; } };
+    };
+  }
+  if (!_Orig.prototype.entries) {
+    _Orig.prototype.entries = function() { return this[Symbol.iterator](); };
+  }
+})();
+"#);
+
     // Register hermes-test as a mock so `import { test } from 'hermes-test'` resolves to __HT
     entry.push_str("globalThis.__HT_mocks = globalThis.__HT_mocks || {};\n");
     entry.push_str("globalThis.__HT_mocks['hermes-test'] = globalThis.__HT;\n");
