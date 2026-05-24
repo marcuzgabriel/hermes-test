@@ -21,6 +21,9 @@ const mockRegistry: Record<string, Record<string, any>> = (globalThis as any).__
 const fileMocks: Record<string, Record<string, any>> =
   (globalThis as any).__HT_file_mocks || ((globalThis as any).__HT_file_mocks = {});
 
+// Track patches applied by mockModule so they can be undone between files
+let mockModulePatches: { target: any; key: string; original: any }[] = [];
+
 export function mockModule(
   modulePath: string,
   factory: () => Record<string, any>
@@ -32,6 +35,52 @@ export function mockModule(
   const currentFile = (globalThis as any).__currentTestFile || '__global__';
   if (!fileMocks[currentFile]) fileMocks[currentFile] = {};
   fileMocks[currentFile][modulePath] = value;
+
+  // Also patch the real module's properties so module-level destructuring picks up
+  // the mock. Example: `const { fn } = api.endpoints` captures at init time — the
+  // Proxy can't intercept it. But if we overwrite `api.endpoints.fn` on the real
+  // object, the destructured `fn` still points to the same object's property.
+  // This covers the case where a hook destructures `{ endpoints }` from a Proxy:
+  //   const { method } = endpoints;  // captured at init
+  // If we patch `endpoints.method = spy`, the captured `method` is updated.
+  //
+  // We look up the real module via __HT_mocks (for externalized) or by requiring
+  // through the shadow wrapper's _getReal().
+  const globalMock = mockRegistry[modulePath];
+  if (globalMock && typeof globalMock === 'object' && typeof value === 'object') {
+    for (const key of Object.keys(value)) {
+      if (key === 'default' || key === '__esModule') continue;
+      try {
+        if (key in globalMock) {
+          mockModulePatches.push({ target: globalMock, key, original: globalMock[key] });
+          globalMock[key] = value[key];
+        }
+      } catch { /* frozen or non-configurable */ }
+    }
+    // Also patch 'default' export if mock provides it
+    if ('default' in value && 'default' in globalMock) {
+      const mockDefault = value['default'];
+      const realDefault = globalMock['default'];
+      if (realDefault && typeof realDefault === 'object' && typeof mockDefault === 'object') {
+        for (const key of Object.keys(mockDefault)) {
+          try {
+            if (key in realDefault) {
+              mockModulePatches.push({ target: realDefault, key, original: realDefault[key] });
+              realDefault[key] = mockDefault[key];
+            }
+          } catch { /* frozen */ }
+        }
+      }
+    }
+  }
+}
+
+// Called between test files to undo mockModule patches
+export function resetMockModulePatches(): void {
+  for (const { target, key, original } of mockModulePatches) {
+    try { target[key] = original; } catch { /* best effort */ }
+  }
+  mockModulePatches = [];
 }
 
 function wrapWithSpies<T extends Record<string, any>>(impl: T): T {

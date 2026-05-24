@@ -4,7 +4,7 @@
 import { expect } from './expect';
 import { spy, spyOn } from './spy';
 import { renderHook, act, waitFor } from './hooks';
-import { useMock, mockModule, resetMocks } from './mock';
+import { useMock, mockModule, resetMocks, resetMockModulePatches } from './mock';
 import { mockFetch, mockFetchUse, mockFetchReset, mockFetchClear, http, HttpResponse } from './fetch';
 import { useFakeTimers, useRealTimers, advanceTimersByTime, runAllTimers, getTimerCount, advanceTimersToNextTimer } from './timers';
 
@@ -261,6 +261,7 @@ function resetRegistry(): void {
   flushAsync,
   registerCrash,
   resetRegistry,
+  resetMockModulePatches,
   // Timer control
   useFakeTimers,
   useRealTimers,

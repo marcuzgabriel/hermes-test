@@ -2291,7 +2291,7 @@ pub fn generate_entry(
             .map(|n| n.to_string_lossy().to_string())
             .unwrap_or_else(|| path.to_string());
         entry.push_str(&format!(
-            "globalThis.__currentTestFile = '{}';\ntry {{ require('{}'); }} catch(e) {{ if (globalThis.__HT) globalThis.__HT.registerCrash('{}', String(e && e.message || e)); }}\n",
+            "if (globalThis.__HT && globalThis.__HT.resetMockModulePatches) globalThis.__HT.resetMockModulePatches();\nglobalThis.__currentTestFile = '{}';\ntry {{ require('{}'); }} catch(e) {{ if (globalThis.__HT) globalThis.__HT.registerCrash('{}', String(e && e.message || e)); }}\n",
             display_name, require_path, display_name
         ));
     }
@@ -2720,7 +2720,7 @@ fn generate_group_entry(test_files: &[PathBuf], mock_modules: &[String]) -> Stri
             .map(|n| n.to_string_lossy().to_string())
             .unwrap_or_else(|| path.to_string());
         entry.push_str(&format!(
-            "globalThis.__currentTestFile = '{}';\ntry {{ require('{}'); }} catch(e) {{ if (globalThis.__HT) globalThis.__HT.registerCrash('{}', String(e && e.message || e)); }}\n",
+            "if (globalThis.__HT && globalThis.__HT.resetMockModulePatches) globalThis.__HT.resetMockModulePatches();\nglobalThis.__currentTestFile = '{}';\ntry {{ require('{}'); }} catch(e) {{ if (globalThis.__HT) globalThis.__HT.registerCrash('{}', String(e && e.message || e)); }}\n",
             display_name, require_path, display_name
         ));
     }
