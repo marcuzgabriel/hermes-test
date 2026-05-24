@@ -245,3 +245,91 @@ afterEach(() => {
 11. **Search the bundle, not the source** — when debugging "pass alone, fail in suite", grep the
     cached bundle for property assignments (`.initiate =`, `.dispatch =`) to find mutations
     on shared objects. The contaminator may be a completely unrelated test file.
+
+## Day 20 continued: Function Proxy Wrappers (1385 → 1388)
+
+### Challenge: Module-level destructuring bypasses Proxy mock check
+- `const { useDispatch } = require('react-redux')` captures at init time
+- The package shim Proxy checks `__currentTestFile` on every `get`, but destructuring
+  stores the result in a LOCAL variable — no more Proxy interception after init
+- Affects: `useRedux` (captures `useDispatch/useSelector`), `useMarketingConsent`
+  (captures `getMarketingConsents.initiate`), `useActionMessages` (captures selectors)
+- Root cause: esbuild's `__esm` inits run once and cache results in local vars
+
+### Strategy 12: __esm re-initialization (FAILED — reverted)
+- Idea: Patch `__esm` to support a "dirty" flag. Between test files, mark all source
+  modules dirty. Dirty modules re-run init on next access, re-reading from Proxies.
+- Result: **WORSE** (1385 → 1380, -5 regressions) AND **2x slower** (3s → 6s)
+- Why: re-initializing ALL source modules causes singleton state corruption (Redux
+  stores re-created, React context lost). Too broad — needed surgical targeting, but
+  knowing which modules to reset requires the dep graph at runtime.
+- Lesson: module re-init is the nuclear option — breaks more than it fixes.
+
+### Strategy 13: Function Proxy apply trap (SUCCESS — +3 tests)
+- Idea: When a shadow wrapper or package shim Proxy returns a function, wrap it in
+  ANOTHER Proxy with an `apply` trap. The `apply` trap re-checks per-file mocks at
+  CALL time, not at capture time.
+- How: `_fnCache[p] = new Proxy(realFn, { apply: (target, thisArg, args) => { ... } })`
+- Why it works: destructuring `const fn = proxy.fn` captures a Proxy-wrapped function.
+  Later `fn()` triggers the `apply` trap → re-checks `__HT_file_mocks[__currentTestFile]`
+  → returns mock result if registered. The captured reference is still valid for GC.
+- Result: **+3 tests** (1385 → 1388). `redux.hermes.test.ts` and `marketingConsent.hermes.test.ts` fixed.
+- No performance cost — `_fnCache` ensures only one Proxy wrapper per function per module.
+- Limitation: only works for FUNCTION-typed exports. Non-function values (selectors,
+  objects, constants) captured at init time can't be intercepted this way.
+
+### Strategy 14: Live Proxy mock placeholders (infrastructure, no count change)
+- Idea: Replace static `{}` mock placeholders for externalized modules with live Proxies
+  that check `__HT_file_mocks` on every property access. Same pattern as shadow wrappers.
+- Why: shared modules (e.g. `keyValueStorage`) cache `__require("pkg")` at init time.
+  If the placeholder is a plain `{}`, per-file mocks can't intercept later.
+- Result: infrastructure correct but insufficient alone — the `__require` shim already
+  returns per-file-checking Proxies, so the placeholder Proxy is redundant for most cases.
+- Kept in codebase as defense-in-depth.
+
+### Strategy 15: mockModule patching + resetMockModulePatches (infrastructure)
+- Idea: When `mockModule()` is called, also directly mutate the real module's properties
+  so that already-destructured refs see the mock. Save originals, restore between files.
+- Result: mechanism works but target object (`__HT_mocks[path]`) is a Proxy wrapping `{}` —
+  `key in proxy` returns false, so no properties get patched. Would need access to the
+  real module's exports object inside esbuild's closure.
+- Kept as infrastructure for future use.
+
+### Strategy 16: Shared mock mutation detection (manual fixes, +1 test)
+- Deep-clone shared mock data before `delete`. `paymentUtil`, `useGetInsuranceMetaInfoGuidewire`,
+  `basicInvoice` tests were deleting properties on shared mock imports without cloning.
+- `JSON.parse(JSON.stringify(...))` for deep clones before mutation.
+- Result: guidewireBilling 2/3 → 3/3 (+1 test).
+
+### Remaining 70 failures breakdown
+- **~23 useActionMessages**: destructures non-function values (selectors) at module scope
+- **~7 useMarketingConsent**: same — destructured selectors not interceptable
+- **~6 apiBaseQuery**: standalone bugs (fail even alone)
+- **~5 guidewire data-shape**: Zod `unwrapData` returns `orgResult` with extra fields
+- **~5 useSsoLogin**: standalone bugs (iterator method errors)
+- **~4 keyValueStorage/useTopGPTConsent**: externalized module caching
+- **~4 useFileUpload/useFetchOverviewDetails**: standalone bugs
+- **~3 FirebaseAnalyticsTracker**: console.warn spy not called (console externalized)
+- **~3 misc**: useFormCoordinator crash, usePrimoPurchase, useContactInfo
+
+### What would fix the remaining ~30 "destructured non-function" failures
+The function Proxy `apply` trap only works for functions. Selectors and objects captured
+at module scope need a different approach:
+- **Option A**: Convert tests to `withStore` pattern — provide real Redux state instead of
+  mocking selectors. Manual per-test work but architecturally correct.
+- **Option B**: Wrap non-function exports in getter Proxies — return an object whose
+  properties delegate to per-file mocks. Only works for object-typed exports.
+- **Option C**: Use `spyOn`-style patching from within the test — directly overwrite the
+  captured local variable. Requires knowing the esbuild variable name (fragile).
+
+## Updated Patterns & Principles
+
+12. **Function Proxy wrappers = mock interception through destructuring** — wrapping
+    returned functions in `new Proxy(fn, { apply })` keeps mock checking alive even after
+    `const fn = proxy.fn` captures the reference. Zero perf cost with caching.
+13. **Module re-init is the nuclear option** — re-initializing source `__esm` modules between
+    files causes singleton corruption and is 2x slower. Only viable with surgical targeting.
+14. **Copy strategy > reset strategy** — save/restore (mockModulePatches) is safer than
+    re-initialization. No singleton corruption, no performance cost, easy to reason about.
+15. **Shallow spread doesn't deep-clone** — `{ ...obj }` copies top-level refs. Nested objects
+    are still shared. Always `JSON.parse(JSON.stringify(...))` when deleting nested properties.

@@ -1,10 +1,10 @@
 # Mock Strategies — Reference
 
 ## Current State
-- 1367 passing, 91 failing (Topdanmark, 259 files, split mode, 3.3s)
-- 1411 passing (expo-app, 30 files, 0.6s)
+- 1388 passing, 70 failing (Topdanmark, 259 files, ~3s)
+- 1411 passing (expo-app, 30 files, ~1.5s)
 - Run from: `apps/topdanmark/` (NOT monorepo root)
-- One strategy: **shadow wrappers everywhere**
+- Core strategy: **shadow wrappers + function Proxy apply traps**
 
 ## What Works Today
 
@@ -29,6 +29,16 @@ How: Vendor bundle (npm packages + aliased source) + group bundles (10 test file
 ### mockModule + Per-file Scoping
 How: `mockModule('path', factory)` registers in `__HT_file_mocks[currentFile][path]`. The `__require` Proxy and shadow wrapper Proxies check per-file mocks first, then fall through to real module.
 
+### Function Proxy Apply Traps (Day 20)
+How: When a shadow wrapper or package shim Proxy returns a function, wrap it in `new Proxy(fn, { apply })`. The `apply` trap re-checks per-file mocks at CALL time.
+Why it works: `const fn = proxy.fn` captures a Proxy-wrapped function. `fn()` triggers apply → re-checks `__currentTestFile` mock → returns mock result if registered. The captured ref is valid for GC. One Proxy per function per module (`_fnCache`), zero perf cost.
+Works for: Function-typed exports captured at module scope (useDispatch, useSelector, initiate).
+Doesn't work for: Non-function exports (selectors, objects, constants) captured at init.
+
+### Ecosystem Wrapper Shims (Day 20)
+How: `"shims": { "pkg": "hermes-test/shims/name" }` in config. Bundler resolves from `packages/hermes-test/src/shims/` on disk. Uses esbuild alias: `pkg → shim`, `@__ht_real_pkg/pkg → real`. Shim wraps real package, adds test instrumentation (e.g. createApi singleton cache).
+Files: rtk-query.js, reduxjs-toolkit.js, react-redux.js, tanstack-query.js
+
 ### Mock Hoisting
 How: Rust post-processing moves `init_*()` calls to AFTER `mockModule()` calls in test file bodies.
 
@@ -36,24 +46,44 @@ How: Rust post-processing moves `init_*()` calls to AFTER `mockModule()` calls i
 How: Real Redux store with configurable initial state. Hooks use real `useSelector` — no mocking needed.
 Works for: Relative-import hooks that use Redux. Proven for 21 tests.
 
-## The 91 Remaining Failures
+## The 70 Remaining Failures
 
-### Category 1: Relative-import hooks (~40 fails, ~8 files)
-Problem: Hooks import `../redux/useRedux` via relative path. esbuild resolves to shared top-level vars — no Proxy interception possible.
-Files: useActionMessages (26), useSsoLogin (5), useMarketingConsent (11), others
-Fix: Convert to withStore (Pattern 2) — proven but manual per-file work.
+### Category 1: Module-scope non-function capture (~30 fails)
+Problem: `const { selector } = api.endpoints` captures at init time. Selector is an object, not a function — can't use Proxy apply trap. Mock registered later can't intercept.
+Files: useActionMessages (23), useMarketingConsent (7), useTopGPTConsent (4)
+Fix: Convert to withStore (Pattern 2) or wrap selectors in functions.
 
-### Category 2: Standalone bugs (~30 fails, ~9 files)
+### Category 2: Standalone bugs (~20 fails)
 Problem: Tests fail even when run alone. Not contamination.
-Files: apiBaseQuery (6), resourceBundle (2), useFormCoordinator (1), useFetchOverviewDetails (3), others
+Files: apiBaseQuery (6), useSsoLogin (5), useFetchOverviewDetails (3), useFileUpload (3), resourceBundle (2), useFormCoordinator (1), usePrimoPurchase (1)
 
-### Category 3: Remaining contamination (~20 fails)
-Problem: Some "pass alone, fail in suite" tests remain after package shims.
+### Category 3: Remaining contamination (~10 fails)
+Problem: Data-shape mismatches (guidewire Zod unwrapData), AsyncStorage mock caching, console externalization.
+Files: guidewireDetails (2), guidewirePolicy (3), keyValueStorage (4), useContactInfo (1), useUserPanelParticipation (1), FirebaseAnalyticsTracker (3)
 
-## Strategies Tried and Ruled Out (11 total)
-See `docs/mock-strategy.md` for the full list with results.
+## Strategies Tried (16 total, see challenges.md for details)
 
-Key lesson: all module-graph-level approaches (factory reset, module reset, OXC transform, active/inactive bins) failed. The fix was extending the existing shadow wrapper pattern to npm packages via auto-generated shims.
+Working strategies:
+1. Shadow wrappers (barrel-path Proxy interception)
+2. Package shims (npm package Proxy interception)
+3. Function Proxy apply traps (call-time mock checking)
+4. Ecosystem wrapper shims (single-instance + test instrumentation)
+5. Live Proxy mock placeholders (defense-in-depth for externals)
+6. mockModule patching + resetMockModulePatches (save/restore between files)
+7. Shared mock mutation detection (deep-clone before delete)
+
+Failed strategies:
+8. __esm re-initialization — singleton corruption, 2x slower
+9. Full source module reset — same 28 files fail, wrong fix
+10. OXC AST transform — only transforms test file, not transitive deps
+11. Deep shadow tree copy — stack overflow from duplicate module graph
+12. Mock dispatchers — wrapper !== spy breaks === checks
+13. Factory reset / active-inactive bins — marginal impact
+
+Key lesson: **function Proxy apply traps** are the breakthrough for module-scope capture.
+They preserve references (no GC issues), check mocks at call time (not capture time),
+and have zero perf cost with caching. The remaining gap is non-function values — those
+need architectural changes (withStore) or getter-based wrapping.
 
 ## Operational Notes
 - Always run Topdanmark from `apps/topdanmark/`, NOT monorepo root
