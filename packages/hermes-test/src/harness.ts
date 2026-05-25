@@ -153,14 +153,55 @@ function resolveSync(value: any): void {
   }
 }
 
+// Live output — print to stderr immediately via native __HT_print (if available)
+const _print = (globalThis as any).__HT_print || (() => {});
+
+function _printFileResult(file: string, passed: number, failed: number, duration: number) {
+  const total = passed + failed;
+  const time = duration > 0 ? ` \x1b[2m(${duration}ms)\x1b[0m` : '';
+  if (failed > 0) {
+    _print(` \x1b[31mFAIL\x1b[0m  ${file} \x1b[2m(${passed} passed, ${failed} failed)\x1b[0m${time}\n`);
+  } else {
+    _print(` \x1b[32mPASS\x1b[0m  ${file} \x1b[2m(${total} tests)\x1b[0m${time}\n`);
+  }
+}
+
 function runTests(): TestResult[] {
   const results: TestResult[] = [];
   const hasOnly = tests.some((t) => t.options.only);
+
+  // Track per-file results for live output
+  let _currentFile: string | undefined;
+  let _filePassed = 0;
+  let _fileFailed = 0;
+  let _fileStart = Date.now();
+  let _fileFailures: { name: string; error: string }[] = [];
+
+  function _flushFileResult() {
+    if (_currentFile && (_filePassed + _fileFailed) > 0) {
+      _printFileResult(_currentFile, _filePassed, _fileFailed, Date.now() - _fileStart);
+      // Print failure details
+      for (const f of _fileFailures) {
+        _print(`       \x1b[31m✗ ${f.name}\x1b[0m\n`);
+        if (f.error) _print(`         \x1b[2m${f.error}\x1b[0m\n`);
+      }
+    }
+    _filePassed = 0;
+    _fileFailed = 0;
+    _fileFailures = [];
+    _fileStart = Date.now();
+  }
 
   // Run beforeAll hooks (scoped)
   const beforeAllRan = new Set<ScopedHook>();
 
   for (const entry of tests) {
+    // Flush live output when switching to a new file
+    if (entry.file !== _currentFile) {
+      _flushFileResult();
+      _currentFile = entry.file;
+    }
+
     // Set current test file for per-file mock scoping
     (globalThis as any).__currentTestFile = entry.file;
 
@@ -210,6 +251,7 @@ function runTests(): TestResult[] {
       // Clear deadline
       __testMaxDrains = 0;
 
+      _filePassed++;
       results.push({
         name: entry.name,
         status: 'pass',
@@ -232,6 +274,8 @@ function runTests(): TestResult[] {
       // Reset mocks between tests
       resetMocks();
 
+      _fileFailed++;
+      _fileFailures.push({ name: entry.name, error: e?.message ?? String(e) });
       results.push({
         name: entry.name,
         status: 'fail',
@@ -241,6 +285,9 @@ function runTests(): TestResult[] {
       });
     }
   }
+
+  // Flush last file
+  _flushFileResult();
 
   // Run afterAll hooks
   for (const hook of afterAllHooks) {

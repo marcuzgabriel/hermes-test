@@ -428,7 +428,9 @@ fn run_tests_single(
     let elapsed = start.elapsed();
     match rt.eval("globalThis.__HT_results", "results") {
         Ok(json) => {
-            if !print_results_with_time(&json, elapsed.as_millis(), test_files.len()) {
+            // Per-file results already printed live by harness via __HT_print.
+            // Only print the summary here.
+            if !print_summary_with_time(&json, elapsed.as_millis(), test_files.len()) {
                 std::process::exit(1);
             }
         }
@@ -1101,6 +1103,27 @@ fn print_results_with_time(json: &str, elapsed_ms: u128, file_count: usize) -> b
     eprintln!(" \x1b[2mFiles:\x1b[0m  {file_count}");
     eprintln!(" \x1b[2mTime:\x1b[0m   {:.2}s", elapsed_ms as f64 / 1000.0);
     ok
+}
+
+/// Summary-only: per-file results already printed live by the harness via __HT_print.
+fn print_summary_with_time(json: &str, elapsed_ms: u128, file_count: usize) -> bool {
+    let inner: String = serde_json::from_str(json).unwrap_or(json.to_string());
+    let results: serde_json::Value = match serde_json::from_str(&inner) {
+        Ok(v) => v,
+        Err(_) => { eprintln!("{inner}"); return false; }
+    };
+    let passed = results["passed"].as_u64().unwrap_or(0);
+    let failed = results["failed"].as_u64().unwrap_or(0);
+    let total = results["total"].as_u64().unwrap_or(0);
+    eprintln!();
+    if failed == 0 {
+        eprintln!(" \x1b[32mTests:\x1b[0m  {passed} passed, {total} total");
+    } else {
+        eprintln!(" \x1b[31mTests:\x1b[0m  \x1b[32m{passed} passed\x1b[0m, \x1b[31m{failed} failed\x1b[0m, {total} total");
+    }
+    eprintln!(" \x1b[2mFiles:\x1b[0m  {file_count}");
+    eprintln!(" \x1b[2mTime:\x1b[0m   {:.2}s", elapsed_ms as f64 / 1000.0);
+    failed == 0
 }
 
 fn print_results(json: &str) -> bool {

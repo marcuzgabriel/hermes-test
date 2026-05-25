@@ -93,6 +93,21 @@ static void installConsole(jsi::Runtime& runtime) {
       jsi::PropNameID::forAscii(runtime, "info"), 0, makeLogger("info")));
   runtime.global().setProperty(runtime, "console", console);
 
+  // Install __HT_print — writes directly to stderr during eval.
+  // Used by the harness to stream test results in real-time.
+  runtime.global().setProperty(runtime, "__HT_print",
+    jsi::Function::createFromHostFunction(runtime,
+      jsi::PropNameID::forAscii(runtime, "__HT_print"), 1,
+      [](jsi::Runtime& rt, const jsi::Value&,
+         const jsi::Value* args, size_t count) -> jsi::Value {
+        if (count > 0 && args[0].isString()) {
+          auto msg = args[0].getString(rt).utf8(rt);
+          fprintf(stderr, "%s", msg.c_str());
+          fflush(stderr);
+        }
+        return jsi::Value::undefined();
+      }));
+
   // Install __HT_drain — calls Hermes's real microtask queue drain.
   // This replaces the hacky polyfill loop with a single native call.
   runtime.global().setProperty(runtime, "__HT_drain",
