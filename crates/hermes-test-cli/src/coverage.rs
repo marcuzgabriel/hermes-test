@@ -1,145 +1,68 @@
 //! Istanbul-compatible coverage instrumentation using OXC.
 //!
-//! Parses JS source, collects statement/function/branch locations,
-//! injects `__coverage__[fileId].s[id]++` counters, outputs instrumented JS.
-//! After test execution, __coverage__ is read from Hermes and written as lcov.
+//! Parses JS source, walks the full AST (including IIFEs, arrow functions,
+//! class methods), collects statement/function/branch locations, injects
+//! __cov.s[id]++ counters, outputs instrumented JS + lcov.
 
 use std::collections::BTreeMap;
+use oxc::allocator::Allocator;
+use oxc::parser::Parser;
+use oxc::span::{SourceType, GetSpan};
+use oxc::ast::ast::*;
 
-/// A source location range (1-based line/col).
-#[derive(Clone, Debug)]
-#[allow(dead_code)]
-struct Loc {
-    start_line: u32,
-    start_col: u32,
-    end_line: u32,
-    end_col: u32,
-}
-
-/// Coverage map for a single file (Istanbul-compatible).
-#[allow(dead_code)]
-struct FileCoverage {
-    statements: Vec<Loc>,       // statementMap
-    functions: Vec<(Loc, String)>, // fnMap: (loc, name)
-    branches: Vec<(Loc, String, u32)>, // branchMap: (loc, type, num_paths)
-}
-
-/// Instrument a JS bundle string with Istanbul-compatible coverage counters.
-/// Returns (instrumented_code, coverage_map_json) or None on error.
+/// Instrument a JS bundle with Istanbul-compatible coverage counters.
 pub fn instrument_bundle(source: &str, filename: &str) -> Option<String> {
-    let allocator = oxc::allocator::Allocator::default();
-    let source_type = oxc::span::SourceType::mjs();
-    let ret = oxc::parser::Parser::new(&allocator, source, source_type).parse();
+    let allocator = Allocator::default();
+    let source_type = SourceType::mjs();
+    let ret = Parser::new(&allocator, source, source_type).parse();
+    if ret.panicked { return None; }
 
-    if ret.panicked || !ret.errors.is_empty() {
-        return None;
+    let mut stmts: Vec<(u32, u32)> = Vec::new();
+    let mut fns: Vec<(u32, u32, String)> = Vec::new();
+    let mut branches: Vec<(u32, u32, String, u32)> = Vec::new();
+
+    for stmt in &ret.program.body {
+        walk_stmt(stmt, source, &mut stmts, &mut fns, &mut branches);
     }
-
-    let program = ret.program;
-
-    // Collect all statement spans
-    let mut stmts: Vec<(u32, u32)> = Vec::new(); // (start_offset, end_offset)
-    let mut fns: Vec<(u32, u32, String)> = Vec::new(); // (start, end, name)
-    let mut branches: Vec<(u32, u32, String, u32)> = Vec::new(); // (start, end, type, paths)
-
-    collect_coverage_points(&program, source, &mut stmts, &mut fns, &mut branches);
 
     if stmts.is_empty() && fns.is_empty() {
         return Some(source.to_string());
     }
 
-    // Build the coverage object initialization + counter injections
     let file_id = filename.replace('\\', "/");
+    let stmt_map = build_loc_map(&stmts, source);
+    let s_init = build_zero_map(stmts.len());
+    let fn_map = build_fn_map(&fns, source);
+    let f_init = build_zero_map(fns.len());
+    let branch_map = build_branch_map(&branches, source);
+    let b_init = build_branch_zero_map(&branches);
 
-    // Build statementMap, fnMap, branchMap as JSON
-    let mut stmt_map = String::from("{");
-    let mut s_init = String::from("{");
-    for (i, (start, end)) in stmts.iter().enumerate() {
-        let (sl, sc) = offset_to_line_col(source, *start);
-        let (el, ec) = offset_to_line_col(source, *end);
-        if i > 0 { stmt_map.push(','); s_init.push(','); }
-        stmt_map.push_str(&format!(
-            "\"{i}\":{{\"start\":{{\"line\":{sl},\"column\":{sc}}},\"end\":{{\"line\":{el},\"column\":{ec}}}}}"
-        ));
-        s_init.push_str(&format!("\"{i}\":0"));
-    }
-    stmt_map.push('}');
-    s_init.push('}');
-
-    let mut fn_map = String::from("{");
-    let mut f_init = String::from("{");
-    for (i, (start, end, name)) in fns.iter().enumerate() {
-        let (sl, sc) = offset_to_line_col(source, *start);
-        let (el, ec) = offset_to_line_col(source, *end);
-        if i > 0 { fn_map.push(','); f_init.push(','); }
-        fn_map.push_str(&format!(
-            "\"{i}\":{{\"name\":\"{name}\",\"decl\":{{\"start\":{{\"line\":{sl},\"column\":{sc}}},\"end\":{{\"line\":{el},\"column\":{ec}}}}},\"loc\":{{\"start\":{{\"line\":{sl},\"column\":{sc}}},\"end\":{{\"line\":{el},\"column\":{ec}}}}}}}"
-        ));
-        f_init.push_str(&format!("\"{i}\":0"));
-    }
-    fn_map.push('}');
-    f_init.push('}');
-
-    let mut branch_map = String::from("{");
-    let mut b_init = String::from("{");
-    for (i, (start, end, btype, paths)) in branches.iter().enumerate() {
-        let (sl, sc) = offset_to_line_col(source, *start);
-        let (el, ec) = offset_to_line_col(source, *end);
-        if i > 0 { branch_map.push(','); b_init.push(','); }
-        branch_map.push_str(&format!(
-            "\"{i}\":{{\"loc\":{{\"start\":{{\"line\":{sl},\"column\":{sc}}},\"end\":{{\"line\":{el},\"column\":{ec}}}}},\"type\":\"{btype}\",\"locations\":[]}}"
-        ));
-        let zeros: Vec<&str> = (0..*paths).map(|_| "0").collect();
-        b_init.push_str(&format!("\"{i}\":[{}]", zeros.join(",")));
-    }
-    branch_map.push('}');
-    b_init.push('}');
-
-    // Build the preamble: initialize __coverage__ for this file
     let preamble = format!(
-        r#"var __cov = (function() {{
-  var g = globalThis;
-  if (!g.__coverage__) g.__coverage__ = {{}};
-  if (!g.__coverage__["{file_id}"]) g.__coverage__["{file_id}"] = {{
-    path: "{file_id}",
-    statementMap: {stmt_map},
-    fnMap: {fn_map},
-    branchMap: {branch_map},
-    s: {s_init},
-    f: {f_init},
-    b: {b_init}
-  }};
-  return g.__coverage__["{file_id}"];
-}})();
-"#
+        "var __cov=(function(){{var g=globalThis;if(!g.__coverage__)g.__coverage__={{}};if(!g.__coverage__[\"{file_id}\"])g.__coverage__[\"{file_id}\"]={{path:\"{file_id}\",statementMap:{stmt_map},fnMap:{fn_map},branchMap:{branch_map},s:{s_init},f:{f_init},b:{b_init}}};return g.__coverage__[\"{file_id}\"]}})()\n"
     );
 
-    // Now inject counter increments into the source.
-    // We insert `__cov.s[id]++,` before each statement and `__cov.f[id]++,` at function entry.
-    // Strategy: collect all insertion points, sort by offset descending, insert from end to start.
+    // Collect insertions: (byte_offset, code)
+    // Only insert at syntactically safe positions (after {, ;, newline, or start of file)
     let mut insertions: Vec<(u32, String)> = Vec::new();
-
-    for (i, (start, _end)) in stmts.iter().enumerate() {
-        insertions.push((*start, format!("__cov.s[{i}]++;")));
-    }
-    for (i, (start, _end, _name)) in fns.iter().enumerate() {
-        // Insert after the opening brace of the function body
-        // We approximate: find the first '{' after start
-        if let Some(brace_pos) = source[*start as usize..].find('{') {
-            let insert_pos = *start + brace_pos as u32 + 1;
-            insertions.push((insert_pos, format!("__cov.f[{i}]++;")));
+    for (i, (start, _)) in stmts.iter().enumerate() {
+        if is_safe_insert_point(source, *start) {
+            insertions.push((*start, format!("__cov.s[{i}]++;")));
         }
     }
-    for (i, (start, _end, btype, _paths)) in branches.iter().enumerate() {
-        if btype == "if" {
-            // For if branches, we insert counters at the consequent and alternate
-            // This is approximate — full AST would be better
-            insertions.push((*start, format!("__cov.b[{i}][0]++;")));
+    // Function counters: insert after opening { of function body
+    // Only for functions whose body starts with { (not concise arrows)
+    for (i, (start, end, _)) in fns.iter().enumerate() {
+        if let Some(pos) = find_function_body_start(source, *start, *end) {
+            // Only insert if the char at pos-1 is actually '{'
+            if pos > 0 && source.as_bytes().get(pos as usize - 1) == Some(&b'{') {
+                insertions.push((pos, format!("__cov.f[{i}]++;")));
+            }
         }
     }
 
-    // Sort insertions by offset descending (insert from end to preserve earlier offsets)
+    // Sort descending, dedup same offset
     insertions.sort_by(|a, b| b.0.cmp(&a.0));
+    insertions.dedup_by_key(|i| i.0);
 
     let mut result = source.to_string();
     for (offset, code) in &insertions {
@@ -152,213 +75,277 @@ pub fn instrument_bundle(source: &str, filename: &str) -> Option<String> {
     Some(format!("{preamble}{result}"))
 }
 
-fn collect_coverage_points(
-    program: &oxc::ast::ast::Program,
-    _source: &str,
-    stmts: &mut Vec<(u32, u32)>,
-    fns: &mut Vec<(u32, u32, String)>,
-    branches: &mut Vec<(u32, u32, String, u32)>,
-) {
-    
+// --- AST walker: recurse into everything ---
 
-    for stmt in &program.body {
-        collect_stmt(stmt, stmts, fns, branches);
-    }
-}
-
-fn collect_stmt(
-    stmt: &oxc::ast::ast::Statement,
-    stmts: &mut Vec<(u32, u32)>,
-    fns: &mut Vec<(u32, u32, String)>,
-    branches: &mut Vec<(u32, u32, String, u32)>,
-) {
-    use oxc::ast::ast::*;
-    use oxc::span::GetSpan;
-
+fn walk_stmt(stmt: &Statement, src: &str, stmts: &mut Vec<(u32, u32)>, fns: &mut Vec<(u32, u32, String)>, br: &mut Vec<(u32, u32, String, u32)>) {
     let span = stmt.span();
-    // Skip empty or tiny spans
     if span.start == span.end { return; }
 
     match stmt {
+        Statement::BlockStatement(b) => { for s in &b.body { walk_stmt(s, src, stmts, fns, br); } }
         Statement::FunctionDeclaration(f) => {
-            let name = f.id.as_ref().map(|id| id.name.to_string()).unwrap_or_else(|| "anonymous".to_string());
+            let name = f.id.as_ref().map(|id| id.name.to_string()).unwrap_or("anonymous".into());
             fns.push((span.start, span.end, name));
-            if let Some(body) = &f.body {
-                for s in &body.statements {
-                    collect_stmt(s, stmts, fns, branches);
-                }
-            }
+            if let Some(body) = &f.body { for s in &body.statements { walk_stmt(s, src, stmts, fns, br); } }
         }
-        Statement::IfStatement(if_stmt) => {
+        Statement::ClassDeclaration(cls) => {
             stmts.push((span.start, span.end));
-            branches.push((span.start, span.end, "if".to_string(), 2));
-            collect_stmt(&if_stmt.consequent, stmts, fns, branches);
-            if let Some(alt) = &if_stmt.alternate {
-                collect_stmt(alt, stmts, fns, branches);
-            }
+            walk_class(&cls.body, src, stmts, fns, br);
         }
-        Statement::BlockStatement(block) => {
-            for s in &block.body {
-                collect_stmt(s, stmts, fns, branches);
-            }
-        }
-        Statement::ForStatement(f) => {
+        Statement::IfStatement(i) => {
             stmts.push((span.start, span.end));
-            collect_stmt(&f.body, stmts, fns, branches);
+            br.push((span.start, span.end, "if".into(), 2));
+            walk_stmt(&i.consequent, src, stmts, fns, br);
+            if let Some(alt) = &i.alternate { walk_stmt(alt, src, stmts, fns, br); }
         }
-        Statement::ForInStatement(f) => {
-            stmts.push((span.start, span.end));
-            collect_stmt(&f.body, stmts, fns, branches);
-        }
-        Statement::ForOfStatement(f) => {
-            stmts.push((span.start, span.end));
-            collect_stmt(&f.body, stmts, fns, branches);
-        }
-        Statement::WhileStatement(w) => {
-            stmts.push((span.start, span.end));
-            collect_stmt(&w.body, stmts, fns, branches);
-        }
-        Statement::DoWhileStatement(d) => {
-            stmts.push((span.start, span.end));
-            collect_stmt(&d.body, stmts, fns, branches);
-        }
+        Statement::ForStatement(f) => { stmts.push((span.start, span.end)); walk_stmt(&f.body, src, stmts, fns, br); }
+        Statement::ForInStatement(f) => { stmts.push((span.start, span.end)); walk_stmt(&f.body, src, stmts, fns, br); }
+        Statement::ForOfStatement(f) => { stmts.push((span.start, span.end)); walk_stmt(&f.body, src, stmts, fns, br); }
+        Statement::WhileStatement(w) => { stmts.push((span.start, span.end)); walk_stmt(&w.body, src, stmts, fns, br); }
+        Statement::DoWhileStatement(d) => { stmts.push((span.start, span.end)); walk_stmt(&d.body, src, stmts, fns, br); }
         Statement::SwitchStatement(sw) => {
             stmts.push((span.start, span.end));
-            let paths = sw.cases.len() as u32;
-            branches.push((span.start, span.end, "switch".to_string(), paths));
-            for case in &sw.cases {
-                for s in &case.consequent {
-                    collect_stmt(s, stmts, fns, branches);
-                }
-            }
+            br.push((span.start, span.end, "switch".into(), sw.cases.len() as u32));
+            for case in &sw.cases { for s in &case.consequent { walk_stmt(s, src, stmts, fns, br); } }
         }
         Statement::TryStatement(t) => {
             stmts.push((span.start, span.end));
-            for s in &t.block.body {
-                collect_stmt(s, stmts, fns, branches);
-            }
-            if let Some(handler) = &t.handler {
-                for s in &handler.body.body {
-                    collect_stmt(s, stmts, fns, branches);
-                }
-            }
-            if let Some(finalizer) = &t.finalizer {
-                for s in &finalizer.body {
-                    collect_stmt(s, stmts, fns, branches);
-                }
-            }
+            for s in &t.block.body { walk_stmt(s, src, stmts, fns, br); }
+            if let Some(h) = &t.handler { for s in &h.body.body { walk_stmt(s, src, stmts, fns, br); } }
+            if let Some(f) = &t.finalizer { for s in &f.body { walk_stmt(s, src, stmts, fns, br); } }
         }
-        Statement::ReturnStatement(_) |
-        Statement::ExpressionStatement(_) |
-        Statement::VariableDeclaration(_) |
-        Statement::ThrowStatement(_) |
-        Statement::BreakStatement(_) |
-        Statement::ContinueStatement(_) => {
+        Statement::ExpressionStatement(e) => {
+            stmts.push((span.start, span.end));
+            walk_expr(&e.expression, src, stmts, fns, br);
+        }
+        Statement::VariableDeclaration(v) => {
+            stmts.push((span.start, span.end));
+            for d in &v.declarations { if let Some(init) = &d.init { walk_expr(init, src, stmts, fns, br); } }
+        }
+        Statement::ReturnStatement(r) => {
+            stmts.push((span.start, span.end));
+            if let Some(arg) = &r.argument { walk_expr(arg, src, stmts, fns, br); }
+        }
+        Statement::ThrowStatement(_) | Statement::BreakStatement(_) |
+        Statement::ContinueStatement(_) | Statement::LabeledStatement(_) => {
             stmts.push((span.start, span.end));
         }
-        _ => {
-            // Other statements: still count as statements
-            if span.end > span.start + 1 {
-                stmts.push((span.start, span.end));
+        _ => {}
+    }
+}
+
+fn walk_expr(expr: &Expression, src: &str, stmts: &mut Vec<(u32, u32)>, fns: &mut Vec<(u32, u32, String)>, br: &mut Vec<(u32, u32, String, u32)>) {
+    match expr {
+        Expression::CallExpression(call) => {
+            walk_expr(&call.callee, src, stmts, fns, br);
+            for arg in &call.arguments {
+                if let Argument::SpreadElement(s) = arg { walk_expr(&s.argument, src, stmts, fns, br); }
+                else if let Some(e) = arg.as_expression() { walk_expr(e, src, stmts, fns, br); }
             }
+        }
+        Expression::ArrowFunctionExpression(arrow) => {
+            let span = arrow.span;
+            fns.push((span.start, span.end, "(arrow)".into()));
+            for s in &arrow.body.statements { walk_stmt(s, src, stmts, fns, br); }
+        }
+        Expression::FunctionExpression(func) => {
+            let span = func.span;
+            let name = func.id.as_ref().map(|id| id.name.to_string()).unwrap_or("(anonymous)".into());
+            fns.push((span.start, span.end, name));
+            if let Some(body) = &func.body { for s in &body.statements { walk_stmt(s, src, stmts, fns, br); } }
+        }
+        Expression::ConditionalExpression(c) => {
+            br.push((c.span.start, c.span.end, "cond-expr".into(), 2));
+            walk_expr(&c.test, src, stmts, fns, br);
+            walk_expr(&c.consequent, src, stmts, fns, br);
+            walk_expr(&c.alternate, src, stmts, fns, br);
+        }
+        Expression::LogicalExpression(l) => {
+            walk_expr(&l.left, src, stmts, fns, br);
+            walk_expr(&l.right, src, stmts, fns, br);
+        }
+        Expression::AssignmentExpression(a) => { walk_expr(&a.right, src, stmts, fns, br); }
+        Expression::SequenceExpression(s) => { for e in &s.expressions { walk_expr(e, src, stmts, fns, br); } }
+        Expression::ObjectExpression(o) => {
+            for prop in &o.properties {
+                if let ObjectPropertyKind::ObjectProperty(p) = prop { walk_expr(&p.value, src, stmts, fns, br); }
+            }
+        }
+        Expression::ArrayExpression(a) => {
+            for el in &a.elements {
+                if let ArrayExpressionElement::SpreadElement(s) = el { walk_expr(&s.argument, src, stmts, fns, br); }
+                else if let Some(e) = el.as_expression() { walk_expr(e, src, stmts, fns, br); }
+            }
+        }
+        Expression::ClassExpression(cls) => { walk_class(&cls.body, src, stmts, fns, br); }
+        Expression::ParenthesizedExpression(p) => { walk_expr(&p.expression, src, stmts, fns, br); }
+        Expression::NewExpression(n) => {
+            walk_expr(&n.callee, src, stmts, fns, br);
+            for arg in &n.arguments {
+                if let Argument::SpreadElement(s) = arg { walk_expr(&s.argument, src, stmts, fns, br); }
+                else if let Some(e) = arg.as_expression() { walk_expr(e, src, stmts, fns, br); }
+            }
+        }
+        Expression::TemplateLiteral(t) => {
+            for e in &t.expressions { walk_expr(e, src, stmts, fns, br); }
+        }
+        Expression::TaggedTemplateExpression(t) => {
+            walk_expr(&t.tag, src, stmts, fns, br);
+        }
+        Expression::UnaryExpression(u) => { walk_expr(&u.argument, src, stmts, fns, br); }
+        Expression::BinaryExpression(b) => { walk_expr(&b.left, src, stmts, fns, br); walk_expr(&b.right, src, stmts, fns, br); }
+        _ => {}
+    }
+}
+
+fn walk_class(body: &ClassBody, src: &str, stmts: &mut Vec<(u32, u32)>, fns: &mut Vec<(u32, u32, String)>, br: &mut Vec<(u32, u32, String, u32)>) {
+    for el in &body.body {
+        if let ClassElement::MethodDefinition(m) = el {
+            let name = if let PropertyKey::StaticIdentifier(id) = &m.key { id.name.to_string() } else { "(method)".into() };
+            fns.push((m.span.start, m.span.end, name));
+            if let Some(body) = &m.value.body { for s in &body.statements { walk_stmt(s, src, stmts, fns, br); } }
+        }
+        if let ClassElement::PropertyDefinition(p) = el {
+            if let Some(val) = &p.value { walk_expr(val, src, stmts, fns, br); }
         }
     }
 }
 
+// --- Helpers ---
+
+/// Check if inserting a statement at this offset is syntactically safe.
+/// Safe = preceded by {, ;, newline, or start of file (after whitespace).
+fn is_safe_insert_point(source: &str, offset: u32) -> bool {
+    if offset == 0 { return true; }
+    let bytes = source.as_bytes();
+    let mut pos = offset as usize;
+    // Walk backwards past whitespace
+    while pos > 0 {
+        pos -= 1;
+        let ch = bytes[pos];
+        match ch {
+            b' ' | b'\t' | b'\r' => continue,
+            b'\n' | b'{' | b';' | b'}' => return true,
+            _ => return false,
+        }
+    }
+    true // start of file
+}
+
+fn find_function_body_start(source: &str, start: u32, end: u32) -> Option<u32> {
+    let end = (end as usize).min(source.len());
+    let slice = &source[start as usize..end];
+    let mut paren_depth = 0i32;
+    for (i, ch) in slice.char_indices() {
+        match ch {
+            '(' => paren_depth += 1,
+            ')' => paren_depth -= 1,
+            '{' if paren_depth <= 0 => return Some(start + i as u32 + 1),
+            _ => {}
+        }
+    }
+    // Arrow without braces: => expr
+    if let Some(arrow) = slice.find("=>") {
+        return Some(start + arrow as u32 + 2);
+    }
+    None
+}
+
 fn offset_to_line_col(source: &str, offset: u32) -> (u32, u32) {
-    let offset = offset as usize;
     let mut line = 1u32;
     let mut col = 0u32;
     for (i, ch) in source.char_indices() {
-        if i >= offset { break; }
-        if ch == '\n' {
-            line += 1;
-            col = 0;
-        } else {
-            col += 1;
-        }
+        if i >= offset as usize { break; }
+        if ch == '\n' { line += 1; col = 0; } else { col += 1; }
     }
     (line, col)
 }
 
-/// Read __coverage__ from Hermes runtime and format as lcov.
-pub fn collect_coverage(rt: &crate::hermes::Runtime) -> Option<String> {
-    let js = r#"(function() {
-        var cov = globalThis.__coverage__;
-        if (!cov) return 'null';
-        return JSON.stringify(cov);
-    })()"#;
+fn build_loc_map(locs: &[(u32, u32)], source: &str) -> String {
+    let mut o = String::from("{");
+    for (i, (s, e)) in locs.iter().enumerate() {
+        let (sl, sc) = offset_to_line_col(source, *s);
+        let (el, ec) = offset_to_line_col(source, *e);
+        if i > 0 { o.push(','); }
+        o.push_str(&format!("\"{i}\":{{\"start\":{{\"line\":{sl},\"column\":{sc}}},\"end\":{{\"line\":{el},\"column\":{ec}}}}}"));
+    }
+    o.push('}'); o
+}
 
+fn build_fn_map(fns: &[(u32, u32, String)], source: &str) -> String {
+    let mut o = String::from("{");
+    for (i, (s, e, name)) in fns.iter().enumerate() {
+        let (sl, sc) = offset_to_line_col(source, *s);
+        let (el, ec) = offset_to_line_col(source, *e);
+        if i > 0 { o.push(','); }
+        let n = name.replace('"', "\\\"");
+        o.push_str(&format!("\"{i}\":{{\"name\":\"{n}\",\"decl\":{{\"start\":{{\"line\":{sl},\"column\":{sc}}},\"end\":{{\"line\":{el},\"column\":{ec}}}}},\"loc\":{{\"start\":{{\"line\":{sl},\"column\":{sc}}},\"end\":{{\"line\":{el},\"column\":{ec}}}}}}}"));
+    }
+    o.push('}'); o
+}
+
+fn build_branch_map(branches: &[(u32, u32, String, u32)], source: &str) -> String {
+    let mut o = String::from("{");
+    for (i, (s, e, btype, _)) in branches.iter().enumerate() {
+        let (sl, sc) = offset_to_line_col(source, *s);
+        let (el, ec) = offset_to_line_col(source, *e);
+        if i > 0 { o.push(','); }
+        o.push_str(&format!("\"{i}\":{{\"loc\":{{\"start\":{{\"line\":{sl},\"column\":{sc}}},\"end\":{{\"line\":{el},\"column\":{ec}}}}},\"type\":\"{btype}\"}}"));
+    }
+    o.push('}'); o
+}
+
+fn build_zero_map(count: usize) -> String {
+    let mut o = String::from("{");
+    for i in 0..count { if i > 0 { o.push(','); } o.push_str(&format!("\"{i}\":0")); }
+    o.push('}'); o
+}
+
+fn build_branch_zero_map(branches: &[(u32, u32, String, u32)]) -> String {
+    let mut o = String::from("{");
+    for (i, (_, _, _, paths)) in branches.iter().enumerate() {
+        if i > 0 { o.push(','); }
+        let z: Vec<&str> = (0..*paths).map(|_| "0").collect();
+        o.push_str(&format!("\"{i}\":[{}]", z.join(",")));
+    }
+    o.push('}'); o
+}
+
+// --- Coverage collection ---
+
+pub fn collect_coverage(rt: &crate::hermes::Runtime) -> Option<String> {
+    let js = r#"(function(){var c=globalThis.__coverage__;if(!c)return'null';return JSON.stringify(c)})()"#;
     let raw = rt.eval(js, "coverage-collect").ok()?;
     let json_str: String = serde_json::from_str(&raw).unwrap_or(raw.clone());
     if json_str == "null" || json_str.is_empty() { return None; }
-
     let coverage: serde_json::Value = serde_json::from_str(&json_str).ok()?;
     Some(coverage_to_lcov(&coverage))
 }
 
-/// Convert Istanbul __coverage__ JSON to lcov format.
 fn coverage_to_lcov(coverage: &serde_json::Value) -> String {
     let mut lcov = String::new();
-    let obj = match coverage.as_object() {
-        Some(o) => o,
-        None => return lcov,
-    };
-
-    for (filename, file_cov) in obj {
+    let obj = match coverage.as_object() { Some(o) => o, None => return lcov };
+    for (filename, fc) in obj {
         lcov.push_str(&format!("SF:{filename}\n"));
-
-        // Function coverage
-        if let Some(fn_map) = file_cov["fnMap"].as_object() {
-            for (_id, fn_def) in fn_map {
-                let name = fn_def["name"].as_str().unwrap_or("anonymous");
-                let line = fn_def["decl"]["start"]["line"].as_u64().unwrap_or(0);
-                lcov.push_str(&format!("FN:{line},{name}\n"));
-            }
-            if let Some(f) = file_cov["f"].as_object() {
-                for (id, count) in f {
-                    if let Some(fn_def) = fn_map.get(id) {
-                        let name = fn_def["name"].as_str().unwrap_or("anonymous");
-                        let c = count.as_u64().unwrap_or(0);
-                        lcov.push_str(&format!("FNDA:{c},{name}\n"));
-                    }
-                }
+        if let Some(fm) = fc["fnMap"].as_object() {
+            for (_, fd) in fm { lcov.push_str(&format!("FN:{},{}\n", fd["decl"]["start"]["line"].as_u64().unwrap_or(0), fd["name"].as_str().unwrap_or("?"))); }
+            if let Some(f) = fc["f"].as_object() {
+                for (id, c) in f { if let Some(fd) = fm.get(id) { lcov.push_str(&format!("FNDA:{},{}\n", c.as_u64().unwrap_or(0), fd["name"].as_str().unwrap_or("?"))); } }
             }
         }
-
-        // Line coverage from statement map
-        if let Some(s_map) = file_cov["statementMap"].as_object() {
-            if let Some(s) = file_cov["s"].as_object() {
+        if let Some(sm) = fc["statementMap"].as_object() {
+            if let Some(s) = fc["s"].as_object() {
                 let mut lines: BTreeMap<u64, u64> = BTreeMap::new();
-                for (id, stmt) in s_map {
-                    let line = stmt["start"]["line"].as_u64().unwrap_or(0);
-                    let count = s.get(id).and_then(|v| v.as_u64()).unwrap_or(0);
-                    let entry = lines.entry(line).or_insert(0);
-                    *entry = (*entry).max(count);
-                }
-                for (line, count) in &lines {
-                    lcov.push_str(&format!("DA:{line},{count}\n"));
-                }
+                for (id, st) in sm { let l = st["start"]["line"].as_u64().unwrap_or(0); let c = s.get(id).and_then(|v| v.as_u64()).unwrap_or(0); let e = lines.entry(l).or_insert(0); *e = (*e).max(c); }
+                for (l, c) in &lines { lcov.push_str(&format!("DA:{l},{c}\n")); }
             }
         }
-
-        // Branch coverage
-        if let Some(b_map) = file_cov["branchMap"].as_object() {
-            if let Some(b) = file_cov["b"].as_object() {
-                for (id, branch_def) in b_map {
-                    if let Some(counts) = b.get(id).and_then(|v| v.as_array()) {
-                        let line = branch_def["loc"]["start"]["line"].as_u64().unwrap_or(0);
-                        for (i, c) in counts.iter().enumerate() {
-                            let count = c.as_u64().unwrap_or(0);
-                            lcov.push_str(&format!("BRDA:{line},{id},{i},{count}\n"));
-                        }
-                    }
-                }
+        if let Some(bm) = fc["branchMap"].as_object() {
+            if let Some(b) = fc["b"].as_object() {
+                for (id, bd) in bm { if let Some(cs) = b.get(id).and_then(|v| v.as_array()) { let l = bd["loc"]["start"]["line"].as_u64().unwrap_or(0); for (j, c) in cs.iter().enumerate() { lcov.push_str(&format!("BRDA:{l},{id},{j},{}\n", c.as_u64().unwrap_or(0))); } } }
             }
         }
-
         lcov.push_str("end_of_record\n");
     }
-
     lcov
 }
