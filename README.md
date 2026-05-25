@@ -279,6 +279,13 @@ Most projects need zero `externals` — auto-detection handles `react-native-*`,
 | Watch rerun | ~2-3s | ~300ms |
 | 1472 tests | 116s | **0.79s** |
 
+## Roadmap
+
+- [ ] **Component rendering** — `render(<Component />)` with query API (`getByText`, `getByTestId`, `fireEvent`)
+- [ ] **Jest compatibility shim** — `jest.fn()` → `spy()`, `jest.mock()` → `mockModule()`, enables reuse of library `__mocks__/` files
+- [ ] **Library mock support** — auto-load mocks from expo-router, react-native-reanimated, zustand, etc.
+- [ ] **`setupFiles` config** — load setup files before tests (like Jest's `setupFilesAfterFramework`)
+
 ## License
 
 MIT
