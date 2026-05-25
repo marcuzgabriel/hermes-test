@@ -1,4 +1,3 @@
-use std::io::Read;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 
@@ -13,38 +12,15 @@ use super::entry::{generate_group_entry_pub, compute_bundle_cache_key};
 // - Full SWC codegen re-emits the entire bundle (changes whitespace, breaks other patches)
 // Our regex-based fix_all_class_extends() handles all known patterns at <1ms with zero deps.
 
-#[derive(Clone, Copy, PartialEq)]
-pub enum Bundler {
-    Esbuild,
-    Metro,
-}
-
-/// Bundle an entry file. Tries esbuild first (fast), falls back to Metro.
+/// Bundle an entry file with esbuild.
 pub fn bundle_auto(
     entry_file: &Path,
     project_root: &Path,
     external_modules: &[String],
 ) -> Result<String, String> {
-    if let Ok(path) = find_esbuild(project_root) {
-        return bundle_esbuild(entry_file, &path, external_modules);
-    }
-    bundle_metro(entry_file, project_root)
-}
-
-pub fn bundle_with(
-    bundler: Bundler,
-    entry_file: &Path,
-    project_root: &Path,
-    external_modules: &[String],
-) -> Result<String, String> {
-    match bundler {
-        Bundler::Esbuild => {
-            let path = find_esbuild(project_root)
-                .map_err(|_| "esbuild not found. Install it: bun add -d esbuild".to_string())?;
-            bundle_esbuild(entry_file, &path, external_modules)
-        }
-        Bundler::Metro => bundle_metro(entry_file, project_root),
-    }
+    let path = find_esbuild(project_root)
+        .map_err(|_| "esbuild not found. Install it: bun add -d esbuild".to_string())?;
+    bundle_esbuild(entry_file, &path, external_modules)
 }
 
 pub fn find_esbuild(project_root: &Path) -> Result<PathBuf, ()> {
@@ -83,10 +59,9 @@ pub fn bundle_auto_with_config(
     external_modules: &[String],
     cfg: &BundleConfig,
 ) -> Result<String, String> {
-    if let Ok(path) = find_esbuild(project_root) {
-        return bundle_esbuild_with_config(entry_file, &path, external_modules, cfg, false);
-    }
-    bundle_metro(entry_file, project_root)
+    let path = find_esbuild(project_root)
+        .map_err(|_| "esbuild not found. Install it: bun add -d esbuild".to_string())?;
+    bundle_esbuild_with_config(entry_file, &path, external_modules, cfg, false)
 }
 
 /// Bundle with esbuild using provided config (avoids re-reading from disk).
@@ -331,78 +306,6 @@ pub fn compile_to_bytecode_cached(
             None
         }
     }
-}
-
-/// Bundle test files via Metro's programmatic API (one-shot mode).
-pub fn bundle_metro(entry_file: &Path, project_root: &Path) -> Result<String, String> {
-    let bundler_script = generate_bundler_script(entry_file, project_root);
-
-    let mut child = Command::new("node")
-        .arg("-e")
-        .arg(&bundler_script)
-        .current_dir(project_root)
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .spawn()
-        .map_err(|e| format!("Failed to spawn Metro bundler: {e}"))?;
-
-    let mut stdout = String::new();
-    child
-        .stdout
-        .take()
-        .unwrap()
-        .read_to_string(&mut stdout)
-        .map_err(|e| format!("Failed to read Metro output: {e}"))?;
-
-    let status = child.wait().map_err(|e| format!("Metro process failed: {e}"))?;
-
-    if !status.success() {
-        let mut stderr = String::new();
-        if let Some(mut err) = child.stderr.take() {
-            let _ = err.read_to_string(&mut stderr);
-        }
-        return Err(format!(
-            "Metro bundling failed (exit {}): {stderr}",
-            status.code().unwrap_or(-1)
-        ));
-    }
-
-    Ok(stdout)
-}
-
-fn generate_bundler_script(entry_file: &Path, project_root: &Path) -> String {
-    let entry = entry_file.to_string_lossy();
-    let root = project_root.to_string_lossy();
-
-    format!(
-        r#"
-const Metro = require('metro');
-
-async function main() {{
-  const config = await Metro.loadConfig({{
-    cwd: '{root}',
-  }});
-
-  config.maxWorkers = 1;
-  config.reporter = {{ update() {{}} }};
-
-  const result = await Metro.runBuild(config, {{
-    entry: '{entry}',
-    out: undefined,
-    platform: 'ios',
-    dev: true,
-    minify: false,
-  }});
-
-  process.stdout.write(result.code);
-}}
-
-main().catch(e => {{
-  process.stderr.write(e.message + '\n' + (e.stack || ''));
-  process.exit(1);
-}});
-"#
-    )
 }
 
 /// Bundle with esbuild and return the dependency graph (metafile).

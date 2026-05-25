@@ -48,11 +48,7 @@ struct Cli {
     #[arg(long)]
     no_bundle: bool,
 
-    /// Bundler to use: "esbuild" (default, fast) or "metro" (RN-compatible)
-    #[arg(long, default_value = "esbuild")]
-    bundler: String,
-
-    /// JavaScript file to evaluate directly (bypass Metro)
+    /// JavaScript file to evaluate directly
     #[arg(long)]
     eval: Option<String>,
 
@@ -73,8 +69,6 @@ enum Commands {
         root: PathBuf,
         #[arg(long)]
         no_bundle: bool,
-        #[arg(long, default_value = "esbuild")]
-        bundler: String,
     },
 
     /// Watch for file changes (legacy subcommand, prefer: hermes-test [files] --watch)
@@ -82,8 +76,6 @@ enum Commands {
         files: Vec<PathBuf>,
         #[arg(long, default_value = ".")]
         root: PathBuf,
-        #[arg(long, default_value = "esbuild")]
-        bundler: String,
     },
 }
 
@@ -97,18 +89,14 @@ fn main() {
                 files,
                 root,
                 no_bundle,
-                bundler,
             } => {
-                let bundler = parse_bundler(&bundler);
-                run_tests(&files, &root, no_bundle, bundler, false);
+                run_tests(&files, &root, no_bundle, false);
             }
             Commands::Watch {
                 files,
                 root,
-                bundler,
             } => {
-                let bundler = parse_bundler(&bundler);
-                watch_tests(&files, &root, bundler);
+                watch_tests(&files, &root);
             }
         }
         return;
@@ -119,8 +107,6 @@ fn main() {
         return;
     }
 
-    let bundler = parse_bundler(&cli.bundler);
-
     // Auto-detect project root: walk up from cwd to find package.json
     let root = cli.root.unwrap_or_else(|| find_project_root());
 
@@ -128,21 +114,9 @@ fn main() {
     let files = resolve_test_files(&cli.files, &root);
 
     if cli.watch {
-        watch_tests(&files, &root, bundler);
+        watch_tests(&files, &root);
     } else {
-        run_tests(&files, &root, cli.no_bundle, bundler, cli.split);
-    }
-}
-
-fn parse_bundler(s: &str) -> Option<bundler::Bundler> {
-    match s {
-        "metro" => Some(bundler::Bundler::Metro),
-        "esbuild" => Some(bundler::Bundler::Esbuild),
-        "auto" => None,
-        _ => {
-            eprintln!("Unknown bundler '{s}'. Use 'esbuild', 'metro', or 'auto'.");
-            std::process::exit(1);
-        }
+        run_tests(&files, &root, cli.no_bundle, cli.split);
     }
 }
 
@@ -230,7 +204,7 @@ fn eval_file(path: &str) {
     }
 }
 
-fn run_tests(files: &[PathBuf], root: &PathBuf, no_bundle: bool, bundler: Option<bundler::Bundler>, force_split: bool) {
+fn run_tests(files: &[PathBuf], root: &PathBuf, no_bundle: bool, force_split: bool) {
     let root = std::fs::canonicalize(root).unwrap_or_else(|e| {
         eprintln!("Invalid root directory: {e}");
         std::process::exit(1);
@@ -321,13 +295,13 @@ JSON.stringify({
         // HT_PER_FILE forces per-file isolation as fallback.
         let force_per_file = std::env::var("HT_PER_FILE").is_ok();
         if force_per_file {
-            run_tests_per_file(&rt, &test_files, &root, &cfg, bundler, start);
+            run_tests_per_file(&rt, &test_files, &root, &cfg, start);
         } else {
-            let use_split = (force_split || cfg.split) && bundler != Some(bundler::Bundler::Metro);
+            let use_split = force_split || cfg.split;
             if use_split {
                 run_tests_split(&rt, &test_files, &root, &all_mocks, &cfg, start);
             } else {
-                run_tests_single(&rt, &test_files, &root, &all_mocks, &cfg, bundler, start, &[]);
+                run_tests_single(&rt, &test_files, &root, &all_mocks, &cfg, start, &[]);
             }
         }
     }
@@ -340,7 +314,6 @@ fn run_tests_single(
     root: &PathBuf,
     mock_modules: &[String],
     cfg: &bundler::BundleConfig,
-    _bundler: Option<bundler::Bundler>,
     start: Instant,
     transforms: &[(PathBuf, PathBuf)],
 ) {
@@ -459,7 +432,6 @@ fn run_tests_per_file(
     test_files: &[PathBuf],
     root: &PathBuf,
     cfg: &bundler::BundleConfig,
-    bundler_opt: Option<bundler::Bundler>,
     start: Instant,
 ) {
     // Phase 1: Parallel esbuild — spawn all bundlers concurrently.
@@ -482,11 +454,7 @@ fn run_tests_per_file(
         let mocks_clone = file_mocks.clone();
 
         handles.push(std::thread::spawn(move || {
-            let result = if let Some(b) = bundler_opt {
-                bundler::bundle_with(b, &entry_clone, &root_clone, &mocks_clone)
-            } else {
-                bundler::bundle_auto(&entry_clone, &root_clone, &mocks_clone)
-            };
+            let result = bundler::bundle_auto(&entry_clone, &root_clone, &mocks_clone);
             let _ = std::fs::remove_file(&entry_clone);
             (file_clone, result)
         }));
@@ -670,7 +638,7 @@ globalThis.__HT_results = JSON.stringify({
     }
 }
 
-fn watch_tests(files: &[PathBuf], root: &PathBuf, _bundler: Option<bundler::Bundler>) {
+fn watch_tests(files: &[PathBuf], root: &PathBuf) {
     let root = std::fs::canonicalize(root).unwrap_or_else(|e| {
         eprintln!("Invalid root directory: {e}");
         std::process::exit(1);
