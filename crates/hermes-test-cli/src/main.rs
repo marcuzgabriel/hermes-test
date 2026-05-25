@@ -1019,7 +1019,6 @@ fn print_summary_with_time(json: &str, elapsed_ms: u128, file_count: usize) -> b
     let failed = results["failed"].as_u64().unwrap_or(0);
     let total = results["total"].as_u64().unwrap_or(0);
     let secs = elapsed_ms as f64 / 1000.0;
-    let tests_per_sec = if secs > 0.0 { total as f64 / secs } else { 0.0 };
     eprintln!();
     if failed == 0 {
         eprintln!(" \x1b[32mTests:\x1b[0m  {passed} passed, {total} total");
@@ -1027,7 +1026,7 @@ fn print_summary_with_time(json: &str, elapsed_ms: u128, file_count: usize) -> b
         eprintln!(" \x1b[31mTests:\x1b[0m  \x1b[32m{passed} passed\x1b[0m, \x1b[31m{failed} failed\x1b[0m, {total} total");
     }
     eprintln!(" \x1b[2mFiles:\x1b[0m  {file_count}");
-    eprintln!(" \x1b[2mTime:\x1b[0m   {secs:.2}s ({tests_per_sec:.0} tests/sec)");
+    eprintln!(" \x1b[2mTime:\x1b[0m   {secs:.2}s");
     failed == 0
 }
 
