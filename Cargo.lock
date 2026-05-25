@@ -400,6 +400,7 @@ dependencies = [
  "notify",
  "notify-debouncer-mini",
  "oxc",
+ "oxc_str",
  "regex",
  "serde_json",
 ]
@@ -665,6 +666,7 @@ checksum = "3fecf76aaae6c29dd8dcde82e8a526ba8e7859ecfa98a2b8b5d54fc17965a241"
 dependencies = [
  "oxc_allocator",
  "oxc_ast",
+ "oxc_ast_visit",
  "oxc_codegen",
  "oxc_diagnostics",
  "oxc_parser",
