@@ -1,17 +1,12 @@
 // hermes-test/store — Redux test store factories
 //
+// setupApiStore: thin wrapper matching Jest's setupApiStore pattern
 // withStore: quick identity-reducer store for any state shape
 // withAppReducer: real app reducer with patchState + real actions
-//
-// Usage:
-//   import { withStore } from 'hermes-test/store';
-//   const ctx = withStore({ user: { name: 'Test' } });
-//   const { current } = ctx.renderHookWithReduxStore(() => useMyHook());
-//   ctx.patchState({ user: { name: 'Updated' } });
 
 import React from 'react';
 import { Provider } from 'react-redux';
-import { configureStore, type Middleware } from '@reduxjs/toolkit';
+import { configureStore } from '@reduxjs/toolkit';
 
 type StoreContext = {
   store: any;
@@ -71,41 +66,49 @@ export function withAppReducer(
   }));
 }
 
-/** Configurable RTK Query store — pass your API slices and middleware */
-export function withApiStore(options: {
-  slices: { reducerPath: string; reducer: any; middleware: any }[];
-  defaultAppState?: Record<string, any>;
-  initialState?: Record<string, any>;
-  middleware?: Middleware[];
-}): StoreContext {
-  const { slices, defaultAppState = {}, initialState = {}, middleware: extraMiddleware = [] } = options;
+interface RtkQueryApi {
+  reducer: any;
+  middleware: any;
+  reducerPath: string;
+}
 
-  const callerApp = initialState.app ?? {};
-  const mergedApp = { ...defaultAppState, ...callerApp };
-  for (const key of Object.keys(defaultAppState)) {
-    if (typeof defaultAppState[key] === 'object' && defaultAppState[key] !== null) {
-      mergedApp[key] = { ...defaultAppState[key], ...(callerApp[key] ?? {}) };
-    }
-  }
+export interface SetupApiStoreOptions {
+  middleware?: {
+    prepend?: any[];
+    concat?: any[];
+  };
+  preloadedState?: Record<string, any>;
+}
 
-  const reducers: Record<string, any> = {};
-  for (const key of Object.keys(initialState)) {
-    if (key === 'app') continue;
-    reducers[key] = withTestActions((s: any = initialState[key]) => s);
+/**
+ * Thin store factory matching Jest's setupApiStore pattern.
+ *
+ * setupApiStore([api, cms], { app: rootReducer })
+ * setupApiStore([api], { app: rootReducer }, { middleware: { prepend: [myMw] } })
+ * setupApiStore([api], { app: rootReducer }, { preloadedState: { app: { auth: { ... } } } })
+ */
+export function setupApiStore(
+  apis: RtkQueryApi[],
+  extraReducers?: Record<string, any>,
+  options?: SetupApiStoreOptions,
+) {
+  const reducerMap: Record<string, any> = {};
+  for (const api of apis) {
+    reducerMap[api.reducerPath] = api.reducer;
   }
-  reducers['app'] = withTestActions((s: any = mergedApp) => s);
-  for (const slice of slices) {
-    reducers[slice.reducerPath] = slice.reducer;
-  }
+  if (extraReducers) Object.assign(reducerMap, extraReducers);
 
-  return makeCtx(configureStore({
-    reducer: reducers,
-    preloadedState: { ...initialState, app: mergedApp },
+  const store = configureStore({
+    reducer: reducerMap,
+    preloadedState: options?.preloadedState,
     middleware: (gdm) => {
       let chain = gdm({ serializableCheck: false, immutableCheck: false });
-      for (const slice of slices) chain = chain.concat(slice.middleware);
-      for (const mw of extraMiddleware) chain = chain.concat(mw);
+      for (const a of apis) chain = chain.concat(a.middleware);
+      for (const mw of (options?.middleware?.concat ?? [])) chain = chain.concat(mw);
+      for (const mw of (options?.middleware?.prepend ?? [])) chain = chain.prepend(mw);
       return chain;
     },
-  }));
+  });
+
+  return { ...makeCtx(store), apis };
 }

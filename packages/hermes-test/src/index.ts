@@ -57,47 +57,46 @@ export function withAppReducer(
   }));
 }
 
-export type ApiStoreConfig = {
-  slices: { reducerPath: string; reducer: any; middleware: any }[];
-  defaultAppState?: Record<string, any>;
-};
+interface RtkQueryApi {
+  reducer: any;
+  middleware: any;
+  reducerPath: string;
+}
 
-export function createApiStoreFactory(config: ApiStoreConfig) {
-  return function withApiStore(initialState: Record<string, any> = {}) {
-    const { configureStore } = require('@reduxjs/toolkit');
-    const callerApp = initialState.app ?? {};
-    const defaults = config.defaultAppState ?? {};
-    const mergedApp = { ...defaults, ...callerApp };
-    for (const key of Object.keys(defaults)) {
-      if (typeof defaults[key] === 'object' && defaults[key] !== null) {
-        mergedApp[key] = { ...defaults[key], ...(callerApp[key] ?? {}) };
-      }
-    }
-
-    const reducers: Record<string, any> = {};
-    for (const key of Object.keys(initialState)) {
-      if (key === 'app') continue;
-      reducers[key] = _withTestActions((s: any = initialState[key]) => s);
-    }
-    reducers['app'] = _withTestActions((s: any = mergedApp) => s);
-    for (const slice of config.slices) {
-      reducers[slice.reducerPath] = slice.reducer;
-    }
-
-    let mw = (gdm: any) => {
-      let chain = gdm({ serializableCheck: false, immutableCheck: false });
-      for (const slice of config.slices) {
-        chain = chain.concat(slice.middleware);
-      }
-      return chain;
-    };
-
-    return _makeCtx(configureStore({
-      reducer: reducers,
-      preloadedState: { ...initialState, app: mergedApp },
-      middleware: mw,
-    }));
+interface SetupApiStoreOptions {
+  middleware?: {
+    prepend?: any[];
+    concat?: any[];
   };
+  preloadedState?: Record<string, any>;
+}
+
+export function setupApiStore(
+  apis: RtkQueryApi[],
+  extraReducers?: Record<string, any>,
+  options?: SetupApiStoreOptions,
+) {
+  const { configureStore } = require('@reduxjs/toolkit');
+
+  const reducerMap: Record<string, any> = {};
+  for (const api of apis) {
+    reducerMap[api.reducerPath] = api.reducer;
+  }
+  if (extraReducers) Object.assign(reducerMap, extraReducers);
+
+  const store = configureStore({
+    reducer: reducerMap,
+    preloadedState: options?.preloadedState,
+    middleware: (gdm: any) => {
+      let chain = gdm({ serializableCheck: false, immutableCheck: false });
+      for (const a of apis) chain = chain.concat(a.middleware);
+      for (const mw of (options?.middleware?.concat ?? [])) chain = chain.concat(mw);
+      for (const mw of (options?.middleware?.prepend ?? [])) chain = chain.prepend(mw);
+      return chain;
+    },
+  });
+
+  return { ..._makeCtx(store), apis };
 }
 
 export const test = ht.test;
