@@ -19,6 +19,9 @@
 - **Config**: `--coverage` CLI flag, `"coverage": true` in hermes-test.config.json
 - **Source maps**: esbuild `--sourcemap` to map instrumented positions back to original source
 - **Important**: until coverage is implemented, benchmark claims must compare against Jest `--no-coverage` (29x, not 147x)
+- **Current state**: prototype works on small bundles, 537/1054 on large (bare-body insertion issues)
+- **Next approach**: OXC VisitMut + codegen (modify AST directly, re-emit clean JS) OR per-file instrumentation before esbuild (like Vitest's onFileTransform with istanbul-lib-instrument)
+- **Key insight from Vitest**: they instrument per-file during transform phase, NOT post-bundle
 
 ## v1: Component rendering + Jest compat
 
