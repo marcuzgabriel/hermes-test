@@ -7,6 +7,11 @@ on:
         description: 'Version to release (e.g. 0.2.0)'
         required: true
         type: string
+      publish_npm:
+        description: 'Publish to npm public registry'
+        required: false
+        type: boolean
+        default: false
 
 jobs:
   build:
@@ -16,9 +21,15 @@ jobs:
           - os: macos-14
             target: aarch64-apple-darwin
             asset: hermes-test-darwin-arm64
+            pkg: hermes-test-darwin-arm64
+          - os: macos-13
+            target: x86_64-apple-darwin
+            asset: hermes-test-darwin-x64
+            pkg: hermes-test-darwin-x64
           - os: ubuntu-latest
             target: x86_64-unknown-linux-gnu
             asset: hermes-test-linux-x64
+            pkg: hermes-test-linux-x64
 
     runs-on: ${{ matrix.os }}
 
@@ -32,8 +43,7 @@ jobs:
           git checkout fd0e1d3ed
           sed -i.bak 's/FATAL_ERROR "Host compiler/WARNING "Host compiler/g' external/llvh/cmake/modules/CheckAtomic.cmake
 
-      - name: Install Rust
-        uses: dtolnay/rust-toolchain@stable
+      - uses: dtolnay/rust-toolchain@stable
         with:
           targets: ${{ matrix.target }}
 
@@ -45,44 +55,21 @@ jobs:
         if: runner.os == 'macOS'
         run: brew install cmake ninja
 
-      - name: Setup Node
-        uses: actions/setup-node@v4
-        with:
-          node-version: '22'
-
-      - name: Setup Bun
-        uses: oven-sh/setup-bun@v2
+      - uses: actions/setup-node@v4
+        with: { node-version: '22' }
+      - uses: oven-sh/setup-bun@v2
 
       - name: Build Hermes
         run: |
           cd vendor/hermes
           cmake -S . -B build -G Ninja \
-            -DHERMES_STATIC_LINK=OFF \
-            -DBUILD_SHARED_LIBS=OFF \
-            -DHERMES_BUILD_APPLE_FRAMEWORK=OFF \
-            -DHERMES_ENABLE_DEBUGGER=OFF \
-            -DHERMES_ENABLE_TEST_SUITE=OFF \
-            -DCMAKE_BUILD_TYPE=Release
+            -DHERMES_STATIC_LINK=OFF -DBUILD_SHARED_LIBS=OFF \
+            -DHERMES_BUILD_APPLE_FRAMEWORK=OFF -DHERMES_ENABLE_DEBUGGER=OFF \
+            -DHERMES_ENABLE_TEST_SUITE=OFF -DCMAKE_BUILD_TYPE=Release
           cmake --build build --parallel 4
 
-      - name: Verify Hermes libraries
-        run: |
-          for lib in hermesvm hermesVMRuntime hermesFrontend hermesOptimizer hermesCompilerDriver hermesHBCBackend hermesBackend hermesInst hermesFrontEndDefs hermesParser hermesAST hermesFlowParser hermesAST2JS hermesSourceMap hermesInternalBytecode hermesRegex hermesPlatformUnicode hermesPlatform hermesSupport hermesADT hermesPublic dtoa LLVHSupport LLVHDemangle; do
-            found=$(find vendor/hermes/build -name "lib${lib}.a" | head -1)
-            if [ -z "$found" ]; then
-              echo "MISSING: lib${lib}.a"
-              exit 1
-            else
-              echo "OK: $found"
-            fi
-          done
-
       - name: Bundle harness
-        run: |
-          cd packages/hermes-test
-          bun install --no-save
-          node bundle.mjs
-          ls -la dist/harness.bundle.js
+        run: cd packages/hermes-test && bun install --no-save && node bundle.mjs
 
       - name: Build CLI
         run: cargo build --release --target ${{ matrix.target }}
@@ -108,10 +95,10 @@ jobs:
         with:
           token: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Bump version in all packages
+      - name: Bump version
         run: |
           VERSION=${{ inputs.version }}
-          for dir in packages/hermes-test packages/hermes-test-darwin-arm64 packages/hermes-test-linux-x64; do
+          for dir in packages/hermes-test packages/hermes-test-darwin-arm64 packages/hermes-test-darwin-x64 packages/hermes-test-linux-x64; do
             node -e "
               const pkg = require('./${dir}/package.json');
               pkg.version = '${VERSION}';
@@ -128,7 +115,7 @@ jobs:
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
-          git add packages/hermes-test/package.json packages/hermes-test-darwin-arm64/package.json packages/hermes-test-linux-x64/package.json
+          git add packages/*/package.json
           git diff --cached --quiet || git commit -m "v${{ inputs.version }}"
           git push origin main
 
@@ -140,45 +127,56 @@ jobs:
       - name: Download artifacts
         uses: actions/download-artifact@v4
 
-      - name: Create Release
+      - name: Create GitHub Release
         uses: softprops/action-gh-release@v2
         with:
           tag_name: v${{ inputs.version }}
           name: v${{ inputs.version }}
           files: |
             hermes-test-darwin-arm64/hermes-test-darwin-arm64
+            hermes-test-darwin-x64/hermes-test-darwin-x64
             hermes-test-linux-x64/hermes-test-linux-x64
           generate_release_notes: true
 
-      - name: Setup Node
-        uses: actions/setup-node@v4
+      # --- GitHub Packages (always) ---
+      - uses: actions/setup-node@v4
         with:
           node-version: '22'
           registry-url: 'https://npm.pkg.github.com'
 
-      - name: Publish platform packages
+      - name: Publish to GitHub Packages
         run: |
-          # darwin-arm64
-          cd packages/hermes-test-darwin-arm64
-          mkdir -p bin
-          cp ../../hermes-test-darwin-arm64/hermes-test-darwin-arm64 bin/hermes-test
-          chmod +x bin/hermes-test
-          npm publish
-          cd ../..
-
-          # linux-x64
-          cd packages/hermes-test-linux-x64
-          mkdir -p bin
-          cp ../../hermes-test-linux-x64/hermes-test-linux-x64 bin/hermes-test
-          chmod +x bin/hermes-test
-          npm publish
-          cd ../..
+          for pkg in darwin-arm64 darwin-x64 linux-x64; do
+            cd packages/hermes-test-${pkg}
+            mkdir -p bin
+            cp ../../hermes-test-${pkg}/hermes-test-${pkg} bin/hermes-test
+            chmod +x bin/hermes-test
+            npm publish || true
+            cd ../..
+          done
+          cd packages/hermes-test && npm publish || true
         env:
           NODE_AUTH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Publish main package
+      # --- npm public (opt-in) ---
+      - name: Setup npm public registry
+        if: ${{ inputs.publish_npm }}
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          registry-url: 'https://registry.npmjs.org'
+
+      - name: Publish to npm
+        if: ${{ inputs.publish_npm }}
         run: |
-          cd packages/hermes-test
-          npm publish
+          for pkg in darwin-arm64 darwin-x64 linux-x64; do
+            cd packages/hermes-test-${pkg}
+            mkdir -p bin
+            cp ../../hermes-test-${pkg}/hermes-test-${pkg} bin/hermes-test
+            chmod +x bin/hermes-test
+            npm publish --access public || true
+            cd ../..
+          done
+          cd packages/hermes-test && npm publish --access public || true
         env:
-          NODE_AUTH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}

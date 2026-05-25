@@ -1,18 +1,9 @@
 {
-  "name": "@marcuzgabriel/hermes-test-linux-x64",
-  "version": "0.1.1",
+  "name": "@hermes-test/linux-x64",
+  "version": "0.1.0",
   "description": "hermes-test binary for Linux x64",
-  "os": [
-    "linux"
-  ],
-  "cpu": [
-    "x64"
-  ],
-  "files": [
-    "bin/"
-  ],
-  "publishConfig": {
-    "registry": "https://npm.pkg.github.com"
-  },
+  "os": ["linux"],
+  "cpu": ["x64"],
+  "files": ["bin/"],
   "license": "MIT"
 }

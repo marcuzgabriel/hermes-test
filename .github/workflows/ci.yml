@@ -1,0 +1,48 @@
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+jobs:
+  test:
+    runs-on: macos-14
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Clone Hermes
+        run: |
+          git clone https://github.com/facebook/hermes.git vendor/hermes
+          cd vendor/hermes
+          git checkout fd0e1d3ed
+          sed -i.bak 's/FATAL_ERROR "Host compiler/WARNING "Host compiler/g' external/llvh/cmake/modules/CheckAtomic.cmake
+
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: actions/setup-node@v4
+        with: { node-version: '22' }
+      - uses: oven-sh/setup-bun@v2
+
+      - name: Install deps
+        run: brew install cmake ninja
+
+      - name: Build Hermes
+        run: |
+          cd vendor/hermes
+          cmake -S . -B build -G Ninja \
+            -DHERMES_STATIC_LINK=OFF -DBUILD_SHARED_LIBS=OFF \
+            -DHERMES_BUILD_APPLE_FRAMEWORK=OFF -DHERMES_ENABLE_DEBUGGER=OFF \
+            -DHERMES_ENABLE_TEST_SUITE=OFF -DCMAKE_BUILD_TYPE=Release
+          cmake --build build --parallel 4
+
+      - name: Bundle harness
+        run: cd packages/hermes-test && bun install --no-save && node bundle.mjs
+
+      - name: Build CLI
+        run: cargo build --release
+
+      - name: Run example tests
+        run: |
+          cd examples/expo-app
+          bun install --no-save
+          ../../target/release/hermes-test src/examples/*.test.ts src/bench/pure-10.test.ts
