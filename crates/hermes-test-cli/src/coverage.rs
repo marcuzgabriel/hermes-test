@@ -23,7 +23,7 @@ pub fn instrument_bundle(source: &str, filename: &str) -> Option<String> {
     let mut branches: Vec<(u32, u32, String, u32)> = Vec::new();
 
     for stmt in &ret.program.body {
-        walk_stmt(stmt, source, &mut stmts, &mut fns, &mut fn_body_offsets, &mut branches, true);
+        walk_stmt(stmt, source, &mut stmts, &mut fns, &mut fn_body_offsets, &mut branches);
     }
 
     if stmts.is_empty() && fns.is_empty() {
@@ -47,8 +47,7 @@ pub fn instrument_bundle(source: &str, filename: &str) -> Option<String> {
     // Only insert where it's syntactically safe (inside blocks, not bare control bodies)
     let mut insertions: Vec<(u32, String)> = Vec::new();
     for (i, (start, _)) in stmts.iter().enumerate() {
-        // All stmts guaranteed inside blocks (in_block=true)
-        {
+        if is_safe_insert_point(source, *start) && !is_bare_control_body(source, *start) {
             insertions.push((*start, format!("__cov.s[{i}]++;")));
         }
     }
@@ -82,63 +81,63 @@ pub fn instrument_bundle(source: &str, filename: &str) -> Option<String> {
 
 // --- AST walker: recurse into everything ---
 
-fn walk_stmt(stmt: &Statement, src: &str, stmts: &mut Vec<(u32, u32)>, fns: &mut Vec<(u32, u32, String)>, fbo: &mut Vec<Option<u32>>, br: &mut Vec<(u32, u32, String, u32)>, in_block: bool) {
+fn walk_stmt(stmt: &Statement, src: &str, stmts: &mut Vec<(u32, u32)>, fns: &mut Vec<(u32, u32, String)>, fbo: &mut Vec<Option<u32>>, br: &mut Vec<(u32, u32, String, u32)>) {
     let span = stmt.span();
     if span.start == span.end { return; }
 
     match stmt {
-        Statement::BlockStatement(b) => { for s in &b.body { walk_stmt(s, src, stmts, fns, fbo, br, true); } }
+        Statement::BlockStatement(b) => { for s in &b.body { walk_stmt(s, src, stmts, fns, fbo, br); } }
         Statement::FunctionDeclaration(f) => {
             let name = f.id.as_ref().map(|id| id.name.to_string()).unwrap_or("anonymous".into());
             fns.push((span.start, span.end, name));
             if let Some(body) = &f.body {
                 fbo.push(Some(body.span.start + 1)); // after {
-                for s in &body.statements { walk_stmt(s, src, stmts, fns, fbo, br, true); }
+                for s in &body.statements { walk_stmt(s, src, stmts, fns, fbo, br); }
             } else {
                 fbo.push(None);
             }
         }
         Statement::ClassDeclaration(cls) => {
-            if in_block { stmts.push((span.start, span.end)); }
+            stmts.push((span.start, span.end));
             walk_class(&cls.body, src, stmts, fns, fbo, br);
         }
         Statement::IfStatement(i) => {
-            if in_block { stmts.push((span.start, span.end)) };
+            stmts.push((span.start, span.end));
             br.push((span.start, span.end, "if".into(), 2));
-            walk_stmt(&i.consequent, src, stmts, fns, fbo, br, false);
-            if let Some(alt) = &i.alternate { walk_stmt(alt, src, stmts, fns, fbo, br, false); }
+            walk_stmt(&i.consequent, src, stmts, fns, fbo, br);
+            if let Some(alt) = &i.alternate { walk_stmt(alt, src, stmts, fns, fbo, br); }
         }
-        Statement::ForStatement(f) => { if in_block { stmts.push((span.start, span.end)) }; walk_stmt(&f.body, src, stmts, fns, fbo, br, false); }
-        Statement::ForInStatement(f) => { if in_block { stmts.push((span.start, span.end)) }; walk_stmt(&f.body, src, stmts, fns, fbo, br, false); }
-        Statement::ForOfStatement(f) => { if in_block { stmts.push((span.start, span.end)) }; walk_stmt(&f.body, src, stmts, fns, fbo, br, false); }
-        Statement::WhileStatement(w) => { if in_block { stmts.push((span.start, span.end)) }; walk_stmt(&w.body, src, stmts, fns, fbo, br, false); }
-        Statement::DoWhileStatement(d) => { if in_block { stmts.push((span.start, span.end)) }; walk_stmt(&d.body, src, stmts, fns, fbo, br, false); }
+        Statement::ForStatement(f) => { stmts.push((span.start, span.end)); walk_stmt(&f.body, src, stmts, fns, fbo, br); }
+        Statement::ForInStatement(f) => { stmts.push((span.start, span.end)); walk_stmt(&f.body, src, stmts, fns, fbo, br); }
+        Statement::ForOfStatement(f) => { stmts.push((span.start, span.end)); walk_stmt(&f.body, src, stmts, fns, fbo, br); }
+        Statement::WhileStatement(w) => { stmts.push((span.start, span.end)); walk_stmt(&w.body, src, stmts, fns, fbo, br); }
+        Statement::DoWhileStatement(d) => { stmts.push((span.start, span.end)); walk_stmt(&d.body, src, stmts, fns, fbo, br); }
         Statement::SwitchStatement(sw) => {
-            if in_block { stmts.push((span.start, span.end)) };
+            stmts.push((span.start, span.end));
             br.push((span.start, span.end, "switch".into(), sw.cases.len() as u32));
-            for case in &sw.cases { for s in &case.consequent { walk_stmt(s, src, stmts, fns, fbo, br, true); } }
+            for case in &sw.cases { for s in &case.consequent { walk_stmt(s, src, stmts, fns, fbo, br); } }
         }
         Statement::TryStatement(t) => {
-            if in_block { stmts.push((span.start, span.end)); };
-            for s in &t.block.body { walk_stmt(s, src, stmts, fns, fbo, br, true); }
-            if let Some(h) = &t.handler { for s in &h.body.body { walk_stmt(s, src, stmts, fns, fbo, br, true); } }
-            if let Some(f) = &t.finalizer { for s in &f.body { walk_stmt(s, src, stmts, fns, fbo, br, true); } }
+            stmts.push((span.start, span.end));
+            for s in &t.block.body { walk_stmt(s, src, stmts, fns, fbo, br); }
+            if let Some(h) = &t.handler { for s in &h.body.body { walk_stmt(s, src, stmts, fns, fbo, br); } }
+            if let Some(f) = &t.finalizer { for s in &f.body { walk_stmt(s, src, stmts, fns, fbo, br); } }
         }
         Statement::ExpressionStatement(e) => {
-            if in_block { stmts.push((span.start, span.end)); };
+            stmts.push((span.start, span.end));
             walk_expr(&e.expression, src, stmts, fns, fbo, br);
         }
         Statement::VariableDeclaration(v) => {
-            if in_block { stmts.push((span.start, span.end)); };
+            stmts.push((span.start, span.end));
             for d in &v.declarations { if let Some(init) = &d.init { walk_expr(init, src, stmts, fns, fbo, br); } }
         }
         Statement::ReturnStatement(r) => {
-            if in_block { stmts.push((span.start, span.end)); };
+            stmts.push((span.start, span.end));
             if let Some(arg) = &r.argument { walk_expr(arg, src, stmts, fns, fbo, br); }
         }
         Statement::ThrowStatement(_) | Statement::BreakStatement(_) |
         Statement::ContinueStatement(_) | Statement::LabeledStatement(_) => {
-            if in_block { stmts.push((span.start, span.end)); }
+            stmts.push((span.start, span.end));
         }
         _ => {}
     }
@@ -162,7 +161,7 @@ fn walk_expr(expr: &Expression, src: &str, stmts: &mut Vec<(u32, u32)>, fns: &mu
             } else {
                 fbo.push(Some(arrow.body.span.start + 1)); // after {
             }
-            for s in &arrow.body.statements { walk_stmt(s, src, stmts, fns, fbo, br, true); }
+            for s in &arrow.body.statements { walk_stmt(s, src, stmts, fns, fbo, br); }
         }
         Expression::FunctionExpression(func) => {
             let span = func.span;
@@ -170,7 +169,7 @@ fn walk_expr(expr: &Expression, src: &str, stmts: &mut Vec<(u32, u32)>, fns: &mu
             fns.push((span.start, span.end, name));
             if let Some(body) = &func.body {
                 fbo.push(Some(body.span.start + 1));
-                for s in &body.statements { walk_stmt(s, src, stmts, fns, fbo, br, true); }
+                for s in &body.statements { walk_stmt(s, src, stmts, fns, fbo, br); }
             } else {
                 fbo.push(None);
             }
@@ -226,7 +225,7 @@ fn walk_class(body: &ClassBody, src: &str, stmts: &mut Vec<(u32, u32)>, fns: &mu
             fns.push((m.span.start, m.span.end, name));
             if let Some(body) = &m.value.body {
                 fbo.push(Some(body.span.start + 1));
-                for s in &body.statements { walk_stmt(s, src, stmts, fns, fbo, br, true); }
+                for s in &body.statements { walk_stmt(s, src, stmts, fns, fbo, br); }
             } else {
                 fbo.push(None);
             }
