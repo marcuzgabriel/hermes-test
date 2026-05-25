@@ -237,6 +237,19 @@ When multiple test files mock the same module differently, hermes-test uses **sh
 
 ## Configuration
 
+### Built-in shims
+
+hermes-test ships with ready-to-use shims for common React Native ecosystem packages. Use `hermes-test/shims/<name>` in your config — no local shim files needed.
+
+| Shim | What it provides |
+|------|-----------------|
+| `hermes-test/shims/react-native` | Platform, StyleSheet, Dimensions, Alert, Linking stubs |
+| `hermes-test/shims/react-i18next` | Identity translation (`t('key')` returns `'key'`) |
+| `hermes-test/shims/async-storage` | In-memory AsyncStorage (getItem, setItem, clear, etc.) |
+| `hermes-test/shims/rtk-query` | RTK Query createApi singleton cache |
+| `hermes-test/shims/react-redux` | Pass-through for react-redux |
+| `hermes-test/shims/reduxjs-toolkit` | Pass-through for @reduxjs/toolkit |
+
 ### hermes-test.config.json
 
 ```json
@@ -244,9 +257,9 @@ When multiple test files mock the same module differently, hermes-test uses **sh
   "root": "../..",
   "testMatch": ".hermes.test.ts",
   "shims": {
-    "react-i18next": "./test/shims/react-i18next.js",
+    "react-i18next": "hermes-test/shims/react-i18next",
     "@reduxjs/toolkit/query/react": "hermes-test/shims/rtk-query",
-    "@react-native-async-storage/async-storage": "./test/shims/async-storage.js"
+    "@react-native-async-storage/async-storage": "hermes-test/shims/async-storage"
   }
 }
 ```
@@ -256,7 +269,7 @@ When multiple test files mock the same module differently, hermes-test uses **sh
 | `root` | Monorepo workspace root (for resolving node_modules) |
 | `testMatch` | Test file suffix (default: `.test.ts`) |
 | `externals` | Additional modules to externalize (most are auto-detected) |
-| `shims` | Custom replacement modules for externalized packages |
+| `shims` | Built-in (`hermes-test/shims/...`) or custom (`./path/to/shim.js`) replacements |
 | `split` | Enable vendor/group bundle splitting for large suites |
 
 Most projects need zero `externals` — auto-detection handles `react-native-*`, `expo-*`, `@react-navigation/*`, `@sentry/*`, and any package with native code.
