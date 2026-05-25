@@ -12,7 +12,10 @@ use oxc::parser::Parser;
 use oxc::span::{GetSpan, SourceType};
 
 /// Instrument a JS bundle with Istanbul-compatible coverage counters.
-pub fn instrument_bundle(source: &str, filename: &str) -> Option<String> {
+/// Returns (instrumented_source, coverage_map_json).
+/// The coverage map JSON contains statementMap/fnMap/branchMap — stored on disk,
+/// NOT embedded in the runtime preamble (keeps the preamble small).
+pub fn instrument_bundle(source: &str, filename: &str) -> Option<(String, String)> {
     let var_name = "__cov";
     let allocator = Allocator::default();
     let source_type = SourceType::mjs();
@@ -32,22 +35,28 @@ pub fn instrument_bundle(source: &str, filename: &str) -> Option<String> {
     }
 
     if stmts.is_empty() && fns.is_empty() {
-        return Some(source.to_string());
+        return Some((source.to_string(), "{}".to_string()));
     }
 
-    // Build preamble
     let file_id = filename.replace('\\', "/");
     let lt = LineTable::new(source);
     let stmt_spans: Vec<(u32, u32)> = stmts.iter().map(|(s, e, _)| (*s, *e)).collect();
+
+    // Coverage map (written to disk, NOT in runtime preamble)
     let stmt_map = build_loc_map(&stmt_spans, &lt);
-    let s_init = build_zero_map(stmts.len());
     let fn_map = build_fn_map(&fns, &lt);
-    let f_init = build_zero_map(fns.len());
     let branch_map = build_branch_map(&branches, &lt);
+    let coverage_map = format!(
+        "{{\"{file_id}\":{{\"statementMap\":{stmt_map},\"fnMap\":{fn_map},\"branchMap\":{branch_map}}}}}"
+    );
+
+    // Runtime preamble (only zero-initialized counters — small)
+    let s_init = build_zero_map(stmts.len());
+    let f_init = build_zero_map(fns.len());
     let b_init = build_branch_zero_map(&branches);
 
     let preamble = format!(
-        "var {var_name}=(function(){{var g=globalThis;if(!g.__coverage__)g.__coverage__={{}};if(!g.__coverage__[\"{file_id}\"])g.__coverage__[\"{file_id}\"]={{path:\"{file_id}\",statementMap:{stmt_map},fnMap:{fn_map},branchMap:{branch_map},s:{s_init},f:{f_init},b:{b_init}}};return g.__coverage__[\"{file_id}\"]}})()\n"
+        "var {var_name}=(function(){{var g=globalThis;if(!g.__coverage__)g.__coverage__={{}};if(!g.__coverage__[\"{file_id}\"])g.__coverage__[\"{file_id}\"]={{path:\"{file_id}\",s:{s_init},f:{f_init},b:{b_init}}};return g.__coverage__[\"{file_id}\"]}})()\n"
     );
 
     // Build insertions from AST-collected data
@@ -97,7 +106,7 @@ pub fn instrument_bundle(source: &str, filename: &str) -> Option<String> {
     }
     result.push_str(&source[last..]);
 
-    Some(result)
+    Some((result, coverage_map))
 }
 
 // --- AST walker (read-only, collects metadata) ---
@@ -471,14 +480,35 @@ fn build_branch_zero_map(branches: &[(u32, u32, String, u32)]) -> String {
 
 // --- Coverage collection ---
 
-pub fn collect_coverage(rt: &crate::hermes::Runtime) -> Option<String> {
+/// Collect coverage counters from Hermes and merge with the coverage map from disk.
+pub fn collect_coverage(rt: &crate::hermes::Runtime, map_path: Option<&std::path::Path>) -> Option<String> {
     let js = r#"(function(){var c=globalThis.__coverage__;if(!c)return'null';return JSON.stringify(c)})()"#;
     let raw = rt.eval(js, "coverage-collect").ok()?;
     let json_str: String = serde_json::from_str(&raw).unwrap_or(raw.clone());
     if json_str == "null" || json_str.is_empty() {
         return None;
     }
-    let coverage: serde_json::Value = serde_json::from_str(&json_str).ok()?;
+    let mut coverage: serde_json::Value = serde_json::from_str(&json_str).ok()?;
+
+    // Merge statementMap/fnMap/branchMap from disk (not in runtime preamble)
+    if let Some(path) = map_path {
+        if let Ok(map_str) = std::fs::read_to_string(path) {
+            if let Ok(map) = serde_json::from_str::<serde_json::Value>(&map_str) {
+                if let (Some(cov_obj), Some(map_obj)) = (coverage.as_object_mut(), map.as_object()) {
+                    for (filename, map_data) in map_obj {
+                        if let Some(fc) = cov_obj.get_mut(filename) {
+                            if let (Some(fc_obj), Some(md)) = (fc.as_object_mut(), map_data.as_object()) {
+                                for (key, val) in md {
+                                    fc_obj.insert(key.clone(), val.clone());
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
     Some(coverage_to_lcov(&coverage))
 }
 

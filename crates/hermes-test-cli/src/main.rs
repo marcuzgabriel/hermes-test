@@ -385,12 +385,15 @@ fn run_tests_single(
     };
 
     // Coverage: instrument the bundle post-esbuild
+    let coverage_map_path = cache_dir.join("coverage-map.json");
     let bundle = if coverage {
         let js = bundle.or_else(|| std::fs::read_to_string(&cache_path).ok())
             .unwrap_or_else(|| { eprintln!("No bundle for coverage"); std::process::exit(1); });
         match coverage::instrument_bundle(&js, "bundle.js") {
-            Some(instrumented) => {
+            Some((instrumented, coverage_map)) => {
                 eprintln!(" \x1b[2mCoverage:\x1b[0m instrumented ({} → {} bytes)", js.len(), instrumented.len());
+                let _ = std::fs::create_dir_all(&cache_dir);
+                let _ = std::fs::write(&coverage_map_path, &coverage_map);
                 Some(instrumented)
             }
             None => {
@@ -439,7 +442,8 @@ fn run_tests_single(
 
     // Collect coverage before printing summary
     if coverage {
-        if let Some(lcov) = coverage::collect_coverage(rt) {
+        let map_path = if coverage_map_path.exists() { Some(coverage_map_path.as_path()) } else { None };
+        if let Some(lcov) = coverage::collect_coverage(rt, map_path) {
             let cov_dir = root.join("coverage");
             let _ = std::fs::create_dir_all(&cov_dir);
             let lcov_path = cov_dir.join("lcov.info");
