@@ -9,3 +9,4 @@ dist/
 *.bundle.js.map
 /tmp/
 package-lock.json
+bench/fixtures-jest/node_modules/
