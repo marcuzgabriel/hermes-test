@@ -453,7 +453,20 @@ fn bundle_esbuild_with_config(
             }
         }
     }
-    for ext in &["react-native", "react-native/*", "@react-native/*"] {
+    // Default externals — native modules that can never run in Hermes without the RN bridge.
+    // These cover ~95% of RN ecosystem native packages so users only list app-specific ones.
+    for ext in &[
+        "react-native", "react-native/*",
+        "react-native-*",                  // all react-native-<name> packages
+        "@react-native/*",                 // @react-native scoped packages
+        "@react-native-firebase/*",
+        "@react-native-async-storage/*",
+        "@react-native-community/*",
+        "expo-*",                           // all Expo native modules
+        "@react-navigation/*",
+        "@sentry/*",
+        "@notifee/*",
+    ] {
         cmd.arg(format!("--external:{ext}"));
     }
 
