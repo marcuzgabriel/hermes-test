@@ -239,7 +239,79 @@ Native modules are detected automatically by scanning `node_modules` for `ios/`,
 
 When multiple test files mock the same module differently, hermes-test uses **shadow wrappers** — filesystem-based Proxy wrappers that check which test file is running at call time. One bundle, one runtime, per-file mock isolation.
 
+## CLI
+
+```bash
+hermes-test                          # run all test files
+hermes-test src/hooks/               # run tests in a directory
+hermes-test src/hooks/useLogin.test.ts  # run a specific file
+hermes-test --watch                  # watch mode — reruns on file changes
+hermes-test --watch useLogin         # watch mode, filtered to matching files
+```
+
 ## Configuration
+
+### Polyrepo (single package)
+
+No config file needed for simple projects. Just run `hermes-test` in your project root.
+
+```
+my-app/
+├── src/
+│   └── hooks/
+│       └── useLogin.hermes.test.ts
+├── package.json
+└── tsconfig.json          ← path aliases read automatically
+```
+
+### Monorepo
+
+Create `hermes-test.config.json` in your app directory. The `root` field tells hermes-test where the monorepo root is (for resolving shared `node_modules`).
+
+```
+monorepo/
+├── apps/
+│   └── my-app/
+│       ├── src/
+│       ├── hermes-test.config.json   ← config here
+│       ├── package.json
+│       └── tsconfig.json
+├── packages/
+│   └── shared/
+└── node_modules/                     ← root points here
+```
+
+```json
+{
+  "root": "../..",
+  "testMatch": ".hermes.test.ts"
+}
+```
+
+### hermes-test.config.json
+
+| Key | Description | Required |
+|-----|-------------|----------|
+| `root` | Monorepo workspace root (for resolving node_modules) | Monorepo only |
+| `testMatch` | Test file suffix (default: `.test.ts`) | No |
+| `externals` | Additional modules to externalize | No (most auto-detected) |
+| `shims` | Built-in or custom module replacements | No |
+| `split` | Enable vendor/group bundle splitting for large suites | No |
+
+**tsconfig paths** are read automatically — monorepo path aliases just work:
+
+```json
+{
+  "compilerOptions": {
+    "paths": {
+      "@app/*": ["./src/*"],
+      "@myorg/shared/*": ["../../packages/shared/src/*"]
+    }
+  }
+}
+```
+
+**Native externals** are auto-detected by scanning `node_modules` for `ios/`, `android/`, `*.podspec`, and `app.plugin.js`. Most projects need zero manual `externals`.
 
 ### Built-in shims
 
@@ -254,7 +326,7 @@ hermes-test ships with ready-to-use shims for common React Native ecosystem pack
 | `hermes-test/shims/react-redux` | Pass-through for react-redux |
 | `hermes-test/shims/reduxjs-toolkit` | Pass-through for @reduxjs/toolkit |
 
-### hermes-test.config.json
+Example config with shims:
 
 ```json
 {
@@ -268,15 +340,15 @@ hermes-test ships with ready-to-use shims for common React Native ecosystem pack
 }
 ```
 
-| Key | Description |
-|-----|-------------|
-| `root` | Monorepo workspace root (for resolving node_modules) |
-| `testMatch` | Test file suffix (default: `.test.ts`) |
-| `externals` | Additional modules to externalize (most are auto-detected) |
-| `shims` | Built-in (`hermes-test/shims/...`) or custom (`./path/to/shim.js`) replacements |
-| `split` | Enable vendor/group bundle splitting for large suites |
+You can also write custom shims for app-specific native modules:
 
-Most projects need zero `externals` — auto-detection handles `react-native-*`, `expo-*`, `@react-navigation/*`, `@sentry/*`, and any package with native code.
+```json
+{
+  "shims": {
+    "react-native-keychain": "./test/shims/keychain.js"
+  }
+}
+```
 
 ## Stack
 
