@@ -627,7 +627,7 @@ fn inject_mock_require_shim(code: &str) -> String {
     ).unwrap();
 
     if !throw_re.is_match(&code) {
-        eprintln!("WARNING: __require shim pattern not found — externalized modules may not work");
+        // No dynamic require in bundle — no externalized modules, shim not needed. Silent.
         return code.to_string();
     }
     // Hoist __noop outside __require so it's created once, not per call.
