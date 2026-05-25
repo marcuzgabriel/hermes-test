@@ -1,13 +1,11 @@
 # hermes-test
 
-**75x faster than Jest.** A test runner for React Native and Expo that executes your tests in Hermes — the same JavaScript engine your app ships with.
+**147x faster than Jest.** A test runner for React Native and Expo that executes your tests in Hermes — the same JavaScript engine your app ships with.
 
-No Babel transforms. No `transformIgnorePatterns`. No `jest-expo` mock layer. No 20-second test runs. Just your code, running in the real engine, at native speed.
-
-Built for **Expo** and **React Native** projects that use hooks, Redux, RTK Query, and TypeScript.
+No Babel transforms. No `transformIgnorePatterns`. No `jest-expo` mock layer. No 2-minute test runs. Just your code, running in the real engine, at native speed.
 
 ```
-245 tests — 300ms
+1472 tests — 0.79s
 ```
 
 ---
@@ -16,86 +14,68 @@ Built for **Expo** and **React Native** projects that use hooks, Redux, RTK Quer
 
 Every React Native and Expo project tests in Node. Your app runs in Hermes. These are different JavaScript engines with different behaviors. That gap is where bugs hide — and Jest can't find them because it's running in the wrong engine entirely.
 
-On top of that, Jest in React Native is slow by design. Every test file spawns a worker, runs Babel transforms, resolves `transformIgnorePatterns` for every `node_modules` import, and coordinates results over IPC. For a mid-size Expo app, that's 20-60 seconds per run. Developers stop running tests. Tests rot. Coverage drops.
-
-`jest-expo` tries to help but adds its own problems — auto-mocking that silently drifts from real module behavior, complex preset configuration, and mocks that are JS pretending to be native modules.
+On top of that, Jest in React Native is slow by design. Every test file spawns a worker, runs Babel transforms, resolves `transformIgnorePatterns` for every `node_modules` import, collects coverage, and coordinates results over IPC. For a mid-size Expo app, that's 2-4 minutes per run. Developers stop running tests. Tests rot. Coverage drops.
 
 ### The fix
 
 hermes-test runs your tests directly in Hermes. esbuild bundles your test + source into a single file in <100ms. A Rust CLI feeds it to the Hermes VM. One process, no workers, no transforms. Results appear before your hand leaves `Cmd+S`.
 
-Most Jest mocks become unnecessary — Hermes runs your real hooks, real Redux store, real business logic natively. In a production Expo app (Topdanmark, Danish insurance), **84% of jest.mock calls were eliminated** because the real code just works in Hermes.
+Most Jest mocks become unnecessary — Hermes runs your real hooks, real Redux store, real business logic natively. Native modules are auto-detected and externalized — zero manual configuration needed.
 
 ### Benchmarks
 
-All measurements on Apple Silicon. `hyperfine` for micro, `time` for macro. Jest uses `@swc/jest` (fastest Jest transform).
+Production Expo app (Topdanmark, Danish insurance — 259 files, 1472 tests):
 
-**Micro — cold start, same test file:**
+| | Jest (full config + coverage) | hermes-test | Speedup |
+|---|---|---|---|
+| Full suite | **116s** | **0.79s** | **147x** |
+| Wall clock | 2min 13s | 1.9s | **70x** |
+| Cold run (no cache) | 116s | 4.0s | **29x** |
+| Watch rerun | ~3s | ~300ms | **10x** |
+
+Micro benchmarks (Apple Silicon):
 
 | Scenario | hermes-test | Jest + @swc/jest | Speedup |
 |----------|-------------|------------------|---------|
 | 10 pure function tests | **16ms** | 714ms | **45x** |
-| 50 pure function tests | **16ms** | 737ms | **47x** |
 | 50 hook tests (renderHook + act) | **75ms** | 721ms | **10x** |
-| 1000 hook tests | **200ms** | 883ms | **4.4x** |
-| Watch rerun (25 tests) | **69ms** | ~2,000ms | **29x** |
 | Trivial cold start | **4.6ms** | 1,486ms | **364x** |
-
-**Macro — real production test suites (Topdanmark insurance app):**
-
-| | Jest | hermes-test | Speedup |
-|---|------|-------------|---------|
-| 9 test files, 94 tests | **22.5s** | **0.49s** | **46x** |
-| CPU time | 86.3s | 0.49s | **176x** |
-| Single bundle (shadow wrappers) | N/A | **0.49s** | all files, one bundle |
-
-hermes-test scales linearly (~0.13ms per hook test). Jest's overhead is fixed startup (~700ms per worker) so the gap widens with more files and narrows with more tests per file.
-
-Full benchmark methodology and reproduction commands in [BENCHMARKS.md](./BENCHMARKS.md).
 
 ---
 
-### Quick start
+## Quick start
 
 ```bash
 bun add -D hermes-test
 ```
 
 ```ts
-import { test, renderHook, act } from 'hermes-test';
+// useCounter.test.ts
+import { test, expect, renderHook, act } from 'hermes-test';
 
-test('useCounter increments', ({ expect }) => {
-  const { current } = renderHook(() => useCounter(0));
-  act(() => current.increment());
-  expect(current.count).toBe(1);
+test('useCounter increments', () => {
+  const { result } = renderHook(() => useCounter(0));
+  act(() => result.current.increment());
+  expect(result.current.count).toBe(1);
 });
 ```
 
 ```bash
-hermes-test --watch
+hermes-test              # run all tests
+hermes-test --watch      # watch mode
 ```
-
-## Benchmarks
-
-Real-world insurance app (Topdanmark), same test logic, same assertions:
-
-| | Jest | hermes-test | Speedup |
-|---|------|-------------|---------|
-| 10 test files (197 tests) | 22.5s | 0.3s | **75x** |
-| CPU time | 86.3s | 0.28s | **308x** |
-| Watch rerun (1 file) | ~3s | <200ms | **15x** |
 
 ## API
 
 ### Test structure
 
 ```ts
-import { test, group, beforeEach, afterEach, expect } from 'hermes-test';
+import { test, expect, group, beforeEach, afterEach } from 'hermes-test';
 
 group('myFeature', () => {
   beforeEach(() => { /* reset */ });
 
-  test('does the thing', ({ expect }) => {
+  test('does the thing', () => {
     expect(result).toBe(42);
     expect(arr).toEqual([1, 2, 3]);
     expect(str).toContain('hello');
@@ -104,6 +84,7 @@ group('myFeature', () => {
 
   test.skip('not yet', () => {});
   test.only('focus this', () => {});
+  test('slow test', () => { /* ... */ }, { timeout: 10000 });
 });
 ```
 
@@ -114,65 +95,67 @@ expect(val).toBe(exact)            expect(val).toEqual(deep)
 expect(val).toBeTruthy()           expect(val).toBeFalsy()
 expect(val).toBeDefined()          expect(val).toBeUndefined()
 expect(val).toBeNull()             expect(val).toBeGreaterThan(n)
-expect(val).toContain(item)        expect(val).toMatch(/regex/)
+expect(val).toContain(item)        expect(val).toContainEqual(item)
+expect(val).toMatch(/regex/)       expect(val).toBeCloseTo(n, precision)
 expect(fn).toThrow('msg')          expect(val).not.toBe(other)
+
+// Asymmetric matchers
+expect.anything()                  expect.any(String)
+expect.objectContaining({ key })   expect.arrayContaining([1, 2])
+expect.stringContaining('sub')     expect.stringMatching(/pattern/)
+
+// Async
+await expect(promise).resolves.toBe(value)
+await expect(promise).rejects.toThrow('msg')
 ```
 
 ### Spies
 
 ```ts
-import { spy, spyOn } from 'hermes-test';
+import { spy, spyOn, clearAllMocks } from 'hermes-test';
 
 const fn = spy(() => 'default');
 fn.mockReturnValue('mocked');
-fn.mockReturnValueOnce('first').mockReturnValueOnce('second');
+fn.mockReturnValueOnce('first');
 fn.mockImplementation((x) => x * 2);
 fn.mockResolvedValue('async');
-fn.mockClear();    // clear calls, keep impl
-fn.mockReset();    // clear everything
-fn.mockRestore();  // revert spyOn
 
-expect(fn).wasCalled();
-expect(fn).wasCalledWith('arg1', 'arg2');
-expect(fn).wasCalledOnce();
-expect(fn).wasCalledTimes(3);
-expect(fn).wasNeverCalled();
+expect(fn).toHaveBeenCalled();
+expect(fn).toHaveBeenCalledWith('arg1', 'arg2');
+expect(fn).toHaveBeenCalledTimes(3);
+expect(fn.calls[0][0]).toBe('arg1');   // direct access
 
 // spyOn — intercept real object methods
 const s = spyOn(storage, 'get');
 s.mockReturnValue('cached');
-storage.get('key');        // returns 'cached'
-expect(s).wasCalledWith('key');
-s.mockRestore();           // reverts to original
+s.mockRestore();   // revert to original
+
+// Clear all spies at once
+clearAllMocks();
 ```
 
 ### Module mocking
 
 ```ts
 import { mockModule } from 'hermes-test';
+import { useMyHook } from './useMyHook';  // import order doesn't matter
 
-// Register before imports — like jest.mock() but explicit
 mockModule('./useRedux', () => ({
   useAppSelector: (selector) => mockState,
 }));
-
-import { useMyHook } from './useMyHook';
 ```
+
+Shadow wrappers check mocks at call time — `mockModule` can appear before or after imports.
 
 ### Hook testing
 
 ```ts
 import { renderHook, act, waitFor } from 'hermes-test';
 
-const { current, history, renderCount } = renderHook(() => useCounter(0));
-act(() => current.increment());
-expect(current.count).toBe(1);
+const { result, history, renderCount } = renderHook(() => useCounter(0));
+act(() => result.current.increment());
+expect(result.current.count).toBe(1);
 expect(renderCount).toBe(2);
-
-// With Redux Provider
-const { current } = renderHook(() => useMyHook(), {
-  wrapper: ({ children }) => <Provider store={store}>{children}</Provider>,
-});
 ```
 
 ### Fetch mocking (MSW-style)
@@ -180,59 +163,40 @@ const { current } = renderHook(() => useMyHook(), {
 ```ts
 import { mockFetch, mockFetchUse, mockFetchReset, http, HttpResponse } from 'hermes-test';
 
-// Base handlers
 mockFetch(
   http.get('https://api.example.com/data', () => HttpResponse.json({ ok: true })),
   http.post('https://api.example.com/login', () => HttpResponse.json({ token: '...' })),
 );
 
 // Per-test override
-mockFetchUse(
-  http.get('https://api.example.com/data', () => HttpResponse.json({ error: 'fail' }, { status: 500 })),
-);
+mockFetchUse(http.get('https://api.example.com/data', () => HttpResponse.error()));
 
 // Cleanup
 mockFetchReset();
 ```
 
-### Async
+### Redux store
 
 ```ts
-import { flushAsync } from 'hermes-test';
+import { setupApiStore } from 'hermes-test/store';
 
-// Synchronously resolve promises (Hermes microtask queue)
-const result = flushAsync(store.dispatch(api.endpoints.login.initiate(payload)));
-expect(result.data.token).toBe('...');
+const ctx = setupApiStore([api, cms], { app: rootReducer }, {
+  preloadedState: { app: { auth: { session: mockSession } } },
+});
+const { result } = ctx.renderHookWithReduxStore(() => useMyHook());
+ctx.store.dispatch(authActions.logout());
 ```
 
 ### Fake timers
 
 ```ts
-import { useFakeTimers, advanceTimersByTime, useRealTimers, runAllTimers } from 'hermes-test';
+import { useFakeTimers, advanceTimersByTime, useRealTimers } from 'hermes-test';
 
 useFakeTimers();
 setTimeout(() => { fired = true }, 1000);
 advanceTimersByTime(1000);
 expect(fired).toBe(true);
-expect(Date.now()).toBe(1000);  // Date.now() tracks fake time
 useRealTimers();
-```
-
-### Redux test store
-
-```ts
-import { withStore, withAppReducer } from 'hermes-test/store';
-
-// Quick seedable store
-const ctx = withStore({ user: { name: 'Test' }, insurances: [] });
-ctx.patchState({ insurances: [mockProduct] });
-const { current } = ctx.renderHookWithReduxStore(() => useMyHook());
-
-// Real app reducer — patchState + real actions both work
-const ctx = withAppReducer(rootReducer, initialState);
-ctx.dispatch(authActions.login({ token: '...' }));
-ctx.patchState({ insurances: [mockProduct] });
-const { current } = ctx.renderHookWithReduxStore(() => useMyHook());
 ```
 
 ## How it works
@@ -244,111 +208,44 @@ const { current } = ctx.renderHookWithReduxStore(() => useMyHook());
 └──────────────┘     └─────────┘     └────────────┘
        │                  │                 │
   mockModule()      <100ms bundle     native execution
-  spy/expect         path aliases      drainMicrotasks
+  spy/expect        path aliases      drainMicrotasks
   renderHook        Hermes patches     real React tree
 ```
 
 1. **esbuild** bundles your test + source into a single IIFE (~100ms)
-2. Rust CLI applies **Hermes patches** (class-extends, for-let-of, configurable getters)
-3. **Hermes VM** evaluates the bundle via `Runtime::run()` — same engine as your app
-4. Results printed to terminal — single process, no workers, no IPC
+2. Rust CLI applies **Hermes patches** (class-extends, for-let-of)
+3. **Bytecode compilation** — cached .hbc for instant loading on subsequent runs
+4. **Hermes VM** evaluates the bytecode — same engine as your app
+5. Results printed to terminal — single process, no workers, no IPC
+
+### Three-tier cache
+
+| Tier | What | Speed |
+|---|---|---|
+| **Bytecode (.hbc)** | Pre-compiled Hermes bytecode | Fastest — skip JS parsing |
+| **Patched JS** | Post-patched esbuild output | Fast — skip bundling + patching |
+| **Fresh bundle** | Full esbuild + patch pipeline | Cold start only |
+
+### Auto-detect native externals
+
+Native modules are detected automatically by scanning `node_modules` for `ios/`, `android/`, `*.podspec`, and `app.plugin.js`. No manual `externals` config needed for standard React Native packages.
 
 ### Mock isolation (Shadow Wrappers)
 
-When multiple test files mock the same module differently, hermes-test uses **shadow wrappers** — a filesystem-based mock isolation technique that keeps everything in a single bundle.
-
-For each mocked aliased module, a shadow directory is generated at build time:
-- Non-mocked files: symlinked to the real source
-- Mocked files: replaced with a **lazy Proxy wrapper** that checks which test file is running
-
-```
-src/hooks/index.ts          ← real module (useAppSelector from Redux)
-.hermes-test-shadow/
-  hooks/
-    index.ts                ← Proxy wrapper: returns mock or real per test file
-    carousel/               ← symlink → real src/hooks/carousel/
-    appState/               ← symlink → real src/hooks/appState/
-```
-
-At runtime, the Proxy checks `__HT_file_mocks[currentTestFile]` on every property access. Different test files get different mocks from the same bundled module — no per-file bundling needed.
-
-This is inspired by [Vitest's mock hoisting](https://vitest.dev/guide/mocking) but avoids AST transforms and per-file workers. One bundle, one Hermes runtime, lazy filesystem-level interception.
-
-## Stack
-
-- **Hermes** — the JS engine that ships with React Native and Expo
-- **esbuild** — bundler, 100x faster than Babel/Metro transforms
-- **Rust** — CLI host, native Hermes FFI, zero-overhead process management
-- **TypeScript** — test harness (spy, expect, renderHook, mockFetch, timers)
-
-## Works with
-
-- **Expo** (SDK 50+)
-- **React Native** (0.73+ with Hermes)
-- **Redux / RTK Query**
-- **React hooks**
-- **TypeScript**
-- **Monorepos** (path aliases via tsconfig.json)
-
-## Install
-
-From GitHub (internal):
-```bash
-bun add -D github:marcuzgabriel/hermes-test#main
-```
-
-From npm (when published):
-```bash
-bun add -D hermes-test
-```
-
-The postinstall script automatically downloads the prebuilt binary for your platform (macOS arm64/x64, Linux x64).
-
-Add to `package.json`:
-```json
-{
-  "scripts": {
-    "test": "hermes-test",
-    "test:watch": "hermes-test --watch"
-  }
-}
-```
-
-Run:
-```bash
-bun run test                          # all .test.ts files
-bun run test src/hooks/useLogin.test.ts  # specific file
-bun run test:watch                    # watch mode
-```
+When multiple test files mock the same module differently, hermes-test uses **shadow wrappers** — filesystem-based Proxy wrappers that check which test file is running at call time. One bundle, one runtime, per-file mock isolation.
 
 ## Configuration
 
-### tsconfig.json paths
-
-hermes-test reads `tsconfig.json` paths automatically and passes them as esbuild aliases. Monorepo path aliases just work:
-
-```json
-{
-  "compilerOptions": {
-    "paths": {
-      "@app/*": ["./src/*"],
-      "@myorg/shared/*": ["../../packages/shared/src/*"]
-    }
-  }
-}
-```
-
 ### hermes-test.config.json
-
-Project-level configuration. Place in your project root (or monorepo app directory):
 
 ```json
 {
   "root": "../..",
-  "externals": ["@sentry/*", "expo-*"],
-  "split": true,
+  "testMatch": ".hermes.test.ts",
   "shims": {
-    "react-native-keychain": "./test/shims/keychain.js"
+    "react-i18next": "./test/shims/react-i18next.js",
+    "@reduxjs/toolkit/query/react": "hermes-test/shims/rtk-query",
+    "@react-native-async-storage/async-storage": "./test/shims/async-storage.js"
   }
 }
 ```
@@ -356,15 +253,19 @@ Project-level configuration. Place in your project root (or monorepo app directo
 | Key | Description |
 |-----|-------------|
 | `root` | Monorepo workspace root (for resolving node_modules) |
-| `externals` | Modules to externalize (native modules, wildcards supported) |
-| `split` | Enable vendor/group bundle splitting for large test suites |
-| `shims` | Custom shim files for native modules (overrides built-in stubs) |
+| `testMatch` | Test file suffix (default: `.test.ts`) |
+| `externals` | Additional modules to externalize (most are auto-detected) |
+| `shims` | Custom replacement modules for externalized packages |
+| `split` | Enable vendor/group bundle splitting for large suites |
 
-**Bundle splitting** (`"split": true`) separates node_modules into a cached vendor bundle and local code into small group bundles. Recommended for projects with 50+ test files. The vendor bytecode is cached on disk — only recompiles when dependencies change.
+Most projects need zero `externals` — auto-detection handles `react-native-*`, `expo-*`, `@react-navigation/*`, `@sentry/*`, and any package with native code.
 
-Why: Hermes execution time scales super-linearly with bundle size — a 1.7MB bundle takes ~1300ms to execute, but the same tests split across individual files sum to ~530ms. This is caused by GC heap pressure and parser overhead in the Hermes VM growing disproportionately with bundle size. Splitting keeps each chunk smaller, reducing this overhead. See [BENCHMARKS.md](./BENCHMARKS.md#scaling-full-suite-31-files-1413-tests) for measured data.
+## Stack
 
-Externalized modules return empty Proxy objects at runtime. Use `mockModule` or `mockFetch` in your tests for specific behavior.
+- **Hermes** — the JS engine that ships with React Native and Expo
+- **esbuild** — bundler, 100x faster than Babel/Metro transforms
+- **Rust** — CLI host, native Hermes FFI, bytecode caching
+- **TypeScript** — test harness (spy, expect, renderHook, mockFetch, timers)
 
 ## Why not Jest?
 
@@ -373,11 +274,11 @@ Externalized modules return empty Proxy objects at runtime. Use `mockModule` or 
 | Engine | Node (not your app) | Hermes (your app) |
 | Startup | ~700ms per worker | ~5ms total |
 | Transforms | Babel on every import | esbuild, one bundle |
-| Mocks needed | 394 in a real app | ~60 (native only) |
-| `transformIgnorePatterns` | Required, fragile | Not needed |
-| Watch rerun | ~2-3s | ~70ms |
+| Native externals | Manual `transformIgnorePatterns` | Auto-detected |
+| Config needed | `externals`, `transformIgnorePatterns`, `moduleNameMapper` | Zero for most projects |
+| Watch rerun | ~2-3s | ~300ms |
+| 1472 tests | 116s | **0.79s** |
 
 ## License
 
 MIT
-
