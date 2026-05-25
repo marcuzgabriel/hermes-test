@@ -1,5 +1,6 @@
 mod hermes;
 mod bundler;
+mod coverage;
 
 use clap::{Parser, Subcommand};
 use notify_debouncer_mini::{new_debouncer, DebouncedEventKind};
@@ -56,6 +57,10 @@ struct Cli {
     #[arg(long)]
     split: bool,
 
+    /// Collect coverage and write lcov report to coverage/lcov.info
+    #[arg(long)]
+    coverage: bool,
+
     #[command(subcommand)]
     command: Option<Commands>,
 }
@@ -90,7 +95,7 @@ fn main() {
                 root,
                 no_bundle,
             } => {
-                run_tests(&files, &root, no_bundle, false);
+                run_tests(&files, &root, no_bundle, false, false);
             }
             Commands::Watch {
                 files,
@@ -116,7 +121,7 @@ fn main() {
     if cli.watch {
         watch_tests(&files, &root);
     } else {
-        run_tests(&files, &root, cli.no_bundle, cli.split);
+        run_tests(&files, &root, cli.no_bundle, cli.split, cli.coverage);
     }
 }
 
@@ -204,7 +209,7 @@ fn eval_file(path: &str) {
     }
 }
 
-fn run_tests(files: &[PathBuf], root: &PathBuf, no_bundle: bool, force_split: bool) {
+fn run_tests(files: &[PathBuf], root: &PathBuf, no_bundle: bool, force_split: bool, coverage: bool) {
     let root = std::fs::canonicalize(root).unwrap_or_else(|e| {
         eprintln!("Invalid root directory: {e}");
         std::process::exit(1);
@@ -301,7 +306,7 @@ JSON.stringify({
             if use_split {
                 run_tests_split(&rt, &test_files, &root, &all_mocks, &cfg, start);
             } else {
-                run_tests_single(&rt, &test_files, &root, &all_mocks, &cfg, start, &[]);
+                run_tests_single(&rt, &test_files, &root, &all_mocks, &cfg, start, &[], coverage);
             }
         }
     }
@@ -316,6 +321,7 @@ fn run_tests_single(
     cfg: &bundler::BundleConfig,
     start: Instant,
     transforms: &[(PathBuf, PathBuf)],
+    coverage: bool,
 ) {
     // Check single-bundle cache FIRST — skip shadow wrapper/shim setup if cached.
     let cache_key = bundler::compute_single_bundle_cache_key(test_files, root, mock_modules, cfg);
@@ -378,8 +384,26 @@ fn run_tests_single(
         Some(b)
     };
 
+    // Coverage: instrument the bundle before eval
+    let bundle = if coverage {
+        let js = bundle.or_else(|| std::fs::read_to_string(&cache_path).ok())
+            .unwrap_or_else(|| { eprintln!("No bundle for coverage"); std::process::exit(1); });
+        match coverage::instrument_bundle(&js, "bundle.js") {
+            Some(instrumented) => {
+                eprintln!(" \x1b[2mCoverage:\x1b[0m instrumented ({} → {} bytes)", js.len(), instrumented.len());
+                Some(instrumented)
+            }
+            None => {
+                eprintln!(" \x1b[33mCoverage: instrumentation failed, running without\x1b[0m");
+                Some(js)
+            }
+        }
+    } else {
+        bundle
+    };
+
     // Eval: prefer bytecode → compile+cache bytecode → fallback to JS text
-    let eval_result = if bytecode_path.exists() {
+    let eval_result = if !coverage && bytecode_path.exists() {
         // Bytecode cache hit
         match std::fs::read(&bytecode_path) {
             Ok(bytes) => rt.eval_bytes(&bytes, "bundle.hbc"),
@@ -389,13 +413,18 @@ fn run_tests_single(
             }
         }
     } else if let Some(ref js) = bundle {
-        // Try to compile to bytecode and cache it
-        match crate::hermes::compile_bytecode(js, "bundle.js") {
-            Ok(bytecode) => {
-                let _ = std::fs::write(&bytecode_path, &bytecode);
-                rt.eval_bytes(&bytecode, "bundle.hbc")
+        if coverage {
+            // Coverage: eval JS directly (instrumented code, no bytecode cache)
+            rt.eval(js, "bundle.js")
+        } else {
+            // Try to compile to bytecode and cache it
+            match crate::hermes::compile_bytecode(js, "bundle.js") {
+                Ok(bytecode) => {
+                    let _ = std::fs::write(&bytecode_path, &bytecode);
+                    rt.eval_bytes(&bytecode, "bundle.hbc")
+                }
+                Err(_) => rt.eval(js, "bundle.js"),
             }
-            Err(_) => rt.eval(js, "bundle.js"),
         }
     } else {
         eprintln!("No bundle available");
@@ -408,11 +437,24 @@ fn run_tests_single(
 
     print_console_logs(rt);
 
+    // Collect coverage before printing summary
+    if coverage {
+        if let Some(lcov) = coverage::collect_coverage(rt) {
+            let cov_dir = root.join("coverage");
+            let _ = std::fs::create_dir_all(&cov_dir);
+            let lcov_path = cov_dir.join("lcov.info");
+            match std::fs::write(&lcov_path, &lcov) {
+                Ok(_) => eprintln!(" \x1b[32mCoverage:\x1b[0m {}", lcov_path.display()),
+                Err(e) => eprintln!(" \x1b[33mCoverage write failed: {e}\x1b[0m"),
+            }
+        } else {
+            eprintln!(" \x1b[33mNo coverage data collected\x1b[0m");
+        }
+    }
+
     let elapsed = start.elapsed();
     match rt.eval("globalThis.__HT_results", "results") {
         Ok(json) => {
-            // Per-file results already printed live by harness via __HT_print.
-            // Only print the summary here.
             if !print_summary_with_time(&json, elapsed.as_millis(), test_files.len()) {
                 std::process::exit(1);
             }
