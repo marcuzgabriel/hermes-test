@@ -157,24 +157,20 @@ pub fn bundle_esbuild_with_config(
         }
     }
 
-    // Default externals: hermes-test (thin re-export from __HT), React Native (Flow syntax)
+    // Externalize hermes-test itself (thin re-export from __HT runtime)
     cmd.arg("--external:hermes-test");
-    cmd.arg("--external:@marcuzgabriel/hermes-test");
     // Alias hermes-test/store to the actual file so it gets BUNDLED (not externalized).
     // esbuild aliases run before external checks, so this resolves before the external match.
     {
         let store_paths = [
             entry_file.parent().unwrap_or(std::path::Path::new(".")).join("node_modules/hermes-test/src/store.ts"),
-            entry_file.parent().unwrap_or(std::path::Path::new(".")).join("node_modules/@marcuzgabriel/hermes-test/src/store.ts"),
         ];
         for sp in &store_paths {
             if sp.exists() {
                 cmd.arg(format!("--alias:hermes-test/store={}", sp.to_string_lossy()));
-                cmd.arg(format!("--alias:@marcuzgabriel/hermes-test/store={}", sp.to_string_lossy()));
                 break;
             }
         }
-        // Also check project root node_modules
         if let Some(ref root) = cfg.root {
             let root_store = root.join("node_modules/hermes-test/src/store.ts");
             if root_store.exists() {
@@ -182,14 +178,9 @@ pub fn bundle_esbuild_with_config(
             }
         }
     }
-    // Default externals — only patterns the auto-detect scan cannot catch.
-    // The scan handles packages with ios/android/podspec/plugin dirs.
-    // These cover JS-only wrappers and convention-based patterns without native dirs.
-    for ext in &[
-        "react-native", "react-native/*",  // RN core — always external
-        "@react-navigation/*",             // JS wrappers around native screen managers
-        "@notifee/*",                       // JS wrapper, no ios/android dir
-    ] {
+    // react-native uses Flow syntax that esbuild can't parse — always external.
+    // All other native packages are auto-detected or user-configured.
+    for ext in &["react-native", "react-native/*"] {
         cmd.arg(format!("--external:{ext}"));
     }
 
@@ -618,7 +609,6 @@ pub fn bundle_split(
     let excluded: std::collections::HashSet<&str> = {
         let mut set = std::collections::HashSet::new();
         set.insert("hermes-test");
-        set.insert("@marcuzgabriel/hermes-test");
         set.insert("react-native");
         set.insert("console");
         for ext in &cfg.externals {
@@ -726,7 +716,6 @@ fn generate_setup_code(
 
     code.push_str("globalThis.__HT_mocks = globalThis.__HT_mocks || {};\n");
     code.push_str("globalThis.__HT_mocks['hermes-test'] = globalThis.__HT;\n");
-    code.push_str("globalThis.__HT_mocks['@marcuzgabriel/hermes-test'] = globalThis.__HT;\n");
 
     // Built-in react-native shim (unless user provides custom one)
     let user_shim_modules: Vec<&str> = cfg.shims.iter().map(|(k, _)| k.as_str()).collect();

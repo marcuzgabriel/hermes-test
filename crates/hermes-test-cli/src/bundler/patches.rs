@@ -304,10 +304,8 @@ pub fn hoist_mocks_in_body(body: &str) -> String {
 /// but BEFORE any init_*() calls (so mocks are registered before modules load).
 pub fn find_mock_insert_point(body: &str) -> usize {
     // Strategy: find the end of the hermes-test require line, insert after it.
-    // Patterns: `__require("hermes-test")` or `__require("@marcuzgabriel/hermes-test")`
     let hermes_patterns = [
         r#"__require("hermes-test")"#,
-        r#"__require("@marcuzgabriel/hermes-test")"#,
     ];
     let mut after_require = 0;
     for pat in &hermes_patterns {

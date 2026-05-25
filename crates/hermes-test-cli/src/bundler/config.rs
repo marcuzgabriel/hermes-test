@@ -191,11 +191,13 @@ pub fn read_config(project_root: &Path) -> BundleConfig {
         if config.externals.contains(&ext) { continue; }
         // Skip if this package is a tsconfig alias target (it's the app's own source)
         if alias_prefixes.iter().any(|a| ext.starts_with(a) || a.starts_with(&ext)) { continue; }
-        // Skip dev/build tooling that happens to have native dirs
-        let skip = ["detox", "jest-expo", "expo-module-scripts", "expo-modules-autolinking",
-                     "expo-modules-core", "expo-dev-client", "expo-dev-launcher", "expo-dev-menu",
-                     "expo-dev-menu-interface"];
-        if skip.contains(&ext.as_str()) { continue; }
+        // Skip dev/build tooling that happens to have native dirs (pattern-based, not hardcoded)
+        if ext == "detox"
+            || ext.starts_with("expo-dev-")
+            || ext.starts_with("expo-module")
+            || ext.contains("autolinking")
+            || ext.starts_with("jest-")
+        { continue; }
         config.externals.push(ext);
     }
 

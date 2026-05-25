@@ -251,8 +251,6 @@ pub fn find_hermes_test_shims_dirs(project_root: &Path, cfg: &BundleConfig) -> V
     let nm_candidates = [
         "node_modules/hermes-test/shims",
         "node_modules/hermes-test/src/shims",
-        "node_modules/@marcuzgabriel/hermes-test/shims",
-        "node_modules/@marcuzgabriel/hermes-test/src/shims",
     ];
     // Check project root node_modules
     for c in &nm_candidates {

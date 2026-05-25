@@ -179,7 +179,6 @@ pub fn generate_entry(
     // Register hermes-test as a mock so `import { test } from 'hermes-test'` resolves to __HT
     entry.push_str("globalThis.__HT_mocks = globalThis.__HT_mocks || {};\n");
     entry.push_str("globalThis.__HT_mocks['hermes-test'] = globalThis.__HT;\n");
-    entry.push_str("globalThis.__HT_mocks['@marcuzgabriel/hermes-test'] = globalThis.__HT;\n");
 
     // Load shims for native modules. User shims (from config) override built-in defaults.
     // Built-in shims are embedded in the hermes-test binary.
