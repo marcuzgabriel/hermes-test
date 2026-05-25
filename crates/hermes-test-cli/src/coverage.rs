@@ -1,29 +1,18 @@
-//! Istanbul-compatible coverage instrumentation using OXC VisitMut + Codegen.
+//! Istanbul-compatible coverage instrumentation.
 //!
-//! Parses JS source, walks the AST with VisitMut to:
-//!   - Wrap bare control-flow bodies in blocks (fixes the string insertion bug)
-//!   - Insert __cov.s[id]++ / __cov.f[id]++ counter statements
-//! Then uses OXC Codegen to re-emit syntactically correct JS.
+//! Uses OXC parser for AST analysis (statement locations, bare-body detection,
+//! function bodies, branches) then string insertion to add counters.
+//! Preserves the original source byte-for-byte — only adds counter text.
 
-use std::cell::Cell;
 use std::collections::BTreeMap;
-
 use std::path::Path;
 
-use oxc::allocator::{Allocator, Box as OxcBox, FromIn, Vec as OxcVec};
+use oxc::allocator::Allocator;
 use oxc::ast::ast::*;
-use oxc::ast_visit::{walk_mut::*, VisitMut};
-use oxc::codegen::Codegen;
 use oxc::parser::Parser;
-use oxc::span::{GetSpan, SourceType, Span};
-use oxc::syntax::node::NodeId;
-use oxc::syntax::number::NumberBase;
-use oxc::syntax::operator::UpdateOperator;
-use oxc_str::Ident;
-use oxc::syntax::scope::ScopeFlags;
+use oxc::span::{GetSpan, SourceType};
 
-/// Instrument a JS source with Istanbul-compatible coverage counters.
-/// `var_name` controls the local variable name (e.g. "__cov" or "__cov42").
+/// Instrument a JS bundle with Istanbul-compatible coverage counters.
 pub fn instrument_bundle(source: &str, filename: &str) -> Option<String> {
     instrument_source(source, filename, "__cov")
 }
@@ -36,376 +25,365 @@ fn instrument_source(source: &str, filename: &str, var_name: &str) -> Option<Str
         return None;
     }
 
-    let mut program = ret.program;
+    // Collect coverage metadata from AST (read-only walk)
+    let mut stmts: Vec<(u32, u32, bool)> = Vec::new(); // (start, end, is_bare_body)
+    let mut fns: Vec<(u32, u32, String)> = Vec::new();
+    let mut fn_body_starts: Vec<Option<u32>> = Vec::new(); // byte after { of block body
+    let mut branches: Vec<(u32, u32, String, u32)> = Vec::new();
 
-    let mut instrumentor = CoverageInstrumentor {
-        allocator: &allocator,
-        var_name: var_name.to_string(),
-        stmt_id: 0,
-        fn_id: 0,
-        branch_id: 0,
-        pending_fn_counter: None,
-        pending_fn_name: None,
-        skip_next_body: false,
-        stmts: Vec::new(),
-        fns: Vec::new(),
-        branches: Vec::new(),
-    };
+    for stmt in &ret.program.body {
+        walk_stmt(stmt, &mut stmts, &mut fns, &mut fn_body_starts, &mut branches, false);
+    }
 
-    instrumentor.visit_program(&mut program);
-
-    if instrumentor.stmts.is_empty() && instrumentor.fns.is_empty() {
+    if stmts.is_empty() && fns.is_empty() {
         return Some(source.to_string());
     }
 
-    // Build preamble with coverage map metadata
+    // Build preamble
     let file_id = filename.replace('\\', "/");
     let lt = LineTable::new(source);
-    let stmt_map = build_loc_map(&instrumentor.stmts, &lt);
-    let s_init = build_zero_map(instrumentor.stmts.len());
-    let fn_map = build_fn_map(&instrumentor.fns, &lt);
-    let f_init = build_zero_map(instrumentor.fns.len());
-    let branch_map = build_branch_map(&instrumentor.branches, &lt);
-    let b_init = build_branch_zero_map(&instrumentor.branches);
+    let stmt_spans: Vec<(u32, u32)> = stmts.iter().map(|(s, e, _)| (*s, *e)).collect();
+    let stmt_map = build_loc_map(&stmt_spans, &lt);
+    let s_init = build_zero_map(stmts.len());
+    let fn_map = build_fn_map(&fns, &lt);
+    let f_init = build_zero_map(fns.len());
+    let branch_map = build_branch_map(&branches, &lt);
+    let b_init = build_branch_zero_map(&branches);
 
     let preamble = format!(
         "var {var_name}=(function(){{var g=globalThis;if(!g.__coverage__)g.__coverage__={{}};if(!g.__coverage__[\"{file_id}\"])g.__coverage__[\"{file_id}\"]={{path:\"{file_id}\",statementMap:{stmt_map},fnMap:{fn_map},branchMap:{branch_map},s:{s_init},f:{f_init},b:{b_init}}};return g.__coverage__[\"{file_id}\"]}})()\n"
     );
 
-    // Use OXC Codegen to emit the modified AST
-    let codegen_result = Codegen::new().build(&program);
+    // Build insertions from AST-collected data
+    let mut insertions: Vec<(u32, String)> = Vec::new();
 
-    Some(format!("{}{}", preamble, codegen_result.code))
-}
-
-// --- VisitMut instrumentor ---
-
-struct CoverageInstrumentor<'a> {
-    allocator: &'a Allocator,
-    var_name: String,
-    stmt_id: usize,
-    fn_id: usize,
-    branch_id: usize,
-    pending_fn_counter: Option<usize>,
-    pending_fn_name: Option<String>,
-    skip_next_body: bool,
-    // Coverage map metadata (original source locations)
-    stmts: Vec<(u32, u32)>,
-    fns: Vec<(u32, u32, String)>,
-    branches: Vec<(u32, u32, String, u32)>,
-}
-
-impl<'a> CoverageInstrumentor<'a> {
-    /// Build `++{var_name}.{kind}[{id}];` as a Statement
-    fn make_counter(&self, kind: &str, id: usize) -> Statement<'a> {
-        let span = Span::default();
-        let var_ident: Ident<'a> = Ident::from_in(self.var_name.as_str(), self.allocator);
-        let kind_ident: Ident<'a> = Ident::from_in(kind, self.allocator);
-
-        // ++{var_name}.{kind}[{id}]
-        let update = Expression::UpdateExpression(OxcBox::new_in(
-            UpdateExpression {
-                node_id: Cell::new(NodeId::DUMMY),
-                span,
-                operator: UpdateOperator::Increment,
-                prefix: true,
-                argument: SimpleAssignmentTarget::ComputedMemberExpression(OxcBox::new_in(
-                    ComputedMemberExpression {
-                        node_id: Cell::new(NodeId::DUMMY),
-                        span,
-                        object: Expression::StaticMemberExpression(OxcBox::new_in(
-                            StaticMemberExpression {
-                                node_id: Cell::new(NodeId::DUMMY),
-                                span,
-                                object: Expression::Identifier(OxcBox::new_in(
-                                    IdentifierReference {
-                                        node_id: Cell::new(NodeId::DUMMY),
-                                        span,
-                                        name: var_ident,
-                                        reference_id: Cell::new(None),
-                                    },
-                                    self.allocator,
-                                )),
-                                property: IdentifierName {
-                                    node_id: Cell::new(NodeId::DUMMY),
-                                    span,
-                                    name: kind_ident,
-                                },
-                                optional: false,
-                            },
-                            self.allocator,
-                        )),
-                        expression: Expression::NumericLiteral(OxcBox::new_in(
-                            NumericLiteral {
-                                node_id: Cell::new(NodeId::DUMMY),
-                                span,
-                                value: id as f64,
-                                raw: None,
-                                base: NumberBase::Decimal,
-                            },
-                            self.allocator,
-                        )),
-                        optional: false,
-                    },
-                    self.allocator,
-                )),
-            },
-            self.allocator,
-        ));
-
-        // ++__cov.{kind}[{id}];
-        Statement::ExpressionStatement(OxcBox::new_in(
-            ExpressionStatement {
-                node_id: Cell::new(NodeId::DUMMY),
-                span,
-                expression: update,
-            },
-            self.allocator,
-        ))
-    }
-
-    /// Wrap a bare statement in a BlockStatement
-    fn wrap_in_block(&self, stmt: &mut Statement<'a>) {
-        let span = Span::default();
-        let dummy = Statement::EmptyStatement(OxcBox::new_in(
-            EmptyStatement {
-                node_id: Cell::new(NodeId::DUMMY),
-                span,
-            },
-            self.allocator,
-        ));
-        let original = std::mem::replace(stmt, dummy);
-        let mut body = OxcVec::new_in(self.allocator);
-        body.push(original);
-        *stmt = Statement::BlockStatement(OxcBox::new_in(
-            BlockStatement {
-                node_id: Cell::new(NodeId::DUMMY),
-                span,
-                body,
-                scope_id: Cell::new(None),
-            },
-            self.allocator,
-        ));
-    }
-
-    /// Whether this statement type should get a coverage counter
-    fn should_count(stmt: &Statement) -> bool {
-        matches!(
-            stmt,
-            Statement::ExpressionStatement(_)
-                | Statement::IfStatement(_)
-                | Statement::ForStatement(_)
-                | Statement::ForInStatement(_)
-                | Statement::ForOfStatement(_)
-                | Statement::WhileStatement(_)
-                | Statement::DoWhileStatement(_)
-                | Statement::SwitchStatement(_)
-                | Statement::TryStatement(_)
-                | Statement::ReturnStatement(_)
-                | Statement::ThrowStatement(_)
-                | Statement::BreakStatement(_)
-                | Statement::ContinueStatement(_)
-                | Statement::LabeledStatement(_)
-        ) || matches!(stmt, _ if stmt.is_declaration() && matches!(
-            stmt.as_declaration(),
-            Some(Declaration::VariableDeclaration(_) | Declaration::ClassDeclaration(_))
-        ))
-    }
-
-    /// Instrument a statement list: visit children first (bottom-up), then interleave counters
-    fn instrument_statements(
-        &mut self,
-        stmts: &mut OxcVec<'a, Statement<'a>>,
-        fn_counter: Option<usize>,
-    ) {
-        // Take ownership of existing statements
-        let mut old = std::mem::replace(stmts, OxcVec::new_in(self.allocator));
-
-        // Visit each child first (recursive — inner blocks/functions get instrumented first)
-        for stmt in old.iter_mut() {
-            self.visit_statement(stmt);
-        }
-
-        // Build new list with counters interleaved
-        let mut new_list = OxcVec::new_in(self.allocator);
-
-        // Insert function entry counter at top of body
-        if let Some(fn_id) = fn_counter {
-            new_list.push(self.make_counter("f", fn_id));
-        }
-
-        for stmt in old.into_iter() {
-            if Self::should_count(&stmt) {
-                let sid = self.stmt_id;
-                self.stmt_id += 1;
-                self.stmts.push((stmt.span().start, stmt.span().end));
-                new_list.push(self.make_counter("s", sid));
-            }
-            new_list.push(stmt);
-        }
-
-        *stmts = new_list;
-    }
-}
-
-impl<'a> VisitMut<'a> for CoverageInstrumentor<'a> {
-    // --- Top-level program body ---
-    fn visit_program(&mut self, it: &mut Program<'a>) {
-        self.instrument_statements(&mut it.body, None);
-    }
-
-    // --- Function body (block-body functions and arrows) ---
-    fn visit_function_body(&mut self, it: &mut FunctionBody<'a>) {
-        if self.skip_next_body {
-            self.skip_next_body = false;
-            // Still recurse for nested functions inside concise arrow expressions
-            walk_function_body(self, it);
-            return;
-        }
-        let fn_counter = self.pending_fn_counter.take();
-        self.instrument_statements(&mut it.statements, fn_counter);
-    }
-
-    // --- Block statements (if/for/while bodies, try/catch, standalone blocks) ---
-    fn visit_block_statement(&mut self, it: &mut BlockStatement<'a>) {
-        self.instrument_statements(&mut it.body, None);
-    }
-
-    // --- Functions: record metadata and set pending counter ---
-    fn visit_function(&mut self, it: &mut Function<'a>, flags: ScopeFlags) {
-        let name = self
-            .pending_fn_name
-            .take()
-            .unwrap_or_else(|| {
-                it.id
-                    .as_ref()
-                    .map(|id| id.name.to_string())
-                    .unwrap_or_else(|| "(anonymous)".into())
-            });
-        let fn_id = self.fn_id;
-        self.fn_id += 1;
-        self.fns.push((it.span.start, it.span.end, name));
-        if it.body.is_some() {
-            self.pending_fn_counter = Some(fn_id);
-        }
-        walk_function(self, it, flags);
-    }
-
-    // --- Arrow functions ---
-    fn visit_arrow_function_expression(&mut self, it: &mut ArrowFunctionExpression<'a>) {
-        let fn_id = self.fn_id;
-        self.fn_id += 1;
-        self.fns.push((it.span.start, it.span.end, "(arrow)".into()));
-        if it.expression {
-            // Concise arrow: () => expr — skip body instrumentation
-            self.skip_next_body = true;
+    for (i, (start, end, bare)) in stmts.iter().enumerate() {
+        if *bare {
+            // Bare body: wrap in block with counter
+            insertions.push((*start, format!("{{{var_name}.s[{i}]++;")));
+            insertions.push((*end, "}".to_string()));
         } else {
-            self.pending_fn_counter = Some(fn_id);
+            insertions.push((*start, format!("{var_name}.s[{i}]++;")));
         }
-        walk_arrow_function_expression(self, it);
     }
 
-    // --- Method definitions: extract name for pending_fn_name ---
-    fn visit_method_definition(&mut self, it: &mut MethodDefinition<'a>) {
-        let name = match &it.key {
-            PropertyKey::StaticIdentifier(id) => id.name.to_string(),
-            _ => "(method)".into(),
-        };
-        self.pending_fn_name = Some(name);
-        walk_method_definition(self, it);
+    // Function body counters (always inside a block — safe)
+    for (i, offset) in fn_body_starts.iter().enumerate() {
+        if let Some(pos) = offset {
+            insertions.push((*pos, format!("{var_name}.f[{i}]++;")));
+        }
     }
 
-    // --- Control structures: wrap bare bodies, record branches ---
-
-    fn visit_if_statement(&mut self, it: &mut IfStatement<'a>) {
-        // Record branch
-        self.branches
-            .push((it.span.start, it.span.end, "if".into(), 2));
-
-        // Wrap bare consequent in block
-        if !matches!(&it.consequent, Statement::BlockStatement(_)) {
-            self.wrap_in_block(&mut it.consequent);
-        }
-        // Wrap bare alternate in block
-        if let Some(alt) = &mut it.alternate {
-            if !matches!(alt, Statement::BlockStatement(_)) {
-                self.wrap_in_block(alt);
+    // Sort by offset, merge entries at same offset
+    insertions.sort_by_key(|i| i.0);
+    let mut merged: Vec<(u32, String)> = Vec::new();
+    for (offset, code) in insertions {
+        if let Some(last) = merged.last_mut() {
+            if last.0 == offset {
+                last.1.push_str(&code);
+                continue;
             }
         }
-
-        walk_if_statement(self, it);
+        merged.push((offset, code));
     }
 
-    fn visit_for_statement(&mut self, it: &mut ForStatement<'a>) {
-        if !matches!(&it.body, Statement::BlockStatement(_)) {
-            self.wrap_in_block(&mut it.body);
+    // Build output in one pass — preserves original source byte-for-byte
+    let mut result = String::with_capacity(source.len() + merged.len() * 20 + preamble.len());
+    result.push_str(&preamble);
+    let mut last = 0usize;
+    for (offset, code) in &merged {
+        let pos = *offset as usize;
+        if pos >= last && pos <= source.len() {
+            result.push_str(&source[last..pos]);
+            result.push_str(code);
+            last = pos;
         }
-        walk_for_statement(self, it);
+    }
+    result.push_str(&source[last..]);
+
+    Some(result)
+}
+
+// --- AST walker (read-only, collects metadata) ---
+
+/// Whether a statement is a bare body (not wrapped in braces).
+fn is_bare(stmt: &Statement) -> bool {
+    !matches!(stmt, Statement::BlockStatement(_))
+}
+
+fn walk_stmt(
+    stmt: &Statement,
+    stmts: &mut Vec<(u32, u32, bool)>,
+    fns: &mut Vec<(u32, u32, String)>,
+    fbo: &mut Vec<Option<u32>>,
+    br: &mut Vec<(u32, u32, String, u32)>,
+    bare: bool,
+) {
+    let span = stmt.span();
+    if span.start == span.end {
+        return;
     }
 
-    fn visit_for_in_statement(&mut self, it: &mut ForInStatement<'a>) {
-        if !matches!(&it.body, Statement::BlockStatement(_)) {
-            self.wrap_in_block(&mut it.body);
+    match stmt {
+        Statement::BlockStatement(b) => {
+            for s in &b.body {
+                walk_stmt(s, stmts, fns, fbo, br, false);
+            }
         }
-        walk_for_in_statement(self, it);
-    }
-
-    fn visit_for_of_statement(&mut self, it: &mut ForOfStatement<'a>) {
-        if !matches!(&it.body, Statement::BlockStatement(_)) {
-            self.wrap_in_block(&mut it.body);
+        Statement::FunctionDeclaration(f) => {
+            let name = f.id.as_ref().map(|id| id.name.to_string()).unwrap_or("anonymous".into());
+            fns.push((span.start, span.end, name));
+            if let Some(body) = &f.body {
+                fbo.push(Some(body.span.start + 1));
+                for s in &body.statements {
+                    walk_stmt(s, stmts, fns, fbo, br, false);
+                }
+            } else {
+                fbo.push(None);
+            }
         }
-        walk_for_of_statement(self, it);
-    }
-
-    fn visit_while_statement(&mut self, it: &mut WhileStatement<'a>) {
-        if !matches!(&it.body, Statement::BlockStatement(_)) {
-            self.wrap_in_block(&mut it.body);
+        Statement::ClassDeclaration(cls) => {
+            stmts.push((span.start, span.end, bare));
+            walk_class(&cls.body, stmts, fns, fbo, br);
         }
-        walk_while_statement(self, it);
-    }
-
-    fn visit_do_while_statement(&mut self, it: &mut DoWhileStatement<'a>) {
-        if !matches!(&it.body, Statement::BlockStatement(_)) {
-            self.wrap_in_block(&mut it.body);
+        Statement::IfStatement(i) => {
+            stmts.push((span.start, span.end, bare));
+            br.push((span.start, span.end, "if".into(), 2));
+            walk_stmt(&i.consequent, stmts, fns, fbo, br, is_bare(&i.consequent));
+            if let Some(alt) = &i.alternate {
+                walk_stmt(alt, stmts, fns, fbo, br, is_bare(alt));
+            }
         }
-        walk_do_while_statement(self, it);
-    }
-
-    fn visit_switch_statement(&mut self, it: &mut SwitchStatement<'a>) {
-        self.branches.push((
-            it.span.start,
-            it.span.end,
-            "switch".into(),
-            it.cases.len() as u32,
-        ));
-        walk_switch_statement(self, it);
-    }
-
-    // --- Switch cases: instrument consequent statement list ---
-    fn visit_switch_case(&mut self, it: &mut SwitchCase<'a>) {
-        // Visit test expression (for nested functions etc.)
-        if let Some(test) = &mut it.test {
-            self.visit_expression(test);
+        Statement::ForStatement(f) => {
+            stmts.push((span.start, span.end, bare));
+            walk_stmt(&f.body, stmts, fns, fbo, br, is_bare(&f.body));
         }
-        // Instrument consequent statements
-        self.instrument_statements(&mut it.consequent, None);
-    }
-
-    // --- Conditional expressions: record branch ---
-    fn visit_conditional_expression(&mut self, it: &mut ConditionalExpression<'a>) {
-        self.branches.push((
-            it.span.start,
-            it.span.end,
-            "cond-expr".into(),
-            2,
-        ));
-        walk_conditional_expression(self, it);
+        Statement::ForInStatement(f) => {
+            stmts.push((span.start, span.end, bare));
+            walk_stmt(&f.body, stmts, fns, fbo, br, is_bare(&f.body));
+        }
+        Statement::ForOfStatement(f) => {
+            stmts.push((span.start, span.end, bare));
+            walk_stmt(&f.body, stmts, fns, fbo, br, is_bare(&f.body));
+        }
+        Statement::WhileStatement(w) => {
+            stmts.push((span.start, span.end, bare));
+            walk_stmt(&w.body, stmts, fns, fbo, br, is_bare(&w.body));
+        }
+        Statement::DoWhileStatement(d) => {
+            stmts.push((span.start, span.end, bare));
+            walk_stmt(&d.body, stmts, fns, fbo, br, is_bare(&d.body));
+        }
+        Statement::SwitchStatement(sw) => {
+            stmts.push((span.start, span.end, bare));
+            br.push((span.start, span.end, "switch".into(), sw.cases.len() as u32));
+            for case in &sw.cases {
+                for s in &case.consequent {
+                    walk_stmt(s, stmts, fns, fbo, br, false);
+                }
+            }
+        }
+        Statement::TryStatement(t) => {
+            stmts.push((span.start, span.end, bare));
+            for s in &t.block.body {
+                walk_stmt(s, stmts, fns, fbo, br, false);
+            }
+            if let Some(h) = &t.handler {
+                for s in &h.body.body {
+                    walk_stmt(s, stmts, fns, fbo, br, false);
+                }
+            }
+            if let Some(f) = &t.finalizer {
+                for s in &f.body {
+                    walk_stmt(s, stmts, fns, fbo, br, false);
+                }
+            }
+        }
+        Statement::ExpressionStatement(e) => {
+            stmts.push((span.start, span.end, bare));
+            walk_expr(&e.expression, stmts, fns, fbo, br);
+        }
+        Statement::VariableDeclaration(v) => {
+            stmts.push((span.start, span.end, bare));
+            for d in &v.declarations {
+                if let Some(init) = &d.init {
+                    walk_expr(init, stmts, fns, fbo, br);
+                }
+            }
+        }
+        Statement::ReturnStatement(r) => {
+            stmts.push((span.start, span.end, bare));
+            if let Some(arg) = &r.argument {
+                walk_expr(arg, stmts, fns, fbo, br);
+            }
+        }
+        Statement::ThrowStatement(_)
+        | Statement::BreakStatement(_)
+        | Statement::ContinueStatement(_)
+        | Statement::LabeledStatement(_) => {
+            stmts.push((span.start, span.end, bare));
+        }
+        _ => {}
     }
 }
 
-// --- Helpers (unchanged from original) ---
+fn walk_expr(
+    expr: &Expression,
+    stmts: &mut Vec<(u32, u32, bool)>,
+    fns: &mut Vec<(u32, u32, String)>,
+    fbo: &mut Vec<Option<u32>>,
+    br: &mut Vec<(u32, u32, String, u32)>,
+) {
+    match expr {
+        Expression::CallExpression(call) => {
+            walk_expr(&call.callee, stmts, fns, fbo, br);
+            for arg in &call.arguments {
+                if let Argument::SpreadElement(s) = arg {
+                    walk_expr(&s.argument, stmts, fns, fbo, br);
+                } else if let Some(e) = arg.as_expression() {
+                    walk_expr(e, stmts, fns, fbo, br);
+                }
+            }
+        }
+        Expression::ArrowFunctionExpression(arrow) => {
+            let span = arrow.span;
+            fns.push((span.start, span.end, "(arrow)".into()));
+            if arrow.expression {
+                // Concise arrow: () => expr — no block body, can't insert statements.
+                // Just walk the expression for nested functions/branches.
+                fbo.push(None);
+                for s in &arrow.body.statements {
+                    if let Statement::ExpressionStatement(e) = s {
+                        walk_expr(&e.expression, stmts, fns, fbo, br);
+                    }
+                }
+            } else {
+                fbo.push(Some(arrow.body.span.start + 1));
+                for s in &arrow.body.statements {
+                    walk_stmt(s, stmts, fns, fbo, br, false);
+                }
+            }
+        }
+        Expression::FunctionExpression(func) => {
+            let span = func.span;
+            let name = func
+                .id
+                .as_ref()
+                .map(|id| id.name.to_string())
+                .unwrap_or("(anonymous)".into());
+            fns.push((span.start, span.end, name));
+            if let Some(body) = &func.body {
+                fbo.push(Some(body.span.start + 1));
+                for s in &body.statements {
+                    walk_stmt(s, stmts, fns, fbo, br, false);
+                }
+            } else {
+                fbo.push(None);
+            }
+        }
+        Expression::ConditionalExpression(c) => {
+            br.push((c.span.start, c.span.end, "cond-expr".into(), 2));
+            walk_expr(&c.test, stmts, fns, fbo, br);
+            walk_expr(&c.consequent, stmts, fns, fbo, br);
+            walk_expr(&c.alternate, stmts, fns, fbo, br);
+        }
+        Expression::LogicalExpression(l) => {
+            walk_expr(&l.left, stmts, fns, fbo, br);
+            walk_expr(&l.right, stmts, fns, fbo, br);
+        }
+        Expression::AssignmentExpression(a) => {
+            walk_expr(&a.right, stmts, fns, fbo, br);
+        }
+        Expression::SequenceExpression(s) => {
+            for e in &s.expressions {
+                walk_expr(e, stmts, fns, fbo, br);
+            }
+        }
+        Expression::ObjectExpression(o) => {
+            for prop in &o.properties {
+                if let ObjectPropertyKind::ObjectProperty(p) = prop {
+                    walk_expr(&p.value, stmts, fns, fbo, br);
+                }
+            }
+        }
+        Expression::ArrayExpression(a) => {
+            for el in &a.elements {
+                if let ArrayExpressionElement::SpreadElement(s) = el {
+                    walk_expr(&s.argument, stmts, fns, fbo, br);
+                } else if let Some(e) = el.as_expression() {
+                    walk_expr(e, stmts, fns, fbo, br);
+                }
+            }
+        }
+        Expression::ClassExpression(cls) => {
+            walk_class(&cls.body, stmts, fns, fbo, br);
+        }
+        Expression::ParenthesizedExpression(p) => {
+            walk_expr(&p.expression, stmts, fns, fbo, br);
+        }
+        Expression::NewExpression(n) => {
+            walk_expr(&n.callee, stmts, fns, fbo, br);
+            for arg in &n.arguments {
+                if let Argument::SpreadElement(s) = arg {
+                    walk_expr(&s.argument, stmts, fns, fbo, br);
+                } else if let Some(e) = arg.as_expression() {
+                    walk_expr(e, stmts, fns, fbo, br);
+                }
+            }
+        }
+        Expression::TemplateLiteral(t) => {
+            for e in &t.expressions {
+                walk_expr(e, stmts, fns, fbo, br);
+            }
+        }
+        Expression::TaggedTemplateExpression(t) => {
+            walk_expr(&t.tag, stmts, fns, fbo, br);
+        }
+        Expression::UnaryExpression(u) => {
+            walk_expr(&u.argument, stmts, fns, fbo, br);
+        }
+        Expression::BinaryExpression(b) => {
+            walk_expr(&b.left, stmts, fns, fbo, br);
+            walk_expr(&b.right, stmts, fns, fbo, br);
+        }
+        _ => {}
+    }
+}
 
-/// Pre-computed line offset table for O(1) line/col lookups.
+fn walk_class(
+    body: &ClassBody,
+    stmts: &mut Vec<(u32, u32, bool)>,
+    fns: &mut Vec<(u32, u32, String)>,
+    fbo: &mut Vec<Option<u32>>,
+    br: &mut Vec<(u32, u32, String, u32)>,
+) {
+    for el in &body.body {
+        if let ClassElement::MethodDefinition(m) = el {
+            let name = if let PropertyKey::StaticIdentifier(id) = &m.key {
+                id.name.to_string()
+            } else {
+                "(method)".into()
+            };
+            fns.push((m.span.start, m.span.end, name));
+            if let Some(body) = &m.value.body {
+                fbo.push(Some(body.span.start + 1));
+                for s in &body.statements {
+                    walk_stmt(s, stmts, fns, fbo, br, false);
+                }
+            } else {
+                fbo.push(None);
+            }
+        }
+        if let ClassElement::PropertyDefinition(p) = el {
+            if let Some(val) = &p.value {
+                walk_expr(val, stmts, fns, fbo, br);
+            }
+        }
+    }
+}
+
+// --- Helpers ---
+
 struct LineTable {
     line_starts: Vec<u32>,
 }
@@ -418,9 +396,7 @@ impl LineTable {
                 starts.push(i as u32 + 1);
             }
         }
-        Self {
-            line_starts: starts,
-        }
+        Self { line_starts: starts }
     }
 
     fn lookup(&self, offset: u32) -> (u32, u32) {
@@ -438,9 +414,7 @@ fn build_loc_map(locs: &[(u32, u32)], lt: &LineTable) -> String {
     for (i, (s, e)) in locs.iter().enumerate() {
         let (sl, sc) = lt.lookup(*s);
         let (el, ec) = lt.lookup(*e);
-        if i > 0 {
-            o.push(',');
-        }
+        if i > 0 { o.push(','); }
         o.push_str(&format!(
             "\"{i}\":{{\"start\":{{\"line\":{sl},\"column\":{sc}}},\"end\":{{\"line\":{el},\"column\":{ec}}}}}"
         ));
@@ -454,9 +428,7 @@ fn build_fn_map(fns: &[(u32, u32, String)], lt: &LineTable) -> String {
     for (i, (s, e, name)) in fns.iter().enumerate() {
         let (sl, sc) = lt.lookup(*s);
         let (el, ec) = lt.lookup(*e);
-        if i > 0 {
-            o.push(',');
-        }
+        if i > 0 { o.push(','); }
         let n = name.replace('"', "\\\"");
         o.push_str(&format!(
             "\"{i}\":{{\"name\":\"{n}\",\"decl\":{{\"start\":{{\"line\":{sl},\"column\":{sc}}},\"end\":{{\"line\":{el},\"column\":{ec}}}}},\"loc\":{{\"start\":{{\"line\":{sl},\"column\":{sc}}},\"end\":{{\"line\":{el},\"column\":{ec}}}}}}}"
@@ -471,9 +443,7 @@ fn build_branch_map(branches: &[(u32, u32, String, u32)], lt: &LineTable) -> Str
     for (i, (s, e, btype, _)) in branches.iter().enumerate() {
         let (sl, sc) = lt.lookup(*s);
         let (el, ec) = lt.lookup(*e);
-        if i > 0 {
-            o.push(',');
-        }
+        if i > 0 { o.push(','); }
         o.push_str(&format!(
             "\"{i}\":{{\"loc\":{{\"start\":{{\"line\":{sl},\"column\":{sc}}},\"end\":{{\"line\":{el},\"column\":{ec}}}}},\"type\":\"{btype}\"}}"
         ));
@@ -485,9 +455,7 @@ fn build_branch_map(branches: &[(u32, u32, String, u32)], lt: &LineTable) -> Str
 fn build_zero_map(count: usize) -> String {
     let mut o = String::from("{");
     for i in 0..count {
-        if i > 0 {
-            o.push(',');
-        }
+        if i > 0 { o.push(','); }
         o.push_str(&format!("\"{i}\":0"));
     }
     o.push('}');
@@ -497,9 +465,7 @@ fn build_zero_map(count: usize) -> String {
 fn build_branch_zero_map(branches: &[(u32, u32, String, u32)]) -> String {
     let mut o = String::from("{");
     for (i, (_, _, _, paths)) in branches.iter().enumerate() {
-        if i > 0 {
-            o.push(',');
-        }
+        if i > 0 { o.push(','); }
         let z: Vec<&str> = (0..*paths).map(|_| "0").collect();
         o.push_str(&format!("\"{i}\":[{}]", z.join(",")));
     }
@@ -511,14 +477,12 @@ fn build_branch_zero_map(branches: &[(u32, u32, String, u32)]) -> String {
 
 /// Create an overlay directory with instrumented source files.
 /// Returns (overlay_root, file_count).
-/// Each source file gets its own __coverage__ entry with a unique __cov{N} variable.
 pub fn create_coverage_overlay(
     project_root: &Path,
 ) -> Result<(std::path::PathBuf, usize), String> {
     let overlay_root = project_root.join(".hermes-test-cache/cov-src");
     let _ = std::fs::remove_dir_all(&overlay_root);
 
-    // Find all source files (excluding node_modules, caches, etc.)
     let mut source_files: Vec<(String, std::path::PathBuf)> = Vec::new();
     find_source_files(project_root, project_root, &mut source_files);
 
@@ -555,22 +519,14 @@ fn find_source_files(root: &Path, current: &Path, out: &mut Vec<(String, std::pa
         let name = entry.file_name();
         let n = name.to_string_lossy();
         if path.is_dir() {
-            if n == "node_modules"
-                || n == ".git"
-                || n == "vendor"
-                || n == "target"
-                || n == ".hermes-test-cache"
-                || n == "dist"
-                || n == "build"
-                || n == ".expo"
+            if matches!(n.as_ref(), "node_modules" | ".git" | "vendor" | "target"
+                | ".hermes-test-cache" | "dist" | "build" | ".expo")
             {
                 continue;
             }
             find_source_files(root, &path, out);
-        } else if n.ends_with(".ts")
-            || n.ends_with(".tsx")
-            || n.ends_with(".js")
-            || n.ends_with(".jsx")
+        } else if n.ends_with(".ts") || n.ends_with(".tsx")
+            || n.ends_with(".js") || n.ends_with(".jsx")
         {
             if let Ok(rel) = path.strip_prefix(root) {
                 out.push((rel.to_string_lossy().to_string(), path.clone()));
@@ -580,24 +536,20 @@ fn find_source_files(root: &Path, current: &Path, out: &mut Vec<(String, std::pa
 }
 
 /// Remap a file path from the original project root to the overlay root.
-/// Handles both absolute and relative paths.
 pub fn remap_to_overlay(
     file: &Path,
     project_root: &Path,
     overlay_root: &Path,
 ) -> std::path::PathBuf {
-    // Try absolute path stripping first
     if let Ok(rel) = file.strip_prefix(project_root) {
         return overlay_root.join(rel);
     }
-    // If the file is already relative, join directly with overlay
     if file.is_relative() {
         let overlay_path = overlay_root.join(file);
         if overlay_path.exists() {
             return overlay_path;
         }
     }
-    // Fallback: return original
     file.to_path_buf()
 }
 
