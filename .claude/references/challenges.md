@@ -331,6 +331,63 @@ afterEach(() => {
 - **~12 data-shape/contamination**: guidewire(5), keyValueStorage(4), FirebaseAnalyticsTracker(3)
 - **~5 misc**: resourceBundle(2), useContactInfo(1), useUserPanelParticipation(1)
 
+## Day 21: setupApiStore + 100% pass rate (1409 → 1472/1472)
+
+### Store API refactor
+- Replaced `withApiStore`/`createApiStoreFactory` with `setupApiStore(apis, extraReducers, options)`
+- Matches Jest's `setupApiStore` pattern — thin, composable, real reducers
+- Topdanmark: `withReduxStore(options?)` wraps `setupApiStore` with real `rootReducer`
+- Supports `preloadedState` and `middleware: { prepend, concat }` options
+- **Fixed RTK Tuple breakage**: `.concat()` on RTK's middleware Tuple returns plain array,
+  losing `.prepend()`. Use for-loop `chain = chain.concat(mw)` instead of spread.
+
+### URLSearchParams polyfill extended
+- Array-of-pairs constructor: `new URLSearchParams([["k","v"]])`
+- Added `entries()`, `keys()`, `values()`, `forEach()`, `delete()`, `Symbol.iterator`
+- Added `Object.fromEntries` polyfill for Hermes
+- Fixed definition order: URLSearchParams before URL to avoid stale reference capture
+
+### AsyncStorage shim
+- In-memory implementation: `test/shims/async-storage.js`
+- `globalThis.__HT_asyncStorageData` backing store shared across all proxy-wrapped references
+- Reset via `__HT_resetAsyncStorage()`
+- Configured as replacement shim in hermes-test.config.json
+- Note: keyValueStorage test still uses module-level mock (proxy layer doesn't share
+  backing store between different `__currentTestFile` contexts for the same shim)
+
+### Auto-detect native externals (implemented but disabled)
+- `detect_native_modules()` scans node_modules for `ios/`, `android/`, `*.podspec`, `app.plugin.js`
+- ~5ms scan time for 2400 packages (stat-only, no file reads)
+- **Problem**: over-externalizes packages that tests need bundled (e.g. `form-data` has `android/`
+  dir but must be bundled for test runtime). Also misses JS-only wrappers that transitively
+  need native (e.g. `@gorhom/bottom-sheet`, `expo-status-bar`)
+- **Status**: code in bundler.rs, disabled pending opt-in flag or allowlist approach
+
+### Test fixes that reached 100% (+63 tests)
+
+**Contamination fixes:**
+- guidewire (+5): deep-clone shared mocks before `delete` (paymentUtil, lobUtil)
+- FirebaseAnalyticsTracker (+3): singleton logger captured at init → assign spy in beforeEach
+- keyValueStorage (+4): mock at module level to bypass AsyncStorage proxy chain
+- useFormCoordinator (+4): rename Claims version to avoid `__currentTestFile` basename collision
+
+**Missing mock/setup fixes:**
+- apiBaseQuery (+6): add fetch handlers, crypto mock, mutex cleanup, fix spy API
+- useMarketingConsent (+7): full rewrite to `withReduxStore` + `mockFetch`
+- useTopGPTConsent (+4+1): `api.util.invalidateTags` mock + warm-up renderHook for React dispatcher
+- useFetchOverviewDetails (+3): sync `act()` + `removeError` mock
+- useContactInfo (+1): add Redux Provider wrapper
+
+**Polyfill/shim fixes:**
+- useSsoLogin (+5): URLSearchParams polyfill improvements
+- useFileUpload (+3): FormData mock needs `{ default: FormDataMock }` for default imports
+- useGetInsuranceMetaInfoGuidewire (+1): destructure instead of JSON.parse/stringify (preserves Dates)
+
+**Other:**
+- resourceBundle (+2): regex URL matching for CMS endpoints
+- usePrimoPurchaseTravelCoverageSubmission (+1): replace missing `toHaveBeenNthCalledWith`
+- useUserPanelParticipation (+1): patch `keyValueStorage.get/set` directly
+
 ## Updated Patterns & Principles
 
 12. **Function Proxy wrappers = mock interception through destructuring** — wrapping
@@ -342,3 +399,18 @@ afterEach(() => {
     re-initialization. No singleton corruption, no performance cost, easy to reason about.
 15. **Shallow spread doesn't deep-clone** — `{ ...obj }` copies top-level refs. Nested objects
     are still shared. Always `JSON.parse(JSON.stringify(...))` when deleting nested properties.
+16. **Basename collision = mock collision** — two test files with the same filename in different
+    directories share `__currentTestFile` ID → their `mockModule` registrations overwrite each
+    other. Fix: rename one file to have a unique basename.
+17. **React dispatcher contamination** — heavy `renderHook` usage with real Redux Providers can
+    corrupt React's internal hooks dispatcher for subsequent files. Fix: warm-up
+    `renderHook(() => null)` in `beforeEach` to reset the dispatcher.
+18. **Default export mocks need `{ default: X }`** — when a test mocks a module that's imported
+    via `import X from 'pkg'`, the shadow wrapper proxy looks up `m["default"]`. A plain
+    function/class won't have a `default` property. Return `{ default: MockClass }`.
+19. **Auto-detect externals is fragile** — scanning for `ios/`/`android/` dirs catches native
+    modules but also hits packages like `form-data` that have native code but need bundling.
+    JS-only wrappers around native deps are missed entirely. Manual externals list is safer
+    until a smarter heuristic (import-graph analysis or runtime error detection) is available.
+20. **`JSON.parse(JSON.stringify(x))` destroys Date objects** — converts them to ISO strings.
+    Use destructuring with rest operator when you need to omit fields from mock objects.
