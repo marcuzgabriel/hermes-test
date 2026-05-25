@@ -617,6 +617,7 @@ fn generate_setup_code(
 ) -> String {
     let mut code = String::new();
 
+    code.push_str("if (typeof globalThis.__DEV__ === 'undefined') globalThis.__DEV__ = false;\n");
     code.push_str("globalThis.__HT_mocks = globalThis.__HT_mocks || {};\n");
     code.push_str("globalThis.__HT_mocks['hermes-test'] = globalThis.__HT;\n");
 
