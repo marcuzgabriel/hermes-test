@@ -8,7 +8,9 @@
 use std::cell::Cell;
 use std::collections::BTreeMap;
 
-use oxc::allocator::{Allocator, Box as OxcBox, Vec as OxcVec};
+use std::path::Path;
+
+use oxc::allocator::{Allocator, Box as OxcBox, FromIn, Vec as OxcVec};
 use oxc::ast::ast::*;
 use oxc::ast_visit::{walk_mut::*, VisitMut};
 use oxc::codegen::Codegen;
@@ -20,10 +22,15 @@ use oxc::syntax::operator::UpdateOperator;
 use oxc_str::Ident;
 use oxc::syntax::scope::ScopeFlags;
 
-/// Instrument a JS bundle with Istanbul-compatible coverage counters.
+/// Instrument a JS source with Istanbul-compatible coverage counters.
+/// `var_name` controls the local variable name (e.g. "__cov" or "__cov42").
 pub fn instrument_bundle(source: &str, filename: &str) -> Option<String> {
+    instrument_source(source, filename, "__cov")
+}
+
+fn instrument_source(source: &str, filename: &str, var_name: &str) -> Option<String> {
     let allocator = Allocator::default();
-    let source_type = SourceType::mjs();
+    let source_type = SourceType::from_path(filename).unwrap_or_else(|_| SourceType::mjs());
     let ret = Parser::new(&allocator, source, source_type).parse();
     if ret.panicked {
         return None;
@@ -33,6 +40,7 @@ pub fn instrument_bundle(source: &str, filename: &str) -> Option<String> {
 
     let mut instrumentor = CoverageInstrumentor {
         allocator: &allocator,
+        var_name: var_name.to_string(),
         stmt_id: 0,
         fn_id: 0,
         branch_id: 0,
@@ -61,7 +69,7 @@ pub fn instrument_bundle(source: &str, filename: &str) -> Option<String> {
     let b_init = build_branch_zero_map(&instrumentor.branches);
 
     let preamble = format!(
-        "var __cov=(function(){{var g=globalThis;if(!g.__coverage__)g.__coverage__={{}};if(!g.__coverage__[\"{file_id}\"])g.__coverage__[\"{file_id}\"]={{path:\"{file_id}\",statementMap:{stmt_map},fnMap:{fn_map},branchMap:{branch_map},s:{s_init},f:{f_init},b:{b_init}}};return g.__coverage__[\"{file_id}\"]}})()\n"
+        "var {var_name}=(function(){{var g=globalThis;if(!g.__coverage__)g.__coverage__={{}};if(!g.__coverage__[\"{file_id}\"])g.__coverage__[\"{file_id}\"]={{path:\"{file_id}\",statementMap:{stmt_map},fnMap:{fn_map},branchMap:{branch_map},s:{s_init},f:{f_init},b:{b_init}}};return g.__coverage__[\"{file_id}\"]}})()\n"
     );
 
     // Use OXC Codegen to emit the modified AST
@@ -74,6 +82,7 @@ pub fn instrument_bundle(source: &str, filename: &str) -> Option<String> {
 
 struct CoverageInstrumentor<'a> {
     allocator: &'a Allocator,
+    var_name: String,
     stmt_id: usize,
     fn_id: usize,
     branch_id: usize,
@@ -87,11 +96,13 @@ struct CoverageInstrumentor<'a> {
 }
 
 impl<'a> CoverageInstrumentor<'a> {
-    /// Build `++__cov.{kind}[{id}];` as a Statement
-    fn make_counter(&self, kind: &'a str, id: usize) -> Statement<'a> {
+    /// Build `++{var_name}.{kind}[{id}];` as a Statement
+    fn make_counter(&self, kind: &str, id: usize) -> Statement<'a> {
         let span = Span::default();
+        let var_ident: Ident<'a> = Ident::from_in(self.var_name.as_str(), self.allocator);
+        let kind_ident: Ident<'a> = Ident::from_in(kind, self.allocator);
 
-        // ++__cov.{kind}[{id}]
+        // ++{var_name}.{kind}[{id}]
         let update = Expression::UpdateExpression(OxcBox::new_in(
             UpdateExpression {
                 node_id: Cell::new(NodeId::DUMMY),
@@ -110,7 +121,7 @@ impl<'a> CoverageInstrumentor<'a> {
                                     IdentifierReference {
                                         node_id: Cell::new(NodeId::DUMMY),
                                         span,
-                                        name: Ident::from("__cov"),
+                                        name: var_ident,
                                         reference_id: Cell::new(None),
                                     },
                                     self.allocator,
@@ -118,7 +129,7 @@ impl<'a> CoverageInstrumentor<'a> {
                                 property: IdentifierName {
                                     node_id: Cell::new(NodeId::DUMMY),
                                     span,
-                                    name: Ident::from(kind),
+                                    name: kind_ident,
                                 },
                                 optional: false,
                             },
@@ -494,6 +505,100 @@ fn build_branch_zero_map(branches: &[(u32, u32, String, u32)]) -> String {
     }
     o.push('}');
     o
+}
+
+// --- Per-file instrumentation overlay ---
+
+/// Create an overlay directory with instrumented source files.
+/// Returns (overlay_root, file_count).
+/// Each source file gets its own __coverage__ entry with a unique __cov{N} variable.
+pub fn create_coverage_overlay(
+    project_root: &Path,
+) -> Result<(std::path::PathBuf, usize), String> {
+    let overlay_root = project_root.join(".hermes-test-cache/cov-src");
+    let _ = std::fs::remove_dir_all(&overlay_root);
+
+    // Find all source files (excluding node_modules, caches, etc.)
+    let mut source_files: Vec<(String, std::path::PathBuf)> = Vec::new();
+    find_source_files(project_root, project_root, &mut source_files);
+
+    let mut count = 0usize;
+    for (rel_path, abs_path) in &source_files {
+        let content = match std::fs::read_to_string(abs_path) {
+            Ok(c) => c,
+            Err(_) => continue,
+        };
+
+        let var_name = format!("__cov{}", count);
+        let instrumented = instrument_source(&content, rel_path, &var_name)
+            .unwrap_or_else(|| content.clone());
+
+        let target = overlay_root.join(rel_path);
+        if let Some(parent) = target.parent() {
+            let _ = std::fs::create_dir_all(parent);
+        }
+        std::fs::write(&target, &instrumented)
+            .map_err(|e| format!("Failed to write overlay file {}: {}", rel_path, e))?;
+        count += 1;
+    }
+
+    Ok((overlay_root, count))
+}
+
+fn find_source_files(root: &Path, current: &Path, out: &mut Vec<(String, std::path::PathBuf)>) {
+    let entries = match std::fs::read_dir(current) {
+        Ok(e) => e,
+        Err(_) => return,
+    };
+    for entry in entries.flatten() {
+        let path = entry.path();
+        let name = entry.file_name();
+        let n = name.to_string_lossy();
+        if path.is_dir() {
+            if n == "node_modules"
+                || n == ".git"
+                || n == "vendor"
+                || n == "target"
+                || n == ".hermes-test-cache"
+                || n == "dist"
+                || n == "build"
+                || n == ".expo"
+            {
+                continue;
+            }
+            find_source_files(root, &path, out);
+        } else if n.ends_with(".ts")
+            || n.ends_with(".tsx")
+            || n.ends_with(".js")
+            || n.ends_with(".jsx")
+        {
+            if let Ok(rel) = path.strip_prefix(root) {
+                out.push((rel.to_string_lossy().to_string(), path.clone()));
+            }
+        }
+    }
+}
+
+/// Remap a file path from the original project root to the overlay root.
+/// Handles both absolute and relative paths.
+pub fn remap_to_overlay(
+    file: &Path,
+    project_root: &Path,
+    overlay_root: &Path,
+) -> std::path::PathBuf {
+    // Try absolute path stripping first
+    if let Ok(rel) = file.strip_prefix(project_root) {
+        return overlay_root.join(rel);
+    }
+    // If the file is already relative, join directly with overlay
+    if file.is_relative() {
+        let overlay_path = overlay_root.join(file);
+        if overlay_path.exists() {
+            return overlay_path;
+        }
+    }
+    // Fallback: return original
+    file.to_path_buf()
 }
 
 // --- Coverage collection ---
