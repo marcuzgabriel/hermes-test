@@ -329,3 +329,37 @@ Sources:
 - [Bun Test vs Vitest vs Jest 2026 — PkgPulse](https://www.pkgpulse.com/blog/bun-test-vs-vitest-vs-jest-2026)
 - [Vitest vs Jest 2026 — SitePoint](https://www.sitepoint.com/vitest-vs-jest-2026-migration-benchmark/)
 - [Jest vs Vitest 2026 — Autonoma](https://getautonoma.com/blog/jest-vs-vitest-2026)
+
+## Day 21: Full production suite — 1472 tests, 100% pass rate
+
+Measured 2026-05-25. Three-tier cache (bytecode → patched JS → fresh bundle),
+auto-detect native externals, live streaming output.
+
+### Topdanmark (real production Expo app, 259 files, 1472 tests)
+
+| Run | Internal Time | Wall Clock | Notes |
+|---|---|---|---|
+| Cold (fresh bundle) | 2.44s | 4.0s | esbuild + patch + bytecode compile |
+| Cached (bytecode hit) | **0.80s** | **1.9s** | .hbc loaded directly |
+
+### vs Jest (same project, full config with `collectCoverage: true`)
+
+| Runner | Tests | Time | Speedup |
+|---|---|---|---|
+| **hermes-test** | 1472 | **0.80s** | **1x** |
+| Jest (`bun run test`) | 1754 | 132s | 165x slower |
+| Jest (`npx jest`, full config) | 1754 | 116s | **147x slower** |
+| Jest (`npx jest --no-coverage`) | 1754 | 23s | 29x slower (misleading) |
+
+Note: `--no-coverage` skips v8 coverage instrumentation. The real Jest config has
+`collectCoverage: true` hardcoded. Always benchmark with the actual config.
+
+### Historical progression
+
+| Date | Tests | Internal Time | vs Jest |
+|---|---|---|---|
+| Day 10 (shadow wrappers) | 94 | 0.51s | 27x |
+| Day 19 (split mode) | 1315 | ~1.7s | ~14x |
+| Day 20 (package shims) | 1409 | 1.69s | 14x |
+| Day 21 (pre-optimization) | 1472 | 1.93s | 60x |
+| **Day 21 (bytecode cache)** | **1472** | **0.80s** | **147x** |
