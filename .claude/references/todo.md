@@ -1,5 +1,21 @@
 # TODO — Future Work
 
+## v1: Coverage reporting
+
+### Coverage instrumentation
+- **Approach**: Istanbul-style instrumentation at bundle time
+- **Options explored**:
+  - `esbuild-plugin-istanbul` — requires esbuild JS API (we use CLI)
+  - Post-bundle AST instrumentation — needs full parser (OXC or SWC)
+  - Rust regex-based — too fragile for statement/branch coverage
+  - `c8` / v8 coverage — not available in Hermes
+- **Recommended**: Use OXC (already a dependency) to parse the bundle, insert Istanbul-compatible
+  counters (`__coverage__[fileId][statementId]++`), then output lcov/cobertura after test execution
+- **Output formats**: lcov (for CI), cobertura (for Sonar), html (for local dev)
+- **Performance impact**: +0.3-0.5s bundle time (instrument once, cached with bytecode)
+- **Config**: `"coverage": true` in hermes-test.config.json, `--coverage` CLI flag
+- **Source maps**: esbuild `--sourcemap` to map instrumented positions back to original source
+
 ## v1: Component rendering + Jest compat
 
 ### 1. `render(<Component />)` API
