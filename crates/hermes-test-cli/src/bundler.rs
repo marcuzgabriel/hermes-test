@@ -449,19 +449,13 @@ fn bundle_esbuild_with_config(
             }
         }
     }
-    // Default externals — native modules that can never run in Hermes without the RN bridge.
-    // These cover ~95% of RN ecosystem native packages so users only list app-specific ones.
+    // Default externals — only patterns the auto-detect scan cannot catch.
+    // The scan handles packages with ios/android/podspec/plugin dirs.
+    // These cover JS-only wrappers and convention-based patterns without native dirs.
     for ext in &[
-        "react-native", "react-native/*",
-        "react-native-*",                  // all react-native-<name> packages
-        "@react-native/*",                 // @react-native scoped packages
-        "@react-native-firebase/*",
-        "@react-native-async-storage/*",
-        "@react-native-community/*",
-        "expo-*",                           // all Expo native modules
-        "@react-navigation/*",
-        "@sentry/*",
-        "@notifee/*",
+        "react-native", "react-native/*",  // RN core — always external
+        "@react-navigation/*",             // JS wrappers around native screen managers
+        "@notifee/*",                       // JS wrapper, no ios/android dir
     ] {
         cmd.arg(format!("--external:{ext}"));
     }
