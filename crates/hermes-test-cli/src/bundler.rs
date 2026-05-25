@@ -244,9 +244,98 @@ pub fn read_config(project_root: &Path) -> BundleConfig {
         config.test_match = Some(val);
     }
 
+    // Auto-detect native modules — disabled pending refinement.
+    // The scan catches packages with ios/android dirs but also externalizes
+    // packages that tests need bundled (e.g. form-data, zod plugins).
+    // TODO: add opt-in flag "autoExternals": true in config.
+    // let auto_externals = detect_native_modules(project_root, &config);
+    // for ext in auto_externals {
+    //     if !config.externals.contains(&ext) {
+    //         config.externals.push(ext);
+    //     }
+    // }
+
     config
 }
 
+/// Detect native modules by checking for ios/ or android/ directories.
+/// Returns package names (e.g. "react-native-reanimated", "@react-native-firebase/*").
+fn detect_native_modules(project_root: &Path, cfg: &BundleConfig) -> Vec<String> {
+    let mut native = Vec::new();
+    let nm_dirs: Vec<PathBuf> = {
+        let mut dirs = vec![project_root.join("node_modules")];
+        if let Some(ref root) = cfg.root {
+            let root_nm = root.join("node_modules");
+            if root_nm.is_dir() && !dirs.contains(&root_nm) {
+                dirs.push(root_nm);
+            }
+        }
+        dirs
+    };
+
+    for nm_dir in &nm_dirs {
+        // Top-level packages: node_modules/<pkg>/
+        if let Ok(entries) = std::fs::read_dir(nm_dir) {
+            for entry in entries.flatten() {
+                let name = entry.file_name().to_string_lossy().to_string();
+                if name.starts_with('.') { continue; }
+                if name.starts_with('@') {
+                    // Scoped packages: node_modules/@scope/<pkg>/
+                    let scope_dir = entry.path();
+                    if let Ok(sub_entries) = std::fs::read_dir(&scope_dir) {
+                        let mut scope_has_native = false;
+                        for sub in sub_entries.flatten() {
+                            let sub_name = sub.file_name().to_string_lossy().to_string();
+                            if sub_name.starts_with('.') { continue; }
+                            if is_native_package(&sub.path()) {
+                                scope_has_native = true;
+                                let full = format!("{name}/{sub_name}");
+                                if !native.contains(&full) {
+                                    native.push(full);
+                                }
+                            }
+                        }
+                        // If most packages in scope are native, externalize the whole scope
+                        if scope_has_native {
+                            let wildcard = format!("{name}/*");
+                            if !native.contains(&wildcard) {
+                                native.push(wildcard);
+                            }
+                        }
+                    }
+                } else if is_native_package(&entry.path()) {
+                    if !native.contains(&name) {
+                        native.push(name);
+                    }
+                }
+            }
+        }
+    }
+    native
+}
+
+/// Check if a package directory contains native code indicators.
+fn is_native_package(pkg_dir: &Path) -> bool {
+    pkg_dir.join("ios").is_dir()
+        || pkg_dir.join("android").is_dir()
+        || has_podspec(pkg_dir)
+        || has_expo_plugin(pkg_dir)
+}
+
+fn has_podspec(dir: &Path) -> bool {
+    if let Ok(entries) = std::fs::read_dir(dir) {
+        for e in entries.flatten() {
+            if let Some(name) = e.file_name().to_str() {
+                if name.ends_with(".podspec") { return true; }
+            }
+        }
+    }
+    false
+}
+
+fn has_expo_plugin(dir: &Path) -> bool {
+    dir.join("app.plugin.js").is_file()
+}
 
 fn bundle_esbuild(
     entry_file: &Path,
