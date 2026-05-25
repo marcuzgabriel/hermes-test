@@ -27,11 +27,25 @@ The `__esm` callback for `store-selectors.test.ts`:
 
 Without counters, this works. With counters, `useSelector` / `Provider` / `Component.prototype` becomes undefined.
 
-## Debugging approach
-1. Binary search: remove half the counters, see if it still fails
-2. Check if `__cov.f[0]++` (function entry counter) at the `__esm` callback start is the issue — it runs before `init_react_redux()` but `__cov` should already exist
-3. Check if the preamble's `var __cov` declaration interferes with esbuild's `var` hoisting inside the IIFE
-4. Check if `init_react_redux()` behavior changes when preceded by `__cov.s[1]++` — maybe the comma expression inside `__esm`'s `__init` function interacts badly with the counter semicolon
+## Root cause hypothesis
+The `__esm` pattern uses `fn && (res = (0, fn[key])(fn = 0)), res` — a comma expression
+that calls the module callback. Inserting `__cov.f[0]++;` at the start of that callback
+may change how `__init()` dispatches or how the function body interacts with the comma
+expression. The same pattern works fine for simpler test files (no redux/Provider).
+
+## Fix approach — use existing bundler patterns
+The shadow wrapper / shimming approach already solves this class of problem:
+- Don't instrument INSIDE `__esm`/`__commonJS` callback bodies at all
+- These are esbuild's module wrapper functions — their internal structure is fragile
+- Instead, instrument at the CALL SITE level: the `init_X()` and `require_X()` calls
+  at the top of each module's `__esm` callback are already instrumented as statements
+- The test() / group() / beforeEach() callbacks ARE instrumented (they're user functions)
+- This means: set `vendor=true` for ALL `__esm`/`__commonJS` callback bodies,
+  but keep `vendor=false` for function expressions defined INSIDE user module callbacks
+  (test callbacks, hook definitions, etc.)
+
+Alternatively: only skip the function entry counter (`__cov.f[N]++`) for `__esm`/`__commonJS`
+method bodies, since those interact with the `__init` dispatch pattern.
 
 ## Key files
 - `crates/hermes-test-cli/src/coverage.rs` — instrument_bundle, walk_stmt, walk_expr, detect_module_call
