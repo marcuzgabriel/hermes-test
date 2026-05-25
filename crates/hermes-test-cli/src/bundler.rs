@@ -244,16 +244,21 @@ pub fn read_config(project_root: &Path) -> BundleConfig {
         config.test_match = Some(val);
     }
 
-    // Auto-detect native modules — disabled pending refinement.
-    // The scan catches packages with ios/android dirs but also externalizes
-    // packages that tests need bundled (e.g. form-data, zod plugins).
-    // TODO: add opt-in flag "autoExternals": true in config.
-    // let auto_externals = detect_native_modules(project_root, &config);
-    // for ext in auto_externals {
-    //     if !config.externals.contains(&ext) {
-    //         config.externals.push(ext);
-    //     }
-    // }
+    // Auto-detect native modules by scanning for ios/android dirs.
+    // Skip packages that are tsconfig aliases (e.g. @topdanmark/mobile-insurance-app → ./src).
+    let alias_prefixes: Vec<String> = config.aliases.iter().map(|(a, _)| a.clone()).collect();
+    let auto_externals = detect_native_modules(project_root, &config);
+    for ext in auto_externals {
+        if config.externals.contains(&ext) { continue; }
+        // Skip if this package is a tsconfig alias target (it's the app's own source)
+        if alias_prefixes.iter().any(|a| ext.starts_with(a) || a.starts_with(&ext)) { continue; }
+        // Skip dev/build tooling that happens to have native dirs
+        let skip = ["detox", "jest-expo", "expo-module-scripts", "expo-modules-autolinking",
+                     "expo-modules-core", "expo-dev-client", "expo-dev-launcher", "expo-dev-menu",
+                     "expo-dev-menu-interface"];
+        if skip.contains(&ext.as_str()) { continue; }
+        config.externals.push(ext);
+    }
 
     config
 }
@@ -283,23 +288,14 @@ fn detect_native_modules(project_root: &Path, cfg: &BundleConfig) -> Vec<String>
                     // Scoped packages: node_modules/@scope/<pkg>/
                     let scope_dir = entry.path();
                     if let Ok(sub_entries) = std::fs::read_dir(&scope_dir) {
-                        let mut scope_has_native = false;
                         for sub in sub_entries.flatten() {
                             let sub_name = sub.file_name().to_string_lossy().to_string();
                             if sub_name.starts_with('.') { continue; }
                             if is_native_package(&sub.path()) {
-                                scope_has_native = true;
                                 let full = format!("{name}/{sub_name}");
                                 if !native.contains(&full) {
                                     native.push(full);
                                 }
-                            }
-                        }
-                        // If most packages in scope are native, externalize the whole scope
-                        if scope_has_native {
-                            let wildcard = format!("{name}/*");
-                            if !native.contains(&wildcard) {
-                                native.push(wildcard);
                             }
                         }
                     }
