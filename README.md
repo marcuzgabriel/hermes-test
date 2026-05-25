@@ -1,8 +1,8 @@
 # hermes-test
 
-**147x faster than Jest.** A test runner for React Native and Expo that executes your tests in Hermes — the same JavaScript engine your app ships with.
+**29x faster than Jest.** A test runner for React Native and Expo that executes your tests in Hermes — the same JavaScript engine your app ships with.
 
-No Babel transforms. No `transformIgnorePatterns`. No `jest-expo` mock layer. No 2-minute test runs. Just your code, running in the real engine, at native speed.
+No Babel transforms. No `transformIgnorePatterns`. No `jest-expo` mock layer. Just your code, running in the real engine, at native speed.
 
 ```
 1472 tests — 0.79s
@@ -26,14 +26,15 @@ Most Jest mocks become unnecessary — Hermes runs your real hooks, real Redux s
 
 Production Expo app (Topdanmark, Danish insurance — 259 files, 1472 tests):
 
-| | Jest (full config + coverage) | hermes-test | Speedup |
+| | Jest (`--no-coverage`) | Jest (with coverage) | hermes-test |
 |---|---|---|---|
-| Full suite | **116s** | **0.79s** | **147x** |
-| Wall clock | 2min 13s | 1.9s | **70x** |
-| Cold run (no cache) | 116s | 4.0s | **29x** |
-| Watch rerun | ~3s | ~300ms | **10x** |
+| Full suite | 23s | 116s | **0.79s** |
+| **Speedup** | **29x** | 147x* | — |
+| Watch rerun | ~3s | — | **~300ms** |
 
-Micro benchmarks (Apple Silicon):
+\* hermes-test does not yet support coverage collection. The fair apples-to-apples comparison is **29x** (both without coverage). The 147x number reflects real-world workflow where Jest has `collectCoverage: true` enabled by default.
+
+Micro benchmarks (Apple Silicon, no coverage):
 
 | Scenario | hermes-test | Jest + @swc/jest | Speedup |
 |----------|-------------|------------------|---------|
@@ -277,10 +278,12 @@ Most projects need zero `externals` — auto-detection handles `react-native-*`,
 | Native externals | Manual `transformIgnorePatterns` | Auto-detected |
 | Config needed | `externals`, `transformIgnorePatterns`, `moduleNameMapper` | Zero for most projects |
 | Watch rerun | ~2-3s | ~300ms |
-| 1472 tests | 116s | **0.79s** |
+| 1472 tests (no coverage) | 23s | **0.79s** |
+| Coverage | Built-in (v8/Istanbul) | Planned (see roadmap) |
 
 ## Roadmap
 
+- [ ] **Coverage reporting** — Istanbul-compatible via `swc-coverage-instrument` (pure Rust, no Node)
 - [ ] **Component rendering** — `render(<Component />)` with query API (`getByText`, `getByTestId`, `fireEvent`)
 - [ ] **Jest compatibility shim** — `jest.fn()` → `spy()`, `jest.mock()` → `mockModule()`, enables reuse of library `__mocks__/` files
 - [ ] **Library mock support** — auto-load mocks from expo-router, react-native-reanimated, zustand, etc.

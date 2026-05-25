@@ -9,12 +9,16 @@
   - Post-bundle AST instrumentation — needs full parser (OXC or SWC)
   - Rust regex-based — too fragile for statement/branch coverage
   - `c8` / v8 coverage — not available in Hermes
-- **Recommended**: Use OXC (already a dependency) to parse the bundle, insert Istanbul-compatible
-  counters (`__coverage__[fileId][statementId]++`), then output lcov/cobertura after test execution
+- **Recommended**: `swc-coverage-instrument` Rust crate — pure Rust, Istanbul-compatible,
+  no Node dependency. Uses SWC's parser + a coverage visitor to instrument each source file.
+  Generates `__coverage__` global matching Istanbul's FileCoverage format.
+- **Alternative**: OXC (already a dep) but no existing coverage visitor — would need to write from scratch
 - **Output formats**: lcov (for CI), cobertura (for Sonar), html (for local dev)
+- **Reporting**: `istanbul-lib-report` (Node) or implement lcov output in Rust (simple text format)
 - **Performance impact**: +0.3-0.5s bundle time (instrument once, cached with bytecode)
-- **Config**: `"coverage": true` in hermes-test.config.json, `--coverage` CLI flag
+- **Config**: `--coverage` CLI flag, `"coverage": true` in hermes-test.config.json
 - **Source maps**: esbuild `--sourcemap` to map instrumented positions back to original source
+- **Important**: until coverage is implemented, benchmark claims must compare against Jest `--no-coverage` (29x, not 147x)
 
 ## v1: Component rendering + Jest compat
 
