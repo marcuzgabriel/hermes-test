@@ -104,6 +104,7 @@ export const group = ht.group;
 export const expect = ht.expect;
 export const spy = ht.spy;
 export const spyOn = ht.spyOn;
+export const clearAllMocks = ht.clearAllMocks;
 export const beforeEach = ht.beforeEach;
 export const afterEach = ht.afterEach;
 export const beforeAll = ht.beforeAll;

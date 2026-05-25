@@ -27,6 +27,13 @@ export type Spy<F extends (...args: any[]) => any = (...args: any[]) => any> =
     _isSpy: true;
   };
 
+// Registry of all spies created — clearAllMocks() clears them all at once.
+const _allSpies: Spy[] = [];
+
+export function clearAllMocks(): void {
+  for (const s of _allSpies) s.mockClear();
+}
+
 export function spy<F extends (...args: any[]) => any = () => void>(
   impl?: F
 ): Spy<F> {
@@ -136,6 +143,7 @@ export function spy<F extends (...args: any[]) => any = () => void>(
     if ((fn as any)._restore) (fn as any)._restore();
   };
 
+  _allSpies.push(fn);
   return fn;
 }
 

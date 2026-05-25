@@ -2,7 +2,7 @@
 // to ensure they run before any bundled dependency (React checks process.env.NODE_ENV at load time)
 
 import { expect } from './expect';
-import { spy, spyOn } from './spy';
+import { spy, spyOn, clearAllMocks } from './spy';
 import { renderHook, act, waitFor } from './hooks';
 import { useMock, mockModule, resetMocks, resetMockModulePatches } from './mock';
 import { mockFetch, mockFetchUse, mockFetchReset, mockFetchClear, http, HttpResponse } from './fetch';
@@ -277,6 +277,7 @@ function resetRegistry(): void {
   expect,
   spy,
   spyOn,
+  clearAllMocks,
   group,
   beforeEach,
   afterEach,
@@ -307,4 +308,4 @@ function resetRegistry(): void {
   advanceTimersToNextTimer,
 };
 
-export { test, expect, spy, spyOn, group, beforeEach, afterEach, beforeAll, afterAll, renderHook, act, waitFor, useMock, mockModule, mockFetch, mockFetchUse, mockFetchReset, mockFetchClear, http, HttpResponse, flushAsync, useFakeTimers, useRealTimers, advanceTimersByTime, runAllTimers, getTimerCount, advanceTimersToNextTimer };
+export { test, expect, spy, spyOn, clearAllMocks, group, beforeEach, afterEach, beforeAll, afterAll, renderHook, act, waitFor, useMock, mockModule, mockFetch, mockFetchUse, mockFetchReset, mockFetchClear, http, HttpResponse, flushAsync, useFakeTimers, useRealTimers, advanceTimersByTime, runAllTimers, getTimerCount, advanceTimersToNextTimer };
