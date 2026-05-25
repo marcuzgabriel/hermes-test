@@ -323,48 +323,21 @@ fn run_tests_single(
     transforms: &[(PathBuf, PathBuf)],
     coverage: bool,
 ) {
-    // Per-file coverage: create instrumented overlay BEFORE bundling
-    let overlay_root = if coverage {
-        match coverage::create_coverage_overlay(root) {
-            Ok((overlay, count)) => {
-                eprintln!(" \x1b[2mCoverage:\x1b[0m instrumented {count} source files");
-                Some(overlay)
-            }
-            Err(e) => {
-                eprintln!(" \x1b[33mCoverage overlay failed: {e}, falling back to post-bundle\x1b[0m");
-                None
-            }
-        }
-    } else {
-        None
-    };
-
-    // Remap test file paths to overlay when coverage is active
-    let effective_test_files: Vec<PathBuf> = if let Some(ref overlay) = overlay_root {
-        test_files.iter().map(|f| coverage::remap_to_overlay(f, root, overlay)).collect()
-    } else {
-        test_files.to_vec()
-    };
-
     // Check single-bundle cache FIRST — skip shadow wrapper/shim setup if cached.
-    // (Coverage mode always rebuilds — no cache when using overlay)
     let cache_key = bundler::compute_single_bundle_cache_key(test_files, root, mock_modules, cfg);
     let cache_dir = root.join(".hermes-test-cache");
     let cache_path = cache_dir.join(format!("single-{cache_key}.js"));
     let bytecode_path = cache_dir.join(format!("single-{cache_key}.hbc"));
 
     // Try bytecode cache first (fastest), then JS cache, then fresh bundle.
-    let bundle = if !coverage && bytecode_path.exists() {
+    let bundle = if bytecode_path.exists() {
         // Bytecode cache hit — skip everything, load directly
         None
-    } else if !coverage && cache_path.exists() {
-        if let Ok(cached) = std::fs::read_to_string(&cache_path) {
-            Some(cached)
-        } else {
-            None
-        }
+    } else if let Ok(cached) = std::fs::read_to_string(&cache_path) {
+        // JS cache hit — patched bundle, skip shadow setup + esbuild
+        Some(cached)
     } else {
-        // Cache miss (or coverage mode) — full pipeline
+        // Cache miss — full pipeline: shadow wrappers → esbuild → patch → cache
         let (wrapper_cfg, wrapper_shim_dir) = bundler::create_wrapper_shims(root, cfg);
         let (shadow_cfg, shadow_dirs) = bundler::create_shadow_wrappers(root, mock_modules, &wrapper_cfg);
         let non_aliased_mocks: Vec<String> = mock_modules.iter().filter(|m| {
@@ -372,38 +345,14 @@ fn run_tests_single(
         }).cloned().collect();
         let (shim_cfg, shim_dir, remaining_externals) =
             bundler::create_package_shims(root, &non_aliased_mocks, &shadow_cfg);
-
-        // For coverage: remap alias targets to overlay paths
-        let effective_cfg = if let Some(ref overlay) = overlay_root {
-            let mut cov_cfg = shim_cfg.clone();
-            cov_cfg.aliases = cov_cfg.aliases.iter().map(|(alias, target)| {
-                let remapped = coverage::remap_to_overlay(
-                    &std::path::PathBuf::from(target), root, overlay,
-                ).to_string_lossy().to_string();
-                // Only remap if the overlay file exists, otherwise keep original
-                if std::path::Path::new(&remapped).exists() {
-                    (alias.clone(), remapped)
-                } else {
-                    (alias.clone(), target.clone())
-                }
-            }).collect();
-            cov_cfg
-        } else {
-            shim_cfg.clone()
-        };
-
-        // For display: use overlay root so strip_prefix produces clean relative paths
-        let entry_project_root = overlay_root.as_deref().unwrap_or(root);
-        let entry_content = bundler::generate_entry(
-            &effective_test_files, None, mock_modules, &effective_cfg, transforms, Some(entry_project_root),
-        );
+        let entry_content = bundler::generate_entry(test_files, None, mock_modules, &shim_cfg, transforms, Some(root));
         let entry_path = root.join(".hermes-test-entry.js");
         std::fs::write(&entry_path, &entry_content).unwrap_or_else(|e| {
             eprintln!("Failed to write entry file: {e}");
             std::process::exit(1);
         });
 
-        let b = match bundler::bundle_auto_with_config(&entry_path, root, &remaining_externals, &effective_cfg) {
+        let b = match bundler::bundle_auto_with_config(&entry_path, root, &remaining_externals, &shim_cfg) {
             Ok(b) => b,
             Err(e) => {
                 let _ = std::fs::remove_file(&entry_path);
@@ -423,27 +372,25 @@ fn run_tests_single(
         if let Some(ref d) = wrapper_shim_dir { let _ = std::fs::remove_dir_all(d); }
         for (_, temp) in transforms { let _ = std::fs::remove_file(temp); }
 
-        // Cache the PATCHED bundle (not for coverage — overlay isn't cached)
-        if !coverage {
-            let _ = std::fs::create_dir_all(&cache_dir);
-            if let Ok(entries) = std::fs::read_dir(&cache_dir) {
-                for entry in entries.flatten() {
-                    let n = entry.file_name(); let n = n.to_string_lossy();
-                    if n.starts_with("single-") && !n.contains(&cache_key) { let _ = std::fs::remove_file(entry.path()); }
-                }
+        // Cache the PATCHED bundle (patches are already applied by bundle_auto_with_config)
+        let _ = std::fs::create_dir_all(&cache_dir);
+        if let Ok(entries) = std::fs::read_dir(&cache_dir) {
+            for entry in entries.flatten() {
+                let n = entry.file_name(); let n = n.to_string_lossy();
+                if n.starts_with("single-") && !n.contains(&cache_key) { let _ = std::fs::remove_file(entry.path()); }
             }
-            let _ = std::fs::write(&cache_path, &b);
         }
+        let _ = std::fs::write(&cache_path, &b);
         Some(b)
     };
 
-    // Fallback: post-bundle instrumentation (if overlay failed or wasn't created)
-    let bundle = if coverage && overlay_root.is_none() {
+    // Coverage: instrument the bundle post-esbuild
+    let bundle = if coverage {
         let js = bundle.or_else(|| std::fs::read_to_string(&cache_path).ok())
             .unwrap_or_else(|| { eprintln!("No bundle for coverage"); std::process::exit(1); });
         match coverage::instrument_bundle(&js, "bundle.js") {
             Some(instrumented) => {
-                eprintln!(" \x1b[2mCoverage:\x1b[0m fallback: instrumented bundle ({} → {} bytes)", js.len(), instrumented.len());
+                eprintln!(" \x1b[2mCoverage:\x1b[0m instrumented ({} → {} bytes)", js.len(), instrumented.len());
                 Some(instrumented)
             }
             None => {
