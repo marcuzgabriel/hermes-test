@@ -22,6 +22,23 @@ if (typeof globalThis.process.nextTick === 'undefined') {
   };
 }
 
+// Object.fromEntries — ES2019, may not exist in older Hermes builds
+if (typeof Object.fromEntries === 'undefined') {
+  Object.fromEntries = function(iterable) {
+    var obj = {};
+    if (iterable && typeof iterable[Symbol.iterator] === 'function') {
+      var iter = iterable[Symbol.iterator]();
+      var next;
+      while (!(next = iter.next()).done) {
+        obj[next.value[0]] = next.value[1];
+      }
+    } else if (iterable && typeof iterable.forEach === 'function') {
+      iterable.forEach(function(pair) { obj[pair[0]] = pair[1]; });
+    }
+    return obj;
+  };
+}
+
 // crypto.getRandomValues — needed by uuid and other crypto-dependent libs
 if (typeof globalThis.crypto === 'undefined') {
   globalThis.crypto = {};
@@ -163,6 +180,101 @@ if (typeof globalThis.MessageChannel === 'undefined') {
     globalThis.Headers = Headers;
   }
 
+  // URLSearchParams — always install BEFORE URL: native Hermes version may not parse correctly
+  {
+    function URLSearchParams(init) {
+      this._params = [];
+      if (typeof init === 'string') {
+        init = init.replace(/^\?/, '');
+        var pairs = init.split('&');
+        for (var i = 0; i < pairs.length; i++) {
+          if (!pairs[i]) continue;
+          var kv = pairs[i].split('=');
+          this._params.push([decodeURIComponent(kv[0]), decodeURIComponent(kv.slice(1).join('='))]);
+        }
+      } else if (init && typeof init === 'object') {
+        if (Array.isArray(init)) {
+          // Array of [key, value] pairs
+          for (var i = 0; i < init.length; i++) {
+            this._params.push([String(init[i][0]), String(init[i][1])]);
+          }
+        } else if (typeof init[Symbol.iterator] === 'function') {
+          // Iterable (e.g. another URLSearchParams instance)
+          var iter = init[Symbol.iterator]();
+          var next;
+          while (!(next = iter.next()).done) {
+            this._params.push([String(next.value[0]), String(next.value[1])]);
+          }
+        } else if (typeof init.forEach === 'function') {
+          // URLSearchParams-like with forEach(value, key)
+          init.forEach(function(v, k) { this._params.push([String(k), String(v)]); }.bind(this));
+        } else {
+          // Plain object: { key: value }
+          var keys = Object.keys(init);
+          for (var i = 0; i < keys.length; i++) {
+            this._params.push([keys[i], String(init[keys[i]])]);
+          }
+        }
+      }
+    }
+    URLSearchParams.prototype.get = function(k) {
+      for (var i = 0; i < this._params.length; i++) {
+        if (this._params[i][0] === k) return this._params[i][1];
+      }
+      return null;
+    };
+    URLSearchParams.prototype.has = function(k) {
+      for (var i = 0; i < this._params.length; i++) {
+        if (this._params[i][0] === k) return true;
+      }
+      return false;
+    };
+    URLSearchParams.prototype.set = function(k, v) {
+      for (var i = 0; i < this._params.length; i++) {
+        if (this._params[i][0] === k) { this._params[i][1] = String(v); return; }
+      }
+      this._params.push([k, String(v)]);
+    };
+    URLSearchParams.prototype.append = function(k, v) { this._params.push([k, String(v)]); };
+    URLSearchParams.prototype['delete'] = function(k) {
+      this._params = this._params.filter(function(p) { return p[0] !== k; });
+    };
+    URLSearchParams.prototype.entries = function() {
+      var params = this._params;
+      var i = 0;
+      return { next: function() {
+        if (i < params.length) return { value: [params[i][0], params[i++][1]], done: false };
+        return { value: undefined, done: true };
+      }};
+    };
+    URLSearchParams.prototype.keys = function() {
+      var params = this._params;
+      var i = 0;
+      return { next: function() {
+        if (i < params.length) return { value: params[i++][0], done: false };
+        return { value: undefined, done: true };
+      }};
+    };
+    URLSearchParams.prototype.values = function() {
+      var params = this._params;
+      var i = 0;
+      return { next: function() {
+        if (i < params.length) return { value: params[i++][1], done: false };
+        return { value: undefined, done: true };
+      }};
+    };
+    URLSearchParams.prototype.forEach = function(fn, thisArg) {
+      for (var i = 0; i < this._params.length; i++) {
+        fn.call(thisArg, this._params[i][1], this._params[i][0], this);
+      }
+    };
+    URLSearchParams.prototype.toString = function() {
+      return this._params.map(function(p) { return encodeURIComponent(p[0]) + '=' + encodeURIComponent(p[1]); }).join('&');
+    };
+    URLSearchParams.prototype[Symbol.iterator] = URLSearchParams.prototype.entries;
+    globalThis.URLSearchParams = URLSearchParams;
+  }
+
   // URL — always install: Hermes has a built-in URL that doesn't parse searchParams correctly
   {
     function URL(url, base) {
@@ -185,49 +297,10 @@ if (typeof globalThis.MessageChannel === 'undefined') {
         this.pathname = url; this.search = ''; this.hash = '';
         this.host = ''; this.origin = '';
       }
-      this.searchParams = new URLSearchParams(this.search);
+      this.searchParams = new globalThis.URLSearchParams(this.search);
     }
     URL.prototype.toString = function() { return this.href; };
     globalThis.URL = URL;
-  }
-
-  // URLSearchParams — always install: native Hermes version may not parse correctly
-  {
-    function URLSearchParams(init) {
-      this._params = [];
-      if (typeof init === 'string') {
-        init = init.replace(/^\?/, '');
-        var pairs = init.split('&');
-        for (var i = 0; i < pairs.length; i++) {
-          if (!pairs[i]) continue;
-          var kv = pairs[i].split('=');
-          this._params.push([decodeURIComponent(kv[0]), decodeURIComponent(kv.slice(1).join('='))]);
-        }
-      }
-    }
-    URLSearchParams.prototype.get = function(k) {
-      for (var i = 0; i < this._params.length; i++) {
-        if (this._params[i][0] === k) return this._params[i][1];
-      }
-      return null;
-    };
-    URLSearchParams.prototype.has = function(k) {
-      for (var i = 0; i < this._params.length; i++) {
-        if (this._params[i][0] === k) return true;
-      }
-      return false;
-    };
-    URLSearchParams.prototype.set = function(k, v) {
-      for (var i = 0; i < this._params.length; i++) {
-        if (this._params[i][0] === k) { this._params[i][1] = v; return; }
-      }
-      this._params.push([k, v]);
-    };
-    URLSearchParams.prototype.append = function(k, v) { this._params.push([k, v]); };
-    URLSearchParams.prototype.toString = function() {
-      return this._params.map(function(p) { return encodeURIComponent(p[0]) + '=' + encodeURIComponent(p[1]); }).join('&');
-    };
-    globalThis.URLSearchParams = URLSearchParams;
   }
 
   // Request (minimal — RTK Query checks typeof Request)
