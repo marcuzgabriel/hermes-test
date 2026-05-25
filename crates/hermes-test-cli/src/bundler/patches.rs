@@ -302,6 +302,7 @@ pub fn hoist_mocks_in_body(body: &str) -> String {
 /// Find the insertion point for hoisted mocks in a function body.
 /// Mocks must go AFTER the hermes-test require (so mockModule is defined)
 /// but BEFORE any init_*() calls (so mocks are registered before modules load).
+#[allow(dead_code)]
 pub fn find_mock_insert_point(body: &str) -> usize {
     // Strategy: find the end of the hermes-test require line, insert after it.
     let hermes_patterns = [
@@ -737,7 +738,7 @@ fn fix_all_class_extends(code: &str) -> String {
 /// 2. esbuild creates non-configurable ESM namespace getters, making useMock impossible.
 ///    Fix: add configurable:true to __copyProps and __export.
 pub fn patch_esbuild_for_hermes(code: &str) -> String {
-    let original_len = code.len();
+    let _original_len = code.len();
     let code_kb = code.len() / 1024;
 
     // Patch 1: Fix Hermes for-let-of closure bug in __copyProps

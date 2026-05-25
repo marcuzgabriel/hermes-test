@@ -104,30 +104,6 @@ pub fn needs_react(test_files: &[PathBuf]) -> bool {
 }
 
 /// Compute a relative path from `from_dir` to `to_file`.
-fn make_relative(from_dir: &Path, to_file: &Path) -> String {
-    let from_parts: Vec<_> = from_dir.components().collect();
-    let to_parts: Vec<_> = to_file.components().collect();
-    // Find common prefix length
-    let common = from_parts.iter().zip(to_parts.iter())
-        .take_while(|(a, b)| a == b)
-        .count();
-    // Go up from from_dir
-    let ups = from_parts.len() - common;
-    let mut result = String::new();
-    for _ in 0..ups {
-        result.push_str("../");
-    }
-    // Go down to to_file
-    for (i, part) in to_parts[common..].iter().enumerate() {
-        if i > 0 { result.push('/'); }
-        result.push_str(&part.as_os_str().to_string_lossy());
-    }
-    if result.is_empty() || !result.starts_with('.') {
-        format!("./{result}")
-    } else {
-        result
-    }
-}
 
 /// Generate a synthetic entry file that imports the harness and all test files.
 /// `transforms` maps original test file paths to pre-transformed temp paths.

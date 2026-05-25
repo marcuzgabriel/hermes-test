@@ -5,7 +5,7 @@ use std::process::{Command, Stdio};
 use super::config::{BundleConfig, read_config};
 use super::patches::{patch_esbuild_for_hermes, inject_mock_require_shim, hoist_mock_modules};
 use super::shadow::{create_shadow_wrappers, create_package_shims, create_wrapper_shims};
-use super::entry::{find_mock_modules, needs_react, generate_group_entry_pub, compute_bundle_cache_key, collect_source_mtimes};
+use super::entry::{generate_group_entry_pub, compute_bundle_cache_key};
 
 // SWC class transform was evaluated but rejected:
 // - Requires 3 scoped thread-locals (GLOBALS, HANDLER, HELPERS)
@@ -708,7 +708,7 @@ fn generate_group_entry_internal(test_files: &[PathBuf], mock_modules: &[String]
 
 /// Setup code eval'd before vendor: shims, mock placeholders, harness mocks.
 fn generate_setup_code(
-    test_files: &[PathBuf],
+    _test_files: &[PathBuf],
     mock_modules: &[String],
     cfg: &BundleConfig,
 ) -> String {

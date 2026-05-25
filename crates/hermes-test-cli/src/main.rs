@@ -330,7 +330,7 @@ fn run_tests_single(
     root: &PathBuf,
     mock_modules: &[String],
     cfg: &bundler::BundleConfig,
-    bundler: Option<bundler::Bundler>,
+    _bundler: Option<bundler::Bundler>,
     start: Instant,
     transforms: &[(PathBuf, PathBuf)],
 ) {
@@ -491,7 +491,7 @@ fn run_tests_per_file(
     // Phase 2: Sequential Hermes eval — run each bundle in its own runtime.
     let mut total_passed = 0usize;
     let mut total_failed = 0usize;
-    let mut total_skipped = 0usize;
+    let mut _total_skipped = 0usize;
     let mut total_count = 0usize;
     let mut any_failed = false;
 
@@ -543,7 +543,7 @@ fn run_tests_per_file(
                     let t = v["total"].as_u64().unwrap_or(0) as usize;
                     total_passed += p;
                     total_failed += f;
-                    total_skipped += s;
+                    _total_skipped += s;
                     total_count += t;
 
                     if f > 0 {
@@ -660,7 +660,7 @@ globalThis.__HT_results = JSON.stringify({
     }
 }
 
-fn watch_tests(files: &[PathBuf], root: &PathBuf, bundler: Option<bundler::Bundler>) {
+fn watch_tests(files: &[PathBuf], root: &PathBuf, _bundler: Option<bundler::Bundler>) {
     let root = std::fs::canonicalize(root).unwrap_or_else(|e| {
         eprintln!("Invalid root directory: {e}");
         std::process::exit(1);
@@ -994,81 +994,6 @@ globalThis.__HT_results = JSON.stringify({
     }
 }
 
-/// Run a test cycle and return the updated dependency graph.
-fn run_cycle_with_depgraph(
-    test_files: &[PathBuf],
-    root: &PathBuf,
-    bundler: Option<bundler::Bundler>,
-) -> bundler::DepGraph {
-    let start = Instant::now();
-
-    // Scan for mockModule() calls
-    let mock_modules = bundler::find_mock_modules(test_files);
-
-    let cfg = bundler::read_config(root);
-    let entry_content = bundler::generate_entry(test_files, None, &mock_modules, &cfg, &[], Some(root));
-    let entry_path = root.join(".hermes-test-entry.js");
-    if std::fs::write(&entry_path, &entry_content).is_err() {
-        eprintln!("Failed to write entry file");
-        return std::collections::HashMap::new();
-    }
-
-    // Try to get dep graph via esbuild metafile
-    let (bundle, depgraph) = if bundler == Some(bundler::Bundler::Metro) {
-        let b = match bundler::bundle_with(bundler::Bundler::Metro, &entry_path, root, &mock_modules) {
-            Ok(b) => b,
-            Err(e) => {
-                let _ = std::fs::remove_file(&entry_path);
-                eprintln!("\x1b[31mBundle failed: {e}\x1b[0m");
-                return std::collections::HashMap::new();
-            }
-        };
-        (b, std::collections::HashMap::new())
-    } else {
-        match bundler::bundle_with_depgraph(&entry_path, root, test_files, &mock_modules) {
-            Ok((b, d)) => (b, d),
-            Err(e) => {
-                let _ = std::fs::remove_file(&entry_path);
-                eprintln!("\x1b[31mBundle failed: {e}\x1b[0m");
-                return std::collections::HashMap::new();
-            }
-        }
-    };
-
-    let _ = std::fs::remove_file(&entry_path);
-
-    let rt = match hermes::Runtime::new() {
-        Ok(rt) => rt,
-        Err(e) => {
-            eprintln!("Hermes error: {e}");
-            return depgraph;
-        }
-    };
-
-    if rt.eval(HARNESS_JS, "harness.js").is_err() {
-        eprintln!("Failed to load harness");
-        return depgraph;
-    }
-
-    if let Err(e) = rt.eval(&bundle, "bundle.js") {
-        eprintln!("\x1b[31mTest execution failed: {e}\x1b[0m");
-        return depgraph;
-    }
-
-    let elapsed = start.elapsed();
-
-    match rt.eval("globalThis.__HT_results", "results") {
-        Ok(json) => {
-            print_summary(&json);
-            eprintln!("\x1b[2mRan in {}ms\x1b[0m", elapsed.as_millis());
-        }
-        Err(e) => {
-            eprintln!("Failed to read results: {e}");
-        }
-    }
-
-    depgraph
-}
 
 /// Print console.log/warn/error output that was collected during test execution.
 fn print_console_logs(rt: &hermes::Runtime) {

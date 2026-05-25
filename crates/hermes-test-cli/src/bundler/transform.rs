@@ -8,6 +8,7 @@ use super::config::BundleConfig;
 /// the real module available for non-test code via the active alias.
 ///
 /// Returns a map of original_path → temp_path for transformed files.
+#[allow(dead_code)]
 pub fn pre_transform_test_files(
     test_files: &[PathBuf],
     mock_modules: &[String],
@@ -57,6 +58,7 @@ pub fn pre_transform_test_files(
 ///
 /// The Proxy reads from __HT_file_mocks[__currentTestFile]['@scope/pkg/hooks']
 /// at access time, so different test files get different mocks.
+#[allow(dead_code)]
 pub fn oxc_transform_test_file(
     source: &str,
     file_path: &Path,
