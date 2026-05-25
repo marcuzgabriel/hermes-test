@@ -6,6 +6,12 @@
 //   advanceTimersByTime(1000); // fn fires synchronously
 //   useRealTimers();
 
+// Save the real Date.now function REFERENCE before useFakeTimers can overwrite it.
+// useFakeTimers does `globalThis.Date.now = () => fakeNow` which mutates the original
+// Date object's .now property. So we must save the function itself, not the constructor.
+const _savedDateNow: () => number = Date.now;
+export function realDateNow(): number { return _savedDateNow(); }
+
 interface PendingTimer {
   id: number;
   fn: () => void;

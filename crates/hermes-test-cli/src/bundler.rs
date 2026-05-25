@@ -2333,6 +2333,7 @@ pub fn generate_entry(
     mock_modules: &[String],
     cfg: &BundleConfig,
     transforms: &[(PathBuf, PathBuf)],
+    project_root: Option<&Path>,
 ) -> String {
     let mut entry = String::new();
 
@@ -2460,13 +2461,16 @@ pub fn generate_entry(
         } else {
             format!("./{path}")
         };
-        // Extract just the filename for display (e.g. "useLogin.test.ts")
-        let display_name = file.file_name()
-            .map(|n| n.to_string_lossy().to_string())
-            .unwrap_or_else(|| path.to_string());
+        // Use relative path from project root as unique file ID to avoid basename collisions
+        let file_id = project_root
+            .and_then(|root| file.strip_prefix(root).ok())
+            .map(|p| p.to_string_lossy().to_string())
+            .unwrap_or_else(|| file.file_name()
+                .map(|n| n.to_string_lossy().to_string())
+                .unwrap_or_else(|| path.to_string()));
         entry.push_str(&format!(
             "if (globalThis.__HT && globalThis.__HT.resetMockModulePatches) globalThis.__HT.resetMockModulePatches();\nglobalThis.__currentTestFile = '{}';\ntry {{ require('{}'); }} catch(e) {{ if (globalThis.__HT) globalThis.__HT.registerCrash('{}', String(e && e.message || e)); }}\n",
-            display_name, require_path, display_name
+            file_id, require_path, file_id
         ));
     }
 
@@ -2788,7 +2792,7 @@ pub fn bundle_split(
 
     // Step 1: Bundle each group with --packages=external (fast, local code only)
     for (i, chunk) in test_files.chunks(group_size).enumerate() {
-        let entry = generate_group_entry(chunk, mock_modules);
+        let entry = generate_group_entry(chunk, mock_modules, Some(project_root));
         let entry_path = project_root.join(format!(".hermes-test-group-{i}.js"));
         std::fs::write(&entry_path, &entry)
             .map_err(|e| format!("Failed to write group entry: {e}"))?;
@@ -2859,7 +2863,7 @@ fn pkg_matches_external(pkg: &str, external: &str) -> bool {
 }
 
 /// Minimal entry for a group: just test file requires (no setup, no runner).
-fn generate_group_entry(test_files: &[PathBuf], mock_modules: &[String]) -> String {
+fn generate_group_entry(test_files: &[PathBuf], mock_modules: &[String], project_root: Option<&Path>) -> String {
     let mut entry = String::new();
 
     // Re-register mock placeholders as live Proxies (same as generate_entry)
@@ -2890,12 +2894,16 @@ fn generate_group_entry(test_files: &[PathBuf], mock_modules: &[String]) -> Stri
         } else {
             format!("./{path}")
         };
-        let display_name = file.file_name()
-            .map(|n| n.to_string_lossy().to_string())
-            .unwrap_or_else(|| path.to_string());
+        // Use relative path from project root as unique file ID to avoid basename collisions
+        let file_id = project_root
+            .and_then(|root| file.strip_prefix(root).ok())
+            .map(|p| p.to_string_lossy().to_string())
+            .unwrap_or_else(|| file.file_name()
+                .map(|n| n.to_string_lossy().to_string())
+                .unwrap_or_else(|| path.to_string()));
         entry.push_str(&format!(
             "if (globalThis.__HT && globalThis.__HT.resetMockModulePatches) globalThis.__HT.resetMockModulePatches();\nglobalThis.__currentTestFile = '{}';\ntry {{ require('{}'); }} catch(e) {{ if (globalThis.__HT) globalThis.__HT.registerCrash('{}', String(e && e.message || e)); }}\n",
-            display_name, require_path, display_name
+            file_id, require_path, file_id
         ));
     }
 
@@ -2976,8 +2984,8 @@ fn generate_vendor_entry(packages: &[String], setup_code: &str) -> String {
 
 /// Extract package names from __require("...") calls in bundled code.
 // Public wrappers for persistent watch mode
-pub fn generate_group_entry_pub(test_files: &[PathBuf], mock_modules: &[String]) -> String {
-    generate_group_entry(test_files, mock_modules)
+pub fn generate_group_entry_pub(test_files: &[PathBuf], mock_modules: &[String], project_root: Option<&Path>) -> String {
+    generate_group_entry(test_files, mock_modules, project_root)
 }
 
 pub fn find_esbuild_pub(project_root: &Path) -> Result<PathBuf, ()> {

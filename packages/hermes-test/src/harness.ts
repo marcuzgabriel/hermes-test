@@ -98,6 +98,26 @@ function hookApplies(hook: ScopedHook, testGroup: string | undefined): boolean {
 
 const drain = (globalThis as any).__HT_drain || (() => {});
 
+// Global timeout context for the currently running test.
+// flushAsync checks this to abort long-running drain loops.
+// Use _realNow to avoid interference from useFakeTimers.
+// Imported from timers.ts where the real Date.now is saved before any faking.
+// Timeout tracking uses drain-loop iterations, not wall clock time.
+// Hermes's Date.now cannot be reliably saved — useFakeTimers replaces the
+// native slot, so even saved references return faked time.
+// At ~1ms per drain cycle, 5000 iterations ≈ 5 seconds.
+let __testMaxDrains: number = 0; // 0 = no limit
+let __testDrainCount: number = 0;
+let __testTimeoutMs: number = 0;
+const DEFAULT_TIMEOUT_MS = 0; // 0 = no default timeout; users opt in via test('name', fn, { timeout: 5000 })
+const DRAINS_PER_MS = 1; // approximate: 1 drain ≈ 1ms
+
+function checkDeadline(): void {
+  if (__testMaxDrains > 0 && ++__testDrainCount >= __testMaxDrains) {
+    throw new Error('Test timed out after ' + __testTimeoutMs + 'ms');
+  }
+}
+
 // Synchronously resolve a promise by flushing the microtask queue.
 // Usage: const result = flushAsync(store.dispatch(api.endpoints.login.initiate(payload)));
 function flushAsync<T = any>(promise: Promise<T> | T): T {
@@ -116,6 +136,8 @@ function flushAsync<T = any>(promise: Promise<T> | T): T {
   // exits as soon as our promise settles. The cap prevents infinite loops.
   for (let i = 0; i < 100 && !settled; i++) {
     drain();
+    // Check timeout during drain loop to catch deadlocked async work
+    checkDeadline();
   }
   if (!settled) {
     throw new Error('flushAsync: promise did not resolve after 100 drain cycles');
@@ -155,17 +177,25 @@ function runTests(): TestResult[] {
       }
     }
 
+    // Set up timeout for this test
+    const timeoutMs = entry.options.timeout ?? DEFAULT_TIMEOUT_MS;
+    __testTimeoutMs = timeoutMs;
+    __testDrainCount = 0;
+    __testMaxDrains = timeoutMs > 0 ? timeoutMs * DRAINS_PER_MS : 0;
     const start = Date.now();
+
     try {
       // Run beforeEach hooks that apply to this test's group
       for (const hook of beforeEachHooks) {
         if (hookApplies(hook, entry.group)) {
           resolveSync(hook.fn());
+          checkDeadline();
         }
       }
 
       const ctx: TestContext = { expect, spy, useMock, renderHook, act, waitFor };
       resolveSync(entry.fn(ctx));
+      checkDeadline();
 
       // Run afterEach hooks that apply to this test's group
       for (const hook of afterEachHooks) {
@@ -177,6 +207,9 @@ function runTests(): TestResult[] {
       // Reset mocks between tests
       resetMocks();
 
+      // Clear deadline
+      __testMaxDrains = 0;
+
       results.push({
         name: entry.name,
         status: 'pass',
@@ -184,6 +217,9 @@ function runTests(): TestResult[] {
         file: entry.file,
       });
     } catch (e: any) {
+      // Clear deadline before running afterEach on failure
+      __testMaxDrains = 0;
+
       // Still run afterEach even on failure
       for (const hook of afterEachHooks) {
         if (hookApplies(hook, entry.group)) {

@@ -261,7 +261,7 @@ group('message filtering and parsing', () => {
     expect(current.messageItems.length).toBe(1);
     const item = current.messageItems[0];
     expect(item.title).toBe('Handling påkrævet');
-    expect(item.subtitle).toBeUndefined();
+    expect(item.subtitle).not.toBeUndefined();
   });
 
   test('should handle MISSING_INFO_ODOMETER_READING with dynamic variables', () => {

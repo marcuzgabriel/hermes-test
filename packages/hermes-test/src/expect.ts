@@ -317,6 +317,7 @@ export function expect(actual: any): any {
     toBeDefined: async () => { const r = await actual; if (r === undefined) throw new Error(`Expected value to be defined`); },
     toBeTruthy: async () => { const r = await actual; if (!r) throw new Error(`Expected truthy, got ${formatValue(r)}`); },
     toBeFalsy: async () => { const r = await actual; if (r) throw new Error(`Expected falsy, got ${formatValue(r)}`); },
+    toBeNull: async () => { const r = await actual; if (r !== null) throw new Error(`Expected null, got ${formatValue(r)}`); },
   };
 
   base.rejects = {

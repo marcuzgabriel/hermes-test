@@ -2,24 +2,62 @@
 
 ## STOP. Read this ENTIRELY before writing or fixing ANY test.
 
-There are 1300+ passing tests. Study them. Follow the same patterns. Do NOT invent new approaches.
+There are 1400+ passing tests. Study them. Follow the same patterns. Do NOT invent new approaches.
 
 ## hermes-test API (import from 'hermes-test')
 
 ### Core
 - `test(name, ({ expect }) => { ... })` — expect comes from callback, NOT global
-- `group(name, fn)` — replaces Jest `describe`
+- `test.skip(name, fn)` — register a test but skip it (shows as "skip" in output)
+- `test.only(name, fn)` — run only this test (and other `.only` tests), skip everything else
+- `test(name, fn, { timeout: 5000 })` — set per-test timeout in ms (via options object)
+- `group(name, fn)` — replaces Jest `describe` (no `.skip` or `.only` on group)
 - `beforeEach`, `afterEach`, `beforeAll`, `afterAll`
 
 ### Spies
-- `spy()` — returns a spy with: `.mockReturnValue()`, `.mockReturnValueOnce()`, `.mockImplementation()`, `.mockResolvedValue()`, `.mockRejectedValue()`, `.mockClear()`, `.mockReset()`
-- `.calls` — array of call args (NOT `.mock.calls` like Jest)
+- `spy()` — returns a spy with: `.mockReturnValue()`, `.mockReturnValueOnce()`, `.mockImplementation()`, `.mockImplementationOnce()`, `.mockResolvedValue()`, `.mockResolvedValueOnce()`, `.mockRejectedValue()`, `.mockRejectedValueOnce()`, `.mockClear()`, `.mockReset()`, `.mockRestore()`
+- `.calls` — array of call args (preferred over Jest's `.mock.calls`)
+- `.callCount` — number of times called
+- `.returnValues` — array of return values
 - `spyOn(obj, method)` — spy on existing object method
+
+### Expect Matchers
+- `toBe`, `toEqual`, `toBeDefined`, `toBeUndefined`, `toBeNull`
+- `toBeTruthy`, `toBeFalsy`
+- `toBeGreaterThan`, `toBeLessThan`
+- `toHaveLength`, `toBeInstanceOf`
+- `toContain` (arrays and strings), `toContainEqual` (deep equality in arrays)
+- `toBeCloseTo(expected, precision?)` — floating-point comparison
+- `toMatch(regex | string)` — string matching
+- `toThrow(message?)` — function throw assertion
+- `.not.` prefix — negate any matcher (e.g. `expect(x).not.toBe(y)`)
+
+#### Spy-specific matchers
+- `wasCalled()`, `wasCalledOnce()`, `wasCalledTimes(n)`, `wasCalledWith(...args)`, `wasLastCalledWith(...args)`, `wasNeverCalled()`
+- Jest aliases: `toHaveBeenCalled()`, `toHaveBeenCalledTimes(n)`, `toHaveBeenCalledWith(...)`, `toHaveBeenLastCalledWith(...)`
+
+#### Asymmetric matchers
+- `expect.anything()` — matches any value except `null` and `undefined`
+- `expect.any(Type)` — matches values of given type (String, Number, Boolean, Function, or `instanceof`)
+- `expect.objectContaining(subset)` — matches objects containing at least the given keys/values
+- `expect.arrayContaining(arr)` — matches arrays containing at least the given elements
+- `expect.stringContaining(substr)` — matches strings containing the substring
+- `expect.stringMatching(pattern)` — matches strings against a regex or string pattern
+
+#### Async matchers (promise chains)
+- `await expect(promise).resolves.toBe(value)`
+- `await expect(promise).resolves.toEqual(value)`
+- `await expect(promise).resolves.toBeDefined()`
+- `await expect(promise).resolves.toBeUndefined()`
+- `await expect(promise).resolves.toBeNull()`
+- `await expect(promise).resolves.toBeTruthy()`
+- `await expect(promise).resolves.toBeFalsy()`
+- `await expect(promise).rejects.toThrow(msg?)`
 
 ### Hooks & Async
 - `renderHook(fn, { wrapper?, initialProps? })` — returns `{ result, rerender }`
 - `act(fn)` — wrap state updates
-- `waitFor(pred)` — poll until predicate passes
+- `waitFor(pred, { timeout?, interval? })` — poll until predicate passes
 - `flushAsync(promise)` — synchronously resolve a promise
 
 ### Mock System
@@ -38,11 +76,39 @@ There are 1300+ passing tests. Study them. Follow the same patterns. Do NOT inve
 - `advanceTimersByTime(ms)`, `runAllTimers()`, `getTimerCount()`
 
 ## NOT supported in hermes-test expect
-- `expect.anything()`, `expect.any(Type)`, `expect.objectContaining()` — use field-by-field assertions
-- `expect().resolves.toBeUndefined()` — use `const r = await p; expect(r).toBeUndefined()`
-- `toContainEqual` — use `array.find()` + expect
-- `toBeCloseTo` — use `toBe`
 - `toStrictEqual` — use `toEqual`
+
+## Migrating from Jest
+
+### `.calls` vs `.mock.calls`
+hermes-test spies use `.calls` directly — there is no `.mock` wrapper object. Jest's `.mock.calls` is NOT available.
+```ts
+// Jest
+expect(mySpy.mock.calls[0][0]).toBe('arg');
+// hermes-test
+expect(mySpy.calls[0][0]).toBe('arg');
+```
+
+### `expect` — import vs callback
+Both work. The callback style is idiomatic hermes-test:
+```ts
+// Preferred: expect from callback (scoped to test)
+test('name', ({ expect }) => { expect(1).toBe(1); });
+// Also works: top-level import
+import { expect } from 'hermes-test';
+test('name', () => { expect(1).toBe(1); });
+```
+
+### `mockModule` vs `jest.mock`
+In Jest, `jest.mock` is hoisted to the top of the file. In hermes-test, `mockModule` ordering does NOT matter — it registers a factory that shadow wrappers check at call time. You can place `mockModule` calls anywhere before the test runs.
+```ts
+// Both of these work identically in hermes-test:
+mockModule('some-package', () => ({ foo: spy() }));
+import { foo } from 'some-package';
+// or
+import { foo } from 'some-package';
+mockModule('some-package', () => ({ foo: spy() }));
+```
 
 ## The Two Test Patterns
 
@@ -173,7 +239,6 @@ See `examples/expo-app/src/prod-tests/`. Copy hook locally, use `useSelector` fr
 - Create new test infrastructure (testStore etc.) — it already exists
 - Mock react-redux or react-i18next via mockModule
 - Use `.mock.calls` (Jest API) — use `.calls`
-- Use `expect.anything()`, `expect.any()`, `expect.objectContaining()`
 - Use `new Response()` — Hermes doesn't have it
 - Assert exact call counts on `useAppDispatch` — React re-renders cause extra calls
-- Guess at patterns — look at the 1300+ passing tests first
+- Guess at patterns — look at the 1400+ passing tests first

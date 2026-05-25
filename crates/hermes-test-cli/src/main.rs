@@ -349,7 +349,7 @@ fn run_tests_single(
     // This replaces externalization — real module stays in bundle, mocks intercepted via Proxy.
     let (shim_cfg, shim_dir, remaining_externals) =
         bundler::create_package_shims(root, &non_aliased_mocks, &shadow_cfg);
-    let entry_content = bundler::generate_entry(test_files, None, mock_modules, &shim_cfg, transforms);
+    let entry_content = bundler::generate_entry(test_files, None, mock_modules, &shim_cfg, transforms, Some(root));
     let entry_path = root.join(".hermes-test-entry.js");
     std::fs::write(&entry_path, &entry_content).unwrap_or_else(|e| {
         eprintln!("Failed to write entry file: {e}");
@@ -437,7 +437,7 @@ fn run_tests_per_file(
     for (i, file) in test_files.iter().enumerate() {
         let file_slice = &[file.clone()];
         let file_mocks = bundler::find_mock_modules(file_slice);
-        let entry_content = bundler::generate_entry(file_slice, None, &file_mocks, cfg, &[]);
+        let entry_content = bundler::generate_entry(file_slice, None, &file_mocks, cfg, &[], Some(root));
         let entry_path = root.join(format!(".hermes-test-entry-{i}.js"));
         if let Err(e) = std::fs::write(&entry_path, &entry_content) {
             eprintln!("Failed to write entry: {e}");
@@ -881,7 +881,7 @@ globalThis.__HT_results = JSON.stringify({
         }
 
         // Build dep graph for change tracking (separate esbuild pass with metafile)
-        let entry_content = bundler::generate_entry(test_files, None, &mock_modules, cfg, &[]);
+        let entry_content = bundler::generate_entry(test_files, None, &mock_modules, cfg, &[], Some(root));
         let entry_path = root.join(".hermes-test-entry.js");
         let depgraph = if std::fs::write(&entry_path, &entry_content).is_ok() {
             let dg = match bundler::bundle_with_depgraph(&entry_path, root, test_files, &mock_modules) {
@@ -904,7 +904,7 @@ globalThis.__HT_results = JSON.stringify({
         }
 
         // Bundle affected test files as a group (--packages=external if vendor loaded)
-        let entry = bundler::generate_group_entry_pub(test_files, &mock_modules);
+        let entry = bundler::generate_group_entry_pub(test_files, &mock_modules, Some(root));
         let entry_path = root.join(".hermes-test-rerun.js");
         if std::fs::write(&entry_path, &entry).is_err() {
             eprintln!("Failed to write rerun entry");
@@ -984,7 +984,7 @@ fn run_cycle_with_depgraph(
     let mock_modules = bundler::find_mock_modules(test_files);
 
     let cfg = bundler::read_config(root);
-    let entry_content = bundler::generate_entry(test_files, None, &mock_modules, &cfg, &[]);
+    let entry_content = bundler::generate_entry(test_files, None, &mock_modules, &cfg, &[], Some(root));
     let entry_path = root.join(".hermes-test-entry.js");
     if std::fs::write(&entry_path, &entry_content).is_err() {
         eprintln!("Failed to write entry file");
