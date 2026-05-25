@@ -1131,6 +1131,16 @@ fn print_results(json: &str) -> bool {
                     if let Some(error) = test["error"].as_str() {
                         if !error.is_empty() {
                             eprintln!("         \x1b[2m{error}\x1b[0m");
+                            // Hint for common native module errors
+                            if error.contains("Property 'window' doesn't exist")
+                                || error.contains("Property 'document' doesn't exist")
+                                || error.contains("requireNativeComponent")
+                                || error.contains("TurboModuleRegistry")
+                                || error.contains("NativeModules")
+                                || error.contains("UIManager")
+                            {
+                                eprintln!("         \x1b[33mHint: this looks like a native module error. Add the package to \"externals\" in hermes-test.config.json\x1b[0m");
+                            }
                         }
                     }
                 }

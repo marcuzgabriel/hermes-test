@@ -485,6 +485,33 @@ fn bundle_esbuild_with_config(
 
     if !output.status.success() {
         let stderr = String::from_utf8_lossy(&output.stderr);
+        // Check for unresolved native modules and suggest adding to externals
+        let mut suggestions: Vec<String> = Vec::new();
+        for line in stderr.lines() {
+            if line.contains("Could not resolve") {
+                // Extract module name from: Could not resolve "react-native-foo"
+                if let Some(start) = line.find('"') {
+                    if let Some(end) = line[start + 1..].find('"') {
+                        let module = &line[start + 1..start + 1 + end];
+                        if !module.starts_with('.') && !module.starts_with('/') {
+                            suggestions.push(module.to_string());
+                        }
+                    }
+                }
+            }
+        }
+        if !suggestions.is_empty() {
+            let hint = suggestions.iter()
+                .map(|s| format!("  \"{s}\""))
+                .collect::<Vec<_>>()
+                .join(",\n");
+            return Err(format!(
+                "esbuild failed: {stderr}\n\n\
+                 Hint: these modules could not be resolved. If they are native modules,\n\
+                 add them to \"externals\" in hermes-test.config.json:\n\n\
+                 \"externals\": [\n{hint}\n]"
+            ));
+        }
         return Err(format!("esbuild failed: {stderr}"));
     }
 
