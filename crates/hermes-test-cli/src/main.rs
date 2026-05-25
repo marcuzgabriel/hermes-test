@@ -244,11 +244,21 @@ fn run_tests(files: &[PathBuf], root: &PathBuf, no_bundle: bool, bundler: Option
     };
 
     if test_files.is_empty() {
-        eprintln!("No test files found");
+        let cfg = bundler::read_config(&root);
+        let suffix = cfg.test_match.as_deref().unwrap_or(".test.ts");
+        eprintln!("\x1b[31mNo test files found\x1b[0m");
+        eprintln!();
+        eprintln!("  Looking for files matching \x1b[1m*{suffix}\x1b[0m in {}", root.display());
+        eprintln!();
+        eprintln!("  Make sure your test files end with \x1b[1m{suffix}\x1b[0m");
+        eprintln!("  Or set a custom pattern in hermes-test.config.json:");
+        eprintln!("    {{ \"testMatch\": \".hermes.test.ts\" }}");
         std::process::exit(1);
     }
 
-    // Silent — only print results
+    eprintln!();
+    eprintln!(" \x1b[1mhermes-test\x1b[0m \x1b[2mv{}\x1b[0m", env!("CARGO_PKG_VERSION"));
+    eprintln!();
 
     let rt = hermes::Runtime::new().unwrap_or_else(|e| {
         eprintln!("Error: {e}");
@@ -1040,6 +1050,8 @@ fn print_summary_with_time(json: &str, elapsed_ms: u128, file_count: usize) -> b
     let passed = results["passed"].as_u64().unwrap_or(0);
     let failed = results["failed"].as_u64().unwrap_or(0);
     let total = results["total"].as_u64().unwrap_or(0);
+    let secs = elapsed_ms as f64 / 1000.0;
+    let tests_per_sec = if secs > 0.0 { total as f64 / secs } else { 0.0 };
     eprintln!();
     if failed == 0 {
         eprintln!(" \x1b[32mTests:\x1b[0m  {passed} passed, {total} total");
@@ -1047,7 +1059,7 @@ fn print_summary_with_time(json: &str, elapsed_ms: u128, file_count: usize) -> b
         eprintln!(" \x1b[31mTests:\x1b[0m  \x1b[32m{passed} passed\x1b[0m, \x1b[31m{failed} failed\x1b[0m, {total} total");
     }
     eprintln!(" \x1b[2mFiles:\x1b[0m  {file_count}");
-    eprintln!(" \x1b[2mTime:\x1b[0m   {:.2}s", elapsed_ms as f64 / 1000.0);
+    eprintln!(" \x1b[2mTime:\x1b[0m   {secs:.2}s ({tests_per_sec:.0} tests/sec)");
     failed == 0
 }
 
