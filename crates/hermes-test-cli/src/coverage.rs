@@ -1,23 +1,22 @@
 //! Istanbul-compatible coverage instrumentation.
 //!
-//! Uses OXC parser for AST analysis (statement locations, bare-body detection,
-//! function bodies, branches) then string insertion to add counters.
-//! Preserves the original source byte-for-byte — only adds counter text.
-//! Skips vendor code (node_modules) — detects __commonJS/__esm wrapper paths.
+//! Per-file instrumentation BEFORE bundling — each source file gets its own
+//! small coverage preamble + counters. Uses the bundler's transform mechanism
+//! (same as shadow wrappers) to redirect esbuild to instrumented copies.
 
 use std::collections::BTreeMap;
+use std::path::{Path, PathBuf};
 
 use oxc::allocator::Allocator;
 use oxc::ast::ast::*;
 use oxc::parser::Parser;
 use oxc::span::{GetSpan, SourceType};
 
-/// Instrument a JS bundle with Istanbul-compatible coverage counters.
-/// Returns (instrumented_source, coverage_map_json).
-pub fn instrument_bundle(source: &str, filename: &str) -> Option<(String, String)> {
-    let var_name = "__cov";
+/// Instrument a single source file for coverage.
+/// Returns the instrumented source with a per-file preamble + counters.
+pub fn instrument_file(source: &str, filename: &str, var_name: &str) -> Option<String> {
     let allocator = Allocator::default();
-    let source_type = SourceType::mjs();
+    let source_type = SourceType::from_path(filename).unwrap_or_else(|_| SourceType::mjs());
     let ret = Parser::new(&allocator, source, source_type).parse();
     if ret.panicked {
         return None;
@@ -28,36 +27,30 @@ pub fn instrument_bundle(source: &str, filename: &str) -> Option<(String, String
     let mut fn_body_starts: Vec<Option<u32>> = Vec::new();
     let mut branches: Vec<(u32, u32, String, u32)> = Vec::new();
 
-    // Start with vendor=true: esbuild wraps everything in an IIFE. The top-level
-    // IIFE body is all boilerplate + vendor module wrappers. Only user code inside
-    // __commonJS/__esm blocks with non-vendor paths gets vendor=false.
     for stmt in &ret.program.body {
-        walk_stmt(stmt, &mut stmts, &mut fns, &mut fn_body_starts, &mut branches, false, true);
+        walk_stmt(stmt, &mut stmts, &mut fns, &mut fn_body_starts, &mut branches, false);
     }
 
     if stmts.is_empty() && fns.is_empty() {
-        return Some((source.to_string(), "{}".to_string()));
+        return Some(source.to_string());
     }
 
     let file_id = filename.replace('\\', "/");
     let lt = LineTable::new(source);
     let stmt_spans: Vec<(u32, u32)> = stmts.iter().map(|(s, e, _)| (*s, *e)).collect();
-
     let stmt_map = build_loc_map(&stmt_spans, &lt);
     let fn_map = build_fn_map(&fns, &lt);
     let branch_map = build_branch_map(&branches, &lt);
-    let coverage_map = format!(
-        "{{\"{file_id}\":{{\"statementMap\":{stmt_map},\"fnMap\":{fn_map},\"branchMap\":{branch_map}}}}}"
-    );
-
     let s_init = build_zero_map(stmts.len());
     let f_init = build_zero_map(fns.len());
     let b_init = build_branch_zero_map(&branches);
 
+    // Per-file preamble — small (only this file's counters + maps)
     let preamble = format!(
-        "var {var_name}=(function(){{var g=globalThis;if(!g.__coverage__)g.__coverage__={{}};if(!g.__coverage__[\"{file_id}\"])g.__coverage__[\"{file_id}\"]={{path:\"{file_id}\",s:{s_init},f:{f_init},b:{b_init}}};return g.__coverage__[\"{file_id}\"]}})();\n"
+        "var {var_name}=(function(){{var g=globalThis;if(!g.__coverage__)g.__coverage__={{}};if(!g.__coverage__[\"{file_id}\"])g.__coverage__[\"{file_id}\"]={{path:\"{file_id}\",statementMap:{stmt_map},fnMap:{fn_map},branchMap:{branch_map},s:{s_init},f:{f_init},b:{b_init}}};return g.__coverage__[\"{file_id}\"]}})();\n"
     );
 
+    // Build insertions
     let mut insertions: Vec<(u32, String)> = Vec::new();
     for (i, (start, end, bare)) in stmts.iter().enumerate() {
         if *bare {
@@ -98,43 +91,52 @@ pub fn instrument_bundle(source: &str, filename: &str) -> Option<(String, String
     }
     result.push_str(&source[last..]);
 
-    Some((result, coverage_map))
+    Some(result)
 }
 
-// --- AST walker ---
+/// Create instrumented copies of test files for coverage.
+/// Uses the same transforms mechanism as shadow wrappers.
+/// Returns Vec<(original_path, temp_path)> for the bundler's transform map.
+pub fn create_coverage_transforms(
+    test_files: &[PathBuf],
+    project_root: &Path,
+) -> (Vec<(PathBuf, PathBuf)>, PathBuf) {
+    let cov_dir = project_root.join(".hermes-test-cov");
+    let _ = std::fs::remove_dir_all(&cov_dir);
+    let _ = std::fs::create_dir_all(&cov_dir);
+
+    let mut transforms: Vec<(PathBuf, PathBuf)> = Vec::new();
+
+    for (i, file) in test_files.iter().enumerate() {
+        let content = match std::fs::read_to_string(file) {
+            Ok(c) => c,
+            Err(_) => continue,
+        };
+
+        let rel = file.strip_prefix(project_root)
+            .map(|r| r.to_string_lossy().to_string())
+            .unwrap_or_else(|_| file.file_name()
+                .map(|n| n.to_string_lossy().to_string())
+                .unwrap_or_else(|| format!("file{i}")));
+
+        let var_name = format!("__cov{i}");
+        let instrumented = instrument_file(&content, &rel, &var_name)
+            .unwrap_or(content);
+
+        // Write instrumented copy next to original with .cov suffix
+        let temp_path = cov_dir.join(format!("cov{i}.tsx"));
+        if std::fs::write(&temp_path, &instrumented).is_ok() {
+            transforms.push((file.clone(), temp_path));
+        }
+    }
+
+    (transforms, cov_dir)
+}
+
+// --- AST walker (read-only) ---
 
 fn is_bare(stmt: &Statement) -> bool {
     !matches!(stmt, Statement::BlockStatement(_))
-}
-
-/// Check if a CallExpression is `__commonJS({...})` or `__esm({...})`.
-/// Returns Some(true) if it's a USER code module, Some(false) if vendor, None if not a module call.
-fn detect_module_call(call: &CallExpression) -> Option<bool> {
-    let is_module_wrapper = match &call.callee {
-        Expression::Identifier(id) => id.name.as_str() == "__commonJS" || id.name.as_str() == "__esm",
-        _ => false,
-    };
-    if !is_module_wrapper {
-        return None;
-    }
-    if let Some(arg) = call.arguments.first() {
-        if let Some(Expression::ObjectExpression(obj)) = arg.as_expression() {
-            for prop in &obj.properties {
-                if let ObjectPropertyKind::ObjectProperty(p) = prop {
-                    let key_str = match &p.key {
-                        PropertyKey::StringLiteral(s) => Some(s.value.as_str()),
-                        PropertyKey::StaticIdentifier(id) => Some(id.name.as_str()),
-                        _ => None,
-                    };
-                    if let Some(k) = key_str {
-                        let is_vendor = k.contains("node_modules") || k.contains("hermes-test/src/");
-                        return Some(!is_vendor);
-                    }
-                }
-            }
-        }
-    }
-    None
 }
 
 fn walk_stmt(
@@ -144,89 +146,84 @@ fn walk_stmt(
     fbo: &mut Vec<Option<u32>>,
     br: &mut Vec<(u32, u32, String, u32)>,
     bare: bool,
-    vendor: bool,
 ) {
     let span = stmt.span();
     if span.start == span.end { return; }
 
     match stmt {
         Statement::BlockStatement(b) => {
-            for s in &b.body { walk_stmt(s, stmts, fns, fbo, br, false, vendor); }
+            for s in &b.body { walk_stmt(s, stmts, fns, fbo, br, false); }
         }
         Statement::FunctionDeclaration(f) => {
             let name = f.id.as_ref().map(|id| id.name.to_string()).unwrap_or("anonymous".into());
-            if !vendor { fns.push((span.start, span.end, name)); }
+            fns.push((span.start, span.end, name));
             if let Some(body) = &f.body {
-                if !vendor { fbo.push(Some(body.span.start + 1)); }
-                for s in &body.statements { walk_stmt(s, stmts, fns, fbo, br, false, vendor); }
-            } else if !vendor {
+                fbo.push(Some(body.span.start + 1));
+                for s in &body.statements { walk_stmt(s, stmts, fns, fbo, br, false); }
+            } else {
                 fbo.push(None);
             }
         }
         Statement::ClassDeclaration(cls) => {
-            if !vendor { stmts.push((span.start, span.end, bare)); }
-            walk_class(&cls.body, stmts, fns, fbo, br, vendor);
+            stmts.push((span.start, span.end, bare));
+            walk_class(&cls.body, stmts, fns, fbo, br);
         }
         Statement::IfStatement(i) => {
-            if !vendor {
-                stmts.push((span.start, span.end, bare));
-                br.push((span.start, span.end, "if".into(), 2));
-            }
-            walk_stmt(&i.consequent, stmts, fns, fbo, br, is_bare(&i.consequent), vendor);
-            if let Some(alt) = &i.alternate { walk_stmt(alt, stmts, fns, fbo, br, is_bare(alt), vendor); }
+            stmts.push((span.start, span.end, bare));
+            br.push((span.start, span.end, "if".into(), 2));
+            walk_stmt(&i.consequent, stmts, fns, fbo, br, is_bare(&i.consequent));
+            if let Some(alt) = &i.alternate { walk_stmt(alt, stmts, fns, fbo, br, is_bare(alt)); }
         }
         Statement::ForStatement(f) => {
-            if !vendor { stmts.push((span.start, span.end, bare)); }
-            walk_stmt(&f.body, stmts, fns, fbo, br, is_bare(&f.body), vendor);
+            stmts.push((span.start, span.end, bare));
+            walk_stmt(&f.body, stmts, fns, fbo, br, is_bare(&f.body));
         }
         Statement::ForInStatement(f) => {
-            if !vendor { stmts.push((span.start, span.end, bare)); }
-            walk_stmt(&f.body, stmts, fns, fbo, br, is_bare(&f.body), vendor);
+            stmts.push((span.start, span.end, bare));
+            walk_stmt(&f.body, stmts, fns, fbo, br, is_bare(&f.body));
         }
         Statement::ForOfStatement(f) => {
-            if !vendor { stmts.push((span.start, span.end, bare)); }
-            walk_stmt(&f.body, stmts, fns, fbo, br, is_bare(&f.body), vendor);
+            stmts.push((span.start, span.end, bare));
+            walk_stmt(&f.body, stmts, fns, fbo, br, is_bare(&f.body));
         }
         Statement::WhileStatement(w) => {
-            if !vendor { stmts.push((span.start, span.end, bare)); }
-            walk_stmt(&w.body, stmts, fns, fbo, br, is_bare(&w.body), vendor);
+            stmts.push((span.start, span.end, bare));
+            walk_stmt(&w.body, stmts, fns, fbo, br, is_bare(&w.body));
         }
         Statement::DoWhileStatement(d) => {
-            if !vendor { stmts.push((span.start, span.end, bare)); }
-            walk_stmt(&d.body, stmts, fns, fbo, br, is_bare(&d.body), vendor);
+            stmts.push((span.start, span.end, bare));
+            walk_stmt(&d.body, stmts, fns, fbo, br, is_bare(&d.body));
         }
         Statement::SwitchStatement(sw) => {
-            if !vendor {
-                stmts.push((span.start, span.end, bare));
-                br.push((span.start, span.end, "switch".into(), sw.cases.len() as u32));
-            }
+            stmts.push((span.start, span.end, bare));
+            br.push((span.start, span.end, "switch".into(), sw.cases.len() as u32));
             for case in &sw.cases {
-                for s in &case.consequent { walk_stmt(s, stmts, fns, fbo, br, false, vendor); }
+                for s in &case.consequent { walk_stmt(s, stmts, fns, fbo, br, false); }
             }
         }
         Statement::TryStatement(t) => {
-            if !vendor { stmts.push((span.start, span.end, bare)); }
-            for s in &t.block.body { walk_stmt(s, stmts, fns, fbo, br, false, vendor); }
-            if let Some(h) = &t.handler { for s in &h.body.body { walk_stmt(s, stmts, fns, fbo, br, false, vendor); } }
-            if let Some(f) = &t.finalizer { for s in &f.body { walk_stmt(s, stmts, fns, fbo, br, false, vendor); } }
+            stmts.push((span.start, span.end, bare));
+            for s in &t.block.body { walk_stmt(s, stmts, fns, fbo, br, false); }
+            if let Some(h) = &t.handler { for s in &h.body.body { walk_stmt(s, stmts, fns, fbo, br, false); } }
+            if let Some(f) = &t.finalizer { for s in &f.body { walk_stmt(s, stmts, fns, fbo, br, false); } }
         }
         Statement::ExpressionStatement(e) => {
-            if !vendor { stmts.push((span.start, span.end, bare)); }
-            walk_expr(&e.expression, stmts, fns, fbo, br, vendor);
+            stmts.push((span.start, span.end, bare));
+            walk_expr(&e.expression, stmts, fns, fbo, br);
         }
         Statement::VariableDeclaration(v) => {
-            if !vendor { stmts.push((span.start, span.end, bare)); }
+            stmts.push((span.start, span.end, bare));
             for d in &v.declarations {
-                if let Some(init) = &d.init { walk_expr(init, stmts, fns, fbo, br, vendor); }
+                if let Some(init) = &d.init { walk_expr(init, stmts, fns, fbo, br); }
             }
         }
         Statement::ReturnStatement(r) => {
-            if !vendor { stmts.push((span.start, span.end, bare)); }
-            if let Some(arg) = &r.argument { walk_expr(arg, stmts, fns, fbo, br, vendor); }
+            stmts.push((span.start, span.end, bare));
+            if let Some(arg) = &r.argument { walk_expr(arg, stmts, fns, fbo, br); }
         }
         Statement::ThrowStatement(_) | Statement::BreakStatement(_)
         | Statement::ContinueStatement(_) | Statement::LabeledStatement(_) => {
-            if !vendor { stmts.push((span.start, span.end, bare)); }
+            stmts.push((span.start, span.end, bare));
         }
         _ => {}
     }
@@ -238,111 +235,93 @@ fn walk_expr(
     fns: &mut Vec<(u32, u32, String)>,
     fbo: &mut Vec<Option<u32>>,
     br: &mut Vec<(u32, u32, String, u32)>,
-    vendor: bool,
 ) {
     match expr {
         Expression::CallExpression(call) => {
-            // Detect __commonJS({...}) / __esm({...}) — flip vendor flag based on path
-            let child_vendor = match detect_module_call(call) {
-                Some(is_user) => !is_user,  // user code → vendor=false, vendor code → vendor=true
-                None => vendor,             // not a module call → inherit
-            };
-            walk_expr(&call.callee, stmts, fns, fbo, br, vendor);
+            walk_expr(&call.callee, stmts, fns, fbo, br);
             for arg in &call.arguments {
-                if let Argument::SpreadElement(s) = arg {
-                    walk_expr(&s.argument, stmts, fns, fbo, br, child_vendor);
-                } else if let Some(e) = arg.as_expression() {
-                    walk_expr(e, stmts, fns, fbo, br, child_vendor);
-                }
+                if let Argument::SpreadElement(s) = arg { walk_expr(&s.argument, stmts, fns, fbo, br); }
+                else if let Some(e) = arg.as_expression() { walk_expr(e, stmts, fns, fbo, br); }
             }
         }
         Expression::ArrowFunctionExpression(arrow) => {
             let span = arrow.span;
-            if !vendor { fns.push((span.start, span.end, "(arrow)".into())); }
+            fns.push((span.start, span.end, "(arrow)".into()));
             if arrow.expression {
-                if !vendor { fbo.push(None); }
+                fbo.push(None);
                 for s in &arrow.body.statements {
                     if let Statement::ExpressionStatement(e) = s {
-                        walk_expr(&e.expression, stmts, fns, fbo, br, vendor);
+                        walk_expr(&e.expression, stmts, fns, fbo, br);
                     }
                 }
             } else {
-                if !vendor { fbo.push(Some(arrow.body.span.start + 1)); }
-                for s in &arrow.body.statements { walk_stmt(s, stmts, fns, fbo, br, false, vendor); }
+                fbo.push(Some(arrow.body.span.start + 1));
+                for s in &arrow.body.statements { walk_stmt(s, stmts, fns, fbo, br, false); }
             }
         }
         Expression::FunctionExpression(func) => {
             let span = func.span;
             let name = func.id.as_ref().map(|id| id.name.to_string()).unwrap_or("(anonymous)".into());
-            if !vendor { fns.push((span.start, span.end, name)); }
+            fns.push((span.start, span.end, name));
             if let Some(body) = &func.body {
-                if !vendor { fbo.push(Some(body.span.start + 1)); }
-                for s in &body.statements { walk_stmt(s, stmts, fns, fbo, br, false, vendor); }
-            } else if !vendor {
+                fbo.push(Some(body.span.start + 1));
+                for s in &body.statements { walk_stmt(s, stmts, fns, fbo, br, false); }
+            } else {
                 fbo.push(None);
             }
         }
         Expression::ConditionalExpression(c) => {
-            if !vendor { br.push((c.span.start, c.span.end, "cond-expr".into(), 2)); }
-            walk_expr(&c.test, stmts, fns, fbo, br, vendor);
-            walk_expr(&c.consequent, stmts, fns, fbo, br, vendor);
-            walk_expr(&c.alternate, stmts, fns, fbo, br, vendor);
+            br.push((c.span.start, c.span.end, "cond-expr".into(), 2));
+            walk_expr(&c.test, stmts, fns, fbo, br);
+            walk_expr(&c.consequent, stmts, fns, fbo, br);
+            walk_expr(&c.alternate, stmts, fns, fbo, br);
         }
         Expression::LogicalExpression(l) => {
-            walk_expr(&l.left, stmts, fns, fbo, br, vendor);
-            walk_expr(&l.right, stmts, fns, fbo, br, vendor);
+            walk_expr(&l.left, stmts, fns, fbo, br);
+            walk_expr(&l.right, stmts, fns, fbo, br);
         }
-        Expression::AssignmentExpression(a) => { walk_expr(&a.right, stmts, fns, fbo, br, vendor); }
-        Expression::SequenceExpression(s) => { for e in &s.expressions { walk_expr(e, stmts, fns, fbo, br, vendor); } }
+        Expression::AssignmentExpression(a) => { walk_expr(&a.right, stmts, fns, fbo, br); }
+        Expression::SequenceExpression(s) => { for e in &s.expressions { walk_expr(e, stmts, fns, fbo, br); } }
         Expression::ObjectExpression(o) => {
             for prop in &o.properties {
-                if let ObjectPropertyKind::ObjectProperty(p) = prop { walk_expr(&p.value, stmts, fns, fbo, br, vendor); }
+                if let ObjectPropertyKind::ObjectProperty(p) = prop { walk_expr(&p.value, stmts, fns, fbo, br); }
             }
         }
         Expression::ArrayExpression(a) => {
             for el in &a.elements {
-                if let ArrayExpressionElement::SpreadElement(s) = el { walk_expr(&s.argument, stmts, fns, fbo, br, vendor); }
-                else if let Some(e) = el.as_expression() { walk_expr(e, stmts, fns, fbo, br, vendor); }
+                if let ArrayExpressionElement::SpreadElement(s) = el { walk_expr(&s.argument, stmts, fns, fbo, br); }
+                else if let Some(e) = el.as_expression() { walk_expr(e, stmts, fns, fbo, br); }
             }
         }
-        Expression::ClassExpression(cls) => { walk_class(&cls.body, stmts, fns, fbo, br, vendor); }
-        Expression::ParenthesizedExpression(p) => { walk_expr(&p.expression, stmts, fns, fbo, br, vendor); }
+        Expression::ClassExpression(cls) => { walk_class(&cls.body, stmts, fns, fbo, br); }
+        Expression::ParenthesizedExpression(p) => { walk_expr(&p.expression, stmts, fns, fbo, br); }
         Expression::NewExpression(n) => {
-            walk_expr(&n.callee, stmts, fns, fbo, br, vendor);
+            walk_expr(&n.callee, stmts, fns, fbo, br);
             for arg in &n.arguments {
-                if let Argument::SpreadElement(s) = arg { walk_expr(&s.argument, stmts, fns, fbo, br, vendor); }
-                else if let Some(e) = arg.as_expression() { walk_expr(e, stmts, fns, fbo, br, vendor); }
+                if let Argument::SpreadElement(s) = arg { walk_expr(&s.argument, stmts, fns, fbo, br); }
+                else if let Some(e) = arg.as_expression() { walk_expr(e, stmts, fns, fbo, br); }
             }
         }
-        Expression::TemplateLiteral(t) => { for e in &t.expressions { walk_expr(e, stmts, fns, fbo, br, vendor); } }
-        Expression::TaggedTemplateExpression(t) => { walk_expr(&t.tag, stmts, fns, fbo, br, vendor); }
-        Expression::UnaryExpression(u) => { walk_expr(&u.argument, stmts, fns, fbo, br, vendor); }
-        Expression::BinaryExpression(b) => { walk_expr(&b.left, stmts, fns, fbo, br, vendor); walk_expr(&b.right, stmts, fns, fbo, br, vendor); }
+        Expression::TemplateLiteral(t) => { for e in &t.expressions { walk_expr(e, stmts, fns, fbo, br); } }
+        Expression::TaggedTemplateExpression(t) => { walk_expr(&t.tag, stmts, fns, fbo, br); }
+        Expression::UnaryExpression(u) => { walk_expr(&u.argument, stmts, fns, fbo, br); }
+        Expression::BinaryExpression(b) => { walk_expr(&b.left, stmts, fns, fbo, br); walk_expr(&b.right, stmts, fns, fbo, br); }
         _ => {}
     }
 }
 
-fn walk_class(
-    body: &ClassBody,
-    stmts: &mut Vec<(u32, u32, bool)>,
-    fns: &mut Vec<(u32, u32, String)>,
-    fbo: &mut Vec<Option<u32>>,
-    br: &mut Vec<(u32, u32, String, u32)>,
-    vendor: bool,
-) {
+fn walk_class(body: &ClassBody, stmts: &mut Vec<(u32, u32, bool)>, fns: &mut Vec<(u32, u32, String)>, fbo: &mut Vec<Option<u32>>, br: &mut Vec<(u32, u32, String, u32)>) {
     for el in &body.body {
         if let ClassElement::MethodDefinition(m) = el {
             let name = if let PropertyKey::StaticIdentifier(id) = &m.key { id.name.to_string() } else { "(method)".into() };
-            if !vendor { fns.push((m.span.start, m.span.end, name)); }
+            fns.push((m.span.start, m.span.end, name));
             if let Some(body) = &m.value.body {
-                if !vendor { fbo.push(Some(body.span.start + 1)); }
-                for s in &body.statements { walk_stmt(s, stmts, fns, fbo, br, false, vendor); }
-            } else if !vendor {
-                fbo.push(None);
-            }
+                fbo.push(Some(body.span.start + 1));
+                for s in &body.statements { walk_stmt(s, stmts, fns, fbo, br, false); }
+            } else { fbo.push(None); }
         }
         if let ClassElement::PropertyDefinition(p) = el {
-            if let Some(val) = &p.value { walk_expr(val, stmts, fns, fbo, br, vendor); }
+            if let Some(val) = &p.value { walk_expr(val, stmts, fns, fbo, br); }
         }
     }
 }
@@ -350,7 +329,6 @@ fn walk_class(
 // --- Helpers ---
 
 struct LineTable { line_starts: Vec<u32> }
-
 impl LineTable {
     fn new(source: &str) -> Self {
         let mut starts = vec![0u32];
@@ -359,8 +337,7 @@ impl LineTable {
     }
     fn lookup(&self, offset: u32) -> (u32, u32) {
         let line = match self.line_starts.binary_search(&offset) { Ok(i) => i, Err(i) => i.saturating_sub(1) };
-        let col = offset.saturating_sub(self.line_starts[line]);
-        (line as u32 + 1, col)
+        (line as u32 + 1, offset.saturating_sub(self.line_starts[line]))
     }
 }
 
@@ -413,29 +390,12 @@ fn build_branch_zero_map(branches: &[(u32, u32, String, u32)]) -> String {
 
 // --- Coverage collection ---
 
-pub fn collect_coverage(rt: &crate::hermes::Runtime, map_path: Option<&std::path::Path>) -> Option<String> {
+pub fn collect_coverage(rt: &crate::hermes::Runtime) -> Option<String> {
     let js = r#"(function(){var c=globalThis.__coverage__;if(!c)return'null';return JSON.stringify(c)})()"#;
     let raw = rt.eval(js, "coverage-collect").ok()?;
     let json_str: String = serde_json::from_str(&raw).unwrap_or(raw.clone());
     if json_str == "null" || json_str.is_empty() { return None; }
-    let mut coverage: serde_json::Value = serde_json::from_str(&json_str).ok()?;
-
-    if let Some(path) = map_path {
-        if let Ok(map_str) = std::fs::read_to_string(path) {
-            if let Ok(map) = serde_json::from_str::<serde_json::Value>(&map_str) {
-                if let (Some(cov_obj), Some(map_obj)) = (coverage.as_object_mut(), map.as_object()) {
-                    for (filename, map_data) in map_obj {
-                        if let Some(fc) = cov_obj.get_mut(filename) {
-                            if let (Some(fc_obj), Some(md)) = (fc.as_object_mut(), map_data.as_object()) {
-                                for (key, val) in md { fc_obj.insert(key.clone(), val.clone()); }
-                            }
-                        }
-                    }
-                }
-            }
-        }
-    }
-
+    let coverage: serde_json::Value = serde_json::from_str(&json_str).ok()?;
     Some(coverage_to_lcov(&coverage))
 }
 
