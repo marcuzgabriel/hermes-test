@@ -4,6 +4,11 @@
   "description": "147x faster than Jest. Test runner for React Native and Expo that runs in Hermes.",
   "main": "src/index.ts",
   "types": "index.d.ts",
+  "typesVersions": {
+    "*": {
+      "store": ["store.d.ts"]
+    }
+  },
   "exports": {
     ".": "./src/index.ts",
     "./store": "./src/store.ts"
