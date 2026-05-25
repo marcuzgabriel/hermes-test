@@ -334,55 +334,57 @@ fn run_tests_single(
     start: Instant,
     transforms: &[(PathBuf, PathBuf)],
 ) {
-    // Create wrapper shims for built-in ecosystem shims (hermes-test/shims/*)
-    // These must be created FIRST because they add esbuild aliases that affect
-    // subsequent shadow wrapper and package shim creation.
-    let (wrapper_cfg, wrapper_shim_dir) = bundler::create_wrapper_shims(root, cfg);
-    // Create shadow wrappers for aliased mock paths — replaces the alias target
-    // with a shadow directory where mocked files are Proxy wrappers.
-    let (shadow_cfg, shadow_dirs) = bundler::create_shadow_wrappers(root, mock_modules, &wrapper_cfg);
-    // Filter out aliased mock paths — shadow wrappers handle them
-    let non_aliased_mocks: Vec<String> = mock_modules.iter().filter(|m| {
-        !cfg.aliases.iter().any(|(alias, _)| *m == alias || m.starts_with(&format!("{alias}/")))
-    }).cloned().collect();
-    // Create package shims for non-aliased mocks (CJS Proxy wrappers, same as shadow wrappers)
-    // This replaces externalization — real module stays in bundle, mocks intercepted via Proxy.
-    let (shim_cfg, shim_dir, remaining_externals) =
-        bundler::create_package_shims(root, &non_aliased_mocks, &shadow_cfg);
-    let entry_content = bundler::generate_entry(test_files, None, mock_modules, &shim_cfg, transforms, Some(root));
-    let entry_path = root.join(".hermes-test-entry.js");
-    std::fs::write(&entry_path, &entry_content).unwrap_or_else(|e| {
-        eprintln!("Failed to write entry file: {e}");
-        std::process::exit(1);
-    });
-
-    // Check single-bundle cache
+    // Check single-bundle cache FIRST — skip shadow wrapper/shim setup if cached.
     let cache_key = bundler::compute_single_bundle_cache_key(test_files, root, mock_modules, cfg);
     let cache_dir = root.join(".hermes-test-cache");
     let cache_path = cache_dir.join(format!("single-{cache_key}.js"));
-    let cleanup = || {
+    let bytecode_path = cache_dir.join(format!("single-{cache_key}.hbc"));
+
+    // Try bytecode cache first (fastest), then JS cache, then fresh bundle.
+    let bundle = if bytecode_path.exists() {
+        // Bytecode cache hit — skip everything, load directly
+        None
+    } else if let Ok(cached) = std::fs::read_to_string(&cache_path) {
+        // JS cache hit — patched bundle, skip shadow setup + esbuild
+        Some(cached)
+    } else {
+        // Cache miss — full pipeline: shadow wrappers → esbuild → patch → cache
+        let (wrapper_cfg, wrapper_shim_dir) = bundler::create_wrapper_shims(root, cfg);
+        let (shadow_cfg, shadow_dirs) = bundler::create_shadow_wrappers(root, mock_modules, &wrapper_cfg);
+        let non_aliased_mocks: Vec<String> = mock_modules.iter().filter(|m| {
+            !cfg.aliases.iter().any(|(alias, _)| *m == alias || m.starts_with(&format!("{alias}/")))
+        }).cloned().collect();
+        let (shim_cfg, shim_dir, remaining_externals) =
+            bundler::create_package_shims(root, &non_aliased_mocks, &shadow_cfg);
+        let entry_content = bundler::generate_entry(test_files, None, mock_modules, &shim_cfg, transforms, Some(root));
+        let entry_path = root.join(".hermes-test-entry.js");
+        std::fs::write(&entry_path, &entry_content).unwrap_or_else(|e| {
+            eprintln!("Failed to write entry file: {e}");
+            std::process::exit(1);
+        });
+
+        let b = match bundler::bundle_auto_with_config(&entry_path, root, &remaining_externals, &shim_cfg) {
+            Ok(b) => b,
+            Err(e) => {
+                let _ = std::fs::remove_file(&entry_path);
+                for dir in &shadow_dirs { let _ = std::fs::remove_dir_all(dir); }
+                if let Some(ref d) = shim_dir { let _ = std::fs::remove_dir_all(d); }
+                if let Some(ref d) = wrapper_shim_dir { let _ = std::fs::remove_dir_all(d); }
+                for (_, temp) in transforms { let _ = std::fs::remove_file(temp); }
+                eprintln!("Bundling failed: {e}");
+                std::process::exit(1);
+            }
+        };
+
+        // Cleanup temp dirs
         let _ = std::fs::remove_file(&entry_path);
         for dir in &shadow_dirs { let _ = std::fs::remove_dir_all(dir); }
         if let Some(ref d) = shim_dir { let _ = std::fs::remove_dir_all(d); }
         if let Some(ref d) = wrapper_shim_dir { let _ = std::fs::remove_dir_all(d); }
         for (_, temp) in transforms { let _ = std::fs::remove_file(temp); }
-    };
-    let bundle = if let Ok(cached) = std::fs::read_to_string(&cache_path) {
-        cleanup();
-        cached
-    } else {
-        let b = match bundler::bundle_auto_with_config(&entry_path, root, &remaining_externals, &shim_cfg) {
-            Ok(b) => b,
-            Err(e) => {
-                cleanup();
-                eprintln!("Bundling failed: {e}");
-                std::process::exit(1);
-            }
-        };
-        cleanup();
-        // Save to cache
+
+        // Cache the PATCHED bundle (patches are already applied by bundle_auto_with_config)
         let _ = std::fs::create_dir_all(&cache_dir);
-        // Clean old single-bundle caches
         if let Ok(entries) = std::fs::read_dir(&cache_dir) {
             for entry in entries.flatten() {
                 let n = entry.file_name(); let n = n.to_string_lossy();
@@ -390,13 +392,31 @@ fn run_tests_single(
             }
         }
         let _ = std::fs::write(&cache_path, &b);
-        b
+        Some(b)
     };
 
-    let eval_result = if let Some(bytecode) = bundler::compile_to_bytecode(&bundle, &entry_path) {
-        rt.eval_bytes(&bytecode, "bundle.hbc")
+    // Eval: prefer bytecode → compile+cache bytecode → fallback to JS text
+    let eval_result = if bytecode_path.exists() {
+        // Bytecode cache hit
+        match std::fs::read(&bytecode_path) {
+            Ok(bytes) => rt.eval_bytes(&bytes, "bundle.hbc"),
+            Err(_) => {
+                let js = std::fs::read_to_string(&cache_path).unwrap_or_default();
+                rt.eval(&js, "bundle.js")
+            }
+        }
+    } else if let Some(ref js) = bundle {
+        // Try to compile to bytecode and cache it
+        match crate::hermes::compile_bytecode(js, "bundle.js") {
+            Ok(bytecode) => {
+                let _ = std::fs::write(&bytecode_path, &bytecode);
+                rt.eval_bytes(&bytecode, "bundle.hbc")
+            }
+            Err(_) => rt.eval(js, "bundle.js"),
+        }
     } else {
-        rt.eval(&bundle, "bundle.js")
+        eprintln!("No bundle available");
+        std::process::exit(1);
     };
     if let Err(e) = eval_result {
         eprintln!("Test execution failed: {e}");
