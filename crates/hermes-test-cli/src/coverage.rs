@@ -19,10 +19,11 @@ pub fn instrument_bundle(source: &str, filename: &str) -> Option<String> {
 
     let mut stmts: Vec<(u32, u32)> = Vec::new();
     let mut fns: Vec<(u32, u32, String)> = Vec::new();
+    let mut fn_body_offsets: Vec<Option<u32>> = Vec::new(); // byte after { of block body
     let mut branches: Vec<(u32, u32, String, u32)> = Vec::new();
 
     for stmt in &ret.program.body {
-        walk_stmt(stmt, source, &mut stmts, &mut fns, &mut branches);
+        walk_stmt(stmt, source, &mut stmts, &mut fns, &mut fn_body_offsets, &mut branches);
     }
 
     if stmts.is_empty() && fns.is_empty() {
@@ -30,11 +31,12 @@ pub fn instrument_bundle(source: &str, filename: &str) -> Option<String> {
     }
 
     let file_id = filename.replace('\\', "/");
-    let stmt_map = build_loc_map(&stmts, source);
+    let lt = LineTable::new(source);
+    let stmt_map = build_loc_map(&stmts, &lt);
     let s_init = build_zero_map(stmts.len());
-    let fn_map = build_fn_map(&fns, source);
+    let fn_map = build_fn_map(&fns, &lt);
     let f_init = build_zero_map(fns.len());
-    let branch_map = build_branch_map(&branches, source);
+    let branch_map = build_branch_map(&branches, &lt);
     let b_init = build_branch_zero_map(&branches);
 
     let preamble = format!(
@@ -42,89 +44,96 @@ pub fn instrument_bundle(source: &str, filename: &str) -> Option<String> {
     );
 
     // Collect insertions: (byte_offset, code)
-    // Only insert at syntactically safe positions (after {, ;, newline, or start of file)
+    // Only insert where it's syntactically safe (inside blocks, not bare control bodies)
     let mut insertions: Vec<(u32, String)> = Vec::new();
     for (i, (start, _)) in stmts.iter().enumerate() {
-        if is_safe_insert_point(source, *start) {
+        if is_safe_insert_point(source, *start) && !is_bare_control_body(source, *start) {
             insertions.push((*start, format!("__cov.s[{i}]++;")));
         }
     }
-    // Function counters: insert after opening { of function body
-    // Only for functions whose body starts with { (not concise arrows)
-    for (i, (start, end, _)) in fns.iter().enumerate() {
-        if let Some(pos) = find_function_body_start(source, *start, *end) {
-            // Only insert if the char at pos-1 is actually '{'
-            if pos > 0 && source.as_bytes().get(pos as usize - 1) == Some(&b'{') {
-                insertions.push((pos, format!("__cov.f[{i}]++;")));
-            }
+    // fn_body_offsets: byte offset right after opening { of block body (set by walk_expr/walk_stmt)
+    for (i, offset) in fn_body_offsets.iter().enumerate() {
+        if let Some(pos) = offset {
+            insertions.push((*pos, format!("__cov.f[{i}]++;")));
         }
     }
 
-    // Sort descending, dedup same offset
-    insertions.sort_by(|a, b| b.0.cmp(&a.0));
+    // Sort ASCENDING by offset for single-pass output
+    insertions.sort_by_key(|i| i.0);
     insertions.dedup_by_key(|i| i.0);
 
-    let mut result = source.to_string();
+    // Build output in one pass — no insert_str reallocation
+    let mut result = String::with_capacity(source.len() + insertions.len() * 20 + preamble.len());
+    result.push_str(&preamble);
+    let mut last = 0usize;
     for (offset, code) in &insertions {
         let pos = *offset as usize;
-        if pos <= result.len() {
-            result.insert_str(pos, code);
+        if pos >= last && pos <= source.len() {
+            result.push_str(&source[last..pos]);
+            result.push_str(code);
+            last = pos;
         }
     }
+    result.push_str(&source[last..]);
 
-    Some(format!("{preamble}{result}"))
+    Some(result)
 }
 
 // --- AST walker: recurse into everything ---
 
-fn walk_stmt(stmt: &Statement, src: &str, stmts: &mut Vec<(u32, u32)>, fns: &mut Vec<(u32, u32, String)>, br: &mut Vec<(u32, u32, String, u32)>) {
+fn walk_stmt(stmt: &Statement, src: &str, stmts: &mut Vec<(u32, u32)>, fns: &mut Vec<(u32, u32, String)>, fbo: &mut Vec<Option<u32>>, br: &mut Vec<(u32, u32, String, u32)>) {
     let span = stmt.span();
     if span.start == span.end { return; }
 
     match stmt {
-        Statement::BlockStatement(b) => { for s in &b.body { walk_stmt(s, src, stmts, fns, br); } }
+        Statement::BlockStatement(b) => { for s in &b.body { walk_stmt(s, src, stmts, fns, fbo, br); } }
         Statement::FunctionDeclaration(f) => {
             let name = f.id.as_ref().map(|id| id.name.to_string()).unwrap_or("anonymous".into());
             fns.push((span.start, span.end, name));
-            if let Some(body) = &f.body { for s in &body.statements { walk_stmt(s, src, stmts, fns, br); } }
+            if let Some(body) = &f.body {
+                fbo.push(Some(body.span.start + 1)); // after {
+                for s in &body.statements { walk_stmt(s, src, stmts, fns, fbo, br); }
+            } else {
+                fbo.push(None);
+            }
         }
         Statement::ClassDeclaration(cls) => {
             stmts.push((span.start, span.end));
-            walk_class(&cls.body, src, stmts, fns, br);
+            walk_class(&cls.body, src, stmts, fns, fbo, br);
         }
         Statement::IfStatement(i) => {
             stmts.push((span.start, span.end));
             br.push((span.start, span.end, "if".into(), 2));
-            walk_stmt(&i.consequent, src, stmts, fns, br);
-            if let Some(alt) = &i.alternate { walk_stmt(alt, src, stmts, fns, br); }
+            walk_stmt(&i.consequent, src, stmts, fns, fbo, br);
+            if let Some(alt) = &i.alternate { walk_stmt(alt, src, stmts, fns, fbo, br); }
         }
-        Statement::ForStatement(f) => { stmts.push((span.start, span.end)); walk_stmt(&f.body, src, stmts, fns, br); }
-        Statement::ForInStatement(f) => { stmts.push((span.start, span.end)); walk_stmt(&f.body, src, stmts, fns, br); }
-        Statement::ForOfStatement(f) => { stmts.push((span.start, span.end)); walk_stmt(&f.body, src, stmts, fns, br); }
-        Statement::WhileStatement(w) => { stmts.push((span.start, span.end)); walk_stmt(&w.body, src, stmts, fns, br); }
-        Statement::DoWhileStatement(d) => { stmts.push((span.start, span.end)); walk_stmt(&d.body, src, stmts, fns, br); }
+        Statement::ForStatement(f) => { stmts.push((span.start, span.end)); walk_stmt(&f.body, src, stmts, fns, fbo, br); }
+        Statement::ForInStatement(f) => { stmts.push((span.start, span.end)); walk_stmt(&f.body, src, stmts, fns, fbo, br); }
+        Statement::ForOfStatement(f) => { stmts.push((span.start, span.end)); walk_stmt(&f.body, src, stmts, fns, fbo, br); }
+        Statement::WhileStatement(w) => { stmts.push((span.start, span.end)); walk_stmt(&w.body, src, stmts, fns, fbo, br); }
+        Statement::DoWhileStatement(d) => { stmts.push((span.start, span.end)); walk_stmt(&d.body, src, stmts, fns, fbo, br); }
         Statement::SwitchStatement(sw) => {
             stmts.push((span.start, span.end));
             br.push((span.start, span.end, "switch".into(), sw.cases.len() as u32));
-            for case in &sw.cases { for s in &case.consequent { walk_stmt(s, src, stmts, fns, br); } }
+            for case in &sw.cases { for s in &case.consequent { walk_stmt(s, src, stmts, fns, fbo, br); } }
         }
         Statement::TryStatement(t) => {
             stmts.push((span.start, span.end));
-            for s in &t.block.body { walk_stmt(s, src, stmts, fns, br); }
-            if let Some(h) = &t.handler { for s in &h.body.body { walk_stmt(s, src, stmts, fns, br); } }
-            if let Some(f) = &t.finalizer { for s in &f.body { walk_stmt(s, src, stmts, fns, br); } }
+            for s in &t.block.body { walk_stmt(s, src, stmts, fns, fbo, br); }
+            if let Some(h) = &t.handler { for s in &h.body.body { walk_stmt(s, src, stmts, fns, fbo, br); } }
+            if let Some(f) = &t.finalizer { for s in &f.body { walk_stmt(s, src, stmts, fns, fbo, br); } }
         }
         Statement::ExpressionStatement(e) => {
             stmts.push((span.start, span.end));
-            walk_expr(&e.expression, src, stmts, fns, br);
+            walk_expr(&e.expression, src, stmts, fns, fbo, br);
         }
         Statement::VariableDeclaration(v) => {
             stmts.push((span.start, span.end));
-            for d in &v.declarations { if let Some(init) = &d.init { walk_expr(init, src, stmts, fns, br); } }
+            for d in &v.declarations { if let Some(init) = &d.init { walk_expr(init, src, stmts, fns, fbo, br); } }
         }
         Statement::ReturnStatement(r) => {
             stmts.push((span.start, span.end));
-            if let Some(arg) = &r.argument { walk_expr(arg, src, stmts, fns, br); }
+            if let Some(arg) = &r.argument { walk_expr(arg, src, stmts, fns, fbo, br); }
         }
         Statement::ThrowStatement(_) | Statement::BreakStatement(_) |
         Statement::ContinueStatement(_) | Statement::LabeledStatement(_) => {
@@ -134,79 +143,95 @@ fn walk_stmt(stmt: &Statement, src: &str, stmts: &mut Vec<(u32, u32)>, fns: &mut
     }
 }
 
-fn walk_expr(expr: &Expression, src: &str, stmts: &mut Vec<(u32, u32)>, fns: &mut Vec<(u32, u32, String)>, br: &mut Vec<(u32, u32, String, u32)>) {
+fn walk_expr(expr: &Expression, src: &str, stmts: &mut Vec<(u32, u32)>, fns: &mut Vec<(u32, u32, String)>, fbo: &mut Vec<Option<u32>>, br: &mut Vec<(u32, u32, String, u32)>) {
     match expr {
         Expression::CallExpression(call) => {
-            walk_expr(&call.callee, src, stmts, fns, br);
+            walk_expr(&call.callee, src, stmts, fns, fbo, br);
             for arg in &call.arguments {
-                if let Argument::SpreadElement(s) = arg { walk_expr(&s.argument, src, stmts, fns, br); }
-                else if let Some(e) = arg.as_expression() { walk_expr(e, src, stmts, fns, br); }
+                if let Argument::SpreadElement(s) = arg { walk_expr(&s.argument, src, stmts, fns, fbo, br); }
+                else if let Some(e) = arg.as_expression() { walk_expr(e, src, stmts, fns, fbo, br); }
             }
         }
         Expression::ArrowFunctionExpression(arrow) => {
             let span = arrow.span;
             fns.push((span.start, span.end, "(arrow)".into()));
-            for s in &arrow.body.statements { walk_stmt(s, src, stmts, fns, br); }
+            if arrow.expression {
+                // Concise arrow: () => expr — no block body, can't insert
+                fbo.push(None);
+            } else {
+                fbo.push(Some(arrow.body.span.start + 1)); // after {
+            }
+            for s in &arrow.body.statements { walk_stmt(s, src, stmts, fns, fbo, br); }
         }
         Expression::FunctionExpression(func) => {
             let span = func.span;
             let name = func.id.as_ref().map(|id| id.name.to_string()).unwrap_or("(anonymous)".into());
             fns.push((span.start, span.end, name));
-            if let Some(body) = &func.body { for s in &body.statements { walk_stmt(s, src, stmts, fns, br); } }
+            if let Some(body) = &func.body {
+                fbo.push(Some(body.span.start + 1));
+                for s in &body.statements { walk_stmt(s, src, stmts, fns, fbo, br); }
+            } else {
+                fbo.push(None);
+            }
         }
         Expression::ConditionalExpression(c) => {
             br.push((c.span.start, c.span.end, "cond-expr".into(), 2));
-            walk_expr(&c.test, src, stmts, fns, br);
-            walk_expr(&c.consequent, src, stmts, fns, br);
-            walk_expr(&c.alternate, src, stmts, fns, br);
+            walk_expr(&c.test, src, stmts, fns, fbo, br);
+            walk_expr(&c.consequent, src, stmts, fns, fbo, br);
+            walk_expr(&c.alternate, src, stmts, fns, fbo, br);
         }
         Expression::LogicalExpression(l) => {
-            walk_expr(&l.left, src, stmts, fns, br);
-            walk_expr(&l.right, src, stmts, fns, br);
+            walk_expr(&l.left, src, stmts, fns, fbo, br);
+            walk_expr(&l.right, src, stmts, fns, fbo, br);
         }
-        Expression::AssignmentExpression(a) => { walk_expr(&a.right, src, stmts, fns, br); }
-        Expression::SequenceExpression(s) => { for e in &s.expressions { walk_expr(e, src, stmts, fns, br); } }
+        Expression::AssignmentExpression(a) => { walk_expr(&a.right, src, stmts, fns, fbo, br); }
+        Expression::SequenceExpression(s) => { for e in &s.expressions { walk_expr(e, src, stmts, fns, fbo, br); } }
         Expression::ObjectExpression(o) => {
             for prop in &o.properties {
-                if let ObjectPropertyKind::ObjectProperty(p) = prop { walk_expr(&p.value, src, stmts, fns, br); }
+                if let ObjectPropertyKind::ObjectProperty(p) = prop { walk_expr(&p.value, src, stmts, fns, fbo, br); }
             }
         }
         Expression::ArrayExpression(a) => {
             for el in &a.elements {
-                if let ArrayExpressionElement::SpreadElement(s) = el { walk_expr(&s.argument, src, stmts, fns, br); }
-                else if let Some(e) = el.as_expression() { walk_expr(e, src, stmts, fns, br); }
+                if let ArrayExpressionElement::SpreadElement(s) = el { walk_expr(&s.argument, src, stmts, fns, fbo, br); }
+                else if let Some(e) = el.as_expression() { walk_expr(e, src, stmts, fns, fbo, br); }
             }
         }
-        Expression::ClassExpression(cls) => { walk_class(&cls.body, src, stmts, fns, br); }
-        Expression::ParenthesizedExpression(p) => { walk_expr(&p.expression, src, stmts, fns, br); }
+        Expression::ClassExpression(cls) => { walk_class(&cls.body, src, stmts, fns, fbo, br); }
+        Expression::ParenthesizedExpression(p) => { walk_expr(&p.expression, src, stmts, fns, fbo, br); }
         Expression::NewExpression(n) => {
-            walk_expr(&n.callee, src, stmts, fns, br);
+            walk_expr(&n.callee, src, stmts, fns, fbo, br);
             for arg in &n.arguments {
-                if let Argument::SpreadElement(s) = arg { walk_expr(&s.argument, src, stmts, fns, br); }
-                else if let Some(e) = arg.as_expression() { walk_expr(e, src, stmts, fns, br); }
+                if let Argument::SpreadElement(s) = arg { walk_expr(&s.argument, src, stmts, fns, fbo, br); }
+                else if let Some(e) = arg.as_expression() { walk_expr(e, src, stmts, fns, fbo, br); }
             }
         }
         Expression::TemplateLiteral(t) => {
-            for e in &t.expressions { walk_expr(e, src, stmts, fns, br); }
+            for e in &t.expressions { walk_expr(e, src, stmts, fns, fbo, br); }
         }
         Expression::TaggedTemplateExpression(t) => {
-            walk_expr(&t.tag, src, stmts, fns, br);
+            walk_expr(&t.tag, src, stmts, fns, fbo, br);
         }
-        Expression::UnaryExpression(u) => { walk_expr(&u.argument, src, stmts, fns, br); }
-        Expression::BinaryExpression(b) => { walk_expr(&b.left, src, stmts, fns, br); walk_expr(&b.right, src, stmts, fns, br); }
+        Expression::UnaryExpression(u) => { walk_expr(&u.argument, src, stmts, fns, fbo, br); }
+        Expression::BinaryExpression(b) => { walk_expr(&b.left, src, stmts, fns, fbo, br); walk_expr(&b.right, src, stmts, fns, fbo, br); }
         _ => {}
     }
 }
 
-fn walk_class(body: &ClassBody, src: &str, stmts: &mut Vec<(u32, u32)>, fns: &mut Vec<(u32, u32, String)>, br: &mut Vec<(u32, u32, String, u32)>) {
+fn walk_class(body: &ClassBody, src: &str, stmts: &mut Vec<(u32, u32)>, fns: &mut Vec<(u32, u32, String)>, fbo: &mut Vec<Option<u32>>, br: &mut Vec<(u32, u32, String, u32)>) {
     for el in &body.body {
         if let ClassElement::MethodDefinition(m) = el {
             let name = if let PropertyKey::StaticIdentifier(id) = &m.key { id.name.to_string() } else { "(method)".into() };
             fns.push((m.span.start, m.span.end, name));
-            if let Some(body) = &m.value.body { for s in &body.statements { walk_stmt(s, src, stmts, fns, br); } }
+            if let Some(body) = &m.value.body {
+                fbo.push(Some(body.span.start + 1));
+                for s in &body.statements { walk_stmt(s, src, stmts, fns, fbo, br); }
+            } else {
+                fbo.push(None);
+            }
         }
         if let ClassElement::PropertyDefinition(p) = el {
-            if let Some(val) = &p.value { walk_expr(val, src, stmts, fns, br); }
+            if let Some(val) = &p.value { walk_expr(val, src, stmts, fns, fbo, br); }
         }
     }
 }
@@ -214,69 +239,140 @@ fn walk_class(body: &ClassBody, src: &str, stmts: &mut Vec<(u32, u32)>, fns: &mu
 // --- Helpers ---
 
 /// Check if inserting a statement at this offset is syntactically safe.
-/// Safe = preceded by {, ;, newline, or start of file (after whitespace).
+/// Safe = the statement starts at the beginning of a line (only whitespace before it)
+/// or right after { or ; followed by optional whitespace.
+/// This prevents inserting inside object literals, call arguments, etc.
 fn is_safe_insert_point(source: &str, offset: u32) -> bool {
     if offset == 0 { return true; }
     let bytes = source.as_bytes();
     let mut pos = offset as usize;
-    // Walk backwards past whitespace
     while pos > 0 {
         pos -= 1;
-        let ch = bytes[pos];
-        match ch {
+        match bytes[pos] {
             b' ' | b'\t' | b'\r' => continue,
-            b'\n' | b'{' | b';' | b'}' => return true,
+            b'\n' => return true,
+            b'{' | b';' | b'}' => {
+                // Make sure {  is a block brace, not an object literal.
+                // Simple heuristic: if { is preceded by ), =>, or keyword, it's a block.
+                if bytes[pos] == b'{' {
+                    let mut p2 = pos;
+                    while p2 > 0 { p2 -= 1; if bytes[p2] != b' ' && bytes[p2] != b'\t' { break; } }
+                    match bytes[p2] {
+                        b')' | b'>' | b'e' | b'{' | b';' => return true, // ) => else { ;
+                        _ => return false, // likely object literal
+                    }
+                }
+                return true;
+            }
             _ => return false,
         }
     }
-    true // start of file
+    true
+}
+
+/// Check if this statement is a bare body of a control structure (no braces).
+/// e.g. `if (x) stmt;` or `else stmt;` — prepending __cov.s++ would steal the body.
+fn is_bare_control_body(source: &str, offset: u32) -> bool {
+    if offset == 0 { return false; }
+    let bytes = source.as_bytes();
+    let mut pos = offset as usize;
+    // Walk back past whitespace to find what precedes this statement
+    while pos > 0 {
+        pos -= 1;
+        match bytes[pos] {
+            b' ' | b'\t' | b'\r' | b'\n' => continue,
+            b')' => return true,  // if (...) stmt / for (...) stmt / while (...) stmt
+            b'{' | b';' | b'}' => return false,  // inside a block — safe
+            b'e' => {
+                // Check for "else" keyword
+                if pos >= 3 && &source[pos - 3..=pos] == "else" {
+                    return true;
+                }
+                return false;
+            }
+            _ => return false,
+        }
+    }
+    false
 }
 
 fn find_function_body_start(source: &str, start: u32, end: u32) -> Option<u32> {
     let end = (end as usize).min(source.len());
     let slice = &source[start as usize..end];
+    let bytes = source.as_bytes();
     let mut paren_depth = 0i32;
+    let mut found_arrow = false;
     for (i, ch) in slice.char_indices() {
         match ch {
             '(' => paren_depth += 1,
-            ')' => paren_depth -= 1,
-            '{' if paren_depth <= 0 => return Some(start + i as u32 + 1),
+            ')' => { paren_depth -= 1; found_arrow = false; }
+            '=' if i + 1 < slice.len() && slice.as_bytes()[i + 1] == b'>' => {
+                found_arrow = true;
+            }
+            '{' if paren_depth <= 0 => {
+                let abs = start as usize + i;
+                // Skip ${ (template literal)
+                if abs > 0 && bytes[abs - 1] == b'$' { continue; }
+                // For arrows: only accept { that directly follows =>
+                if found_arrow {
+                    // Check: the only thing between => and { should be whitespace
+                    let before = &slice[..i];
+                    if let Some(arrow_pos) = before.rfind("=>") {
+                        let between = &before[arrow_pos + 2..];
+                        if between.trim().is_empty() {
+                            return Some(start + i as u32 + 1);
+                        }
+                    }
+                    // { is not right after => — it's an object literal in the expression
+                    return None;
+                }
+                // Regular function: first { after ) is the body
+                return Some(start + i as u32 + 1);
+            }
             _ => {}
         }
-    }
-    // Arrow without braces: => expr
-    if let Some(arrow) = slice.find("=>") {
-        return Some(start + arrow as u32 + 2);
     }
     None
 }
 
-fn offset_to_line_col(source: &str, offset: u32) -> (u32, u32) {
-    let mut line = 1u32;
-    let mut col = 0u32;
-    for (i, ch) in source.char_indices() {
-        if i >= offset as usize { break; }
-        if ch == '\n' { line += 1; col = 0; } else { col += 1; }
+/// Pre-computed line offset table for O(1) line/col lookups.
+struct LineTable { line_starts: Vec<u32> }
+
+impl LineTable {
+    fn new(source: &str) -> Self {
+        let mut starts = vec![0u32];
+        for (i, ch) in source.bytes().enumerate() {
+            if ch == b'\n' { starts.push(i as u32 + 1); }
+        }
+        Self { line_starts: starts }
     }
-    (line, col)
+
+    fn lookup(&self, offset: u32) -> (u32, u32) {
+        let line = match self.line_starts.binary_search(&offset) {
+            Ok(i) => i,
+            Err(i) => i.saturating_sub(1),
+        };
+        let col = offset.saturating_sub(self.line_starts[line]);
+        (line as u32 + 1, col)
+    }
 }
 
-fn build_loc_map(locs: &[(u32, u32)], source: &str) -> String {
+fn build_loc_map(locs: &[(u32, u32)], lt: &LineTable) -> String {
     let mut o = String::from("{");
     for (i, (s, e)) in locs.iter().enumerate() {
-        let (sl, sc) = offset_to_line_col(source, *s);
-        let (el, ec) = offset_to_line_col(source, *e);
+        let (sl, sc) = lt.lookup(*s);
+        let (el, ec) = lt.lookup(*e);
         if i > 0 { o.push(','); }
         o.push_str(&format!("\"{i}\":{{\"start\":{{\"line\":{sl},\"column\":{sc}}},\"end\":{{\"line\":{el},\"column\":{ec}}}}}"));
     }
     o.push('}'); o
 }
 
-fn build_fn_map(fns: &[(u32, u32, String)], source: &str) -> String {
+fn build_fn_map(fns: &[(u32, u32, String)], lt: &LineTable) -> String {
     let mut o = String::from("{");
     for (i, (s, e, name)) in fns.iter().enumerate() {
-        let (sl, sc) = offset_to_line_col(source, *s);
-        let (el, ec) = offset_to_line_col(source, *e);
+        let (sl, sc) = lt.lookup(*s);
+        let (el, ec) = lt.lookup(*e);
         if i > 0 { o.push(','); }
         let n = name.replace('"', "\\\"");
         o.push_str(&format!("\"{i}\":{{\"name\":\"{n}\",\"decl\":{{\"start\":{{\"line\":{sl},\"column\":{sc}}},\"end\":{{\"line\":{el},\"column\":{ec}}}}},\"loc\":{{\"start\":{{\"line\":{sl},\"column\":{sc}}},\"end\":{{\"line\":{el},\"column\":{ec}}}}}}}"));
@@ -284,11 +380,11 @@ fn build_fn_map(fns: &[(u32, u32, String)], source: &str) -> String {
     o.push('}'); o
 }
 
-fn build_branch_map(branches: &[(u32, u32, String, u32)], source: &str) -> String {
+fn build_branch_map(branches: &[(u32, u32, String, u32)], lt: &LineTable) -> String {
     let mut o = String::from("{");
     for (i, (s, e, btype, _)) in branches.iter().enumerate() {
-        let (sl, sc) = offset_to_line_col(source, *s);
-        let (el, ec) = offset_to_line_col(source, *e);
+        let (sl, sc) = lt.lookup(*s);
+        let (el, ec) = lt.lookup(*e);
         if i > 0 { o.push(','); }
         o.push_str(&format!("\"{i}\":{{\"loc\":{{\"start\":{{\"line\":{sl},\"column\":{sc}}},\"end\":{{\"line\":{el},\"column\":{ec}}}}},\"type\":\"{btype}\"}}"));
     }
