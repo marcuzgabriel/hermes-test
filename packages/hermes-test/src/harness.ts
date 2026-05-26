@@ -340,6 +340,10 @@ function resetRegistry(): void {
   beforeAllHooks.length = 0;
   afterAllHooks.length = 0;
   currentGroup = undefined;
+  // Clear mock and spy state for clean watch reruns
+  clearAllMocks();
+  if ((globalThis as any).__HT_file_mocks) (globalThis as any).__HT_file_mocks = {};
+  resetMockModulePatches();
 }
 
 // Expose to the global scope for the harness entry

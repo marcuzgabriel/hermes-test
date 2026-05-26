@@ -877,8 +877,8 @@ fn watch_tests(files: &[PathBuf], root: &PathBuf) {
                     }
                 }
 
-                // If we couldn't determine affected tests, run all
-                if affected.is_empty() {
+                // Determine which tests to run
+                let rerun_files = if affected.is_empty() {
                     let all = if files.is_empty() {
                         bundler::find_test_files(&root)
                     } else {
@@ -887,8 +887,7 @@ fn watch_tests(files: &[PathBuf], root: &PathBuf) {
                     eprintln!(
                         "\x1b[2m[watch]\x1b[0m Could not determine affected tests, running all"
                     );
-                    let new_graph = run_persistent_cycle(&rt, &all, &root, &cfg, false);
-                    current_depgraph = new_graph;
+                    all
                 } else {
                     let affected_names: Vec<String> = affected
                         .iter()
@@ -904,16 +903,55 @@ fn watch_tests(files: &[PathBuf], root: &PathBuf) {
                         if affected.len() == 1 { "" } else { "s" },
                         affected_names.join(", ")
                     );
-                    let new_graph = run_persistent_cycle(&rt, &affected, &root, &cfg, false);
-                    // Merge dep graphs
-                    for (k, v) in new_graph {
-                        let entry = current_depgraph.entry(k).or_default();
-                        for test in v {
-                            if !entry.contains(&test) {
-                                entry.push(test);
+                    affected
+                };
+
+                // Fresh runtime + full single-bundle for correct results
+                let watch_rt = match hermes::Runtime::new() {
+                    Ok(r) => r,
+                    Err(e) => { eprintln!("Hermes error: {e}"); continue; }
+                };
+                suppress_hermes_stderr(|| {
+                    let _ = watch_rt.eval(HARNESS_JS, "hermes-test/harness.js");
+                });
+                let mock_modules = bundler::find_mock_modules(&rerun_files);
+                let rerun_start = Instant::now();
+
+                // Build single bundle (same as run_tests_single but without exit)
+                let (wrapper_cfg, wrapper_shim_dir) = bundler::create_wrapper_shims(&root, &cfg);
+                let (shadow_cfg, shadow_dirs) = bundler::create_shadow_wrappers(&root, &mock_modules, &wrapper_cfg);
+                let non_aliased: Vec<String> = mock_modules.iter().filter(|m| {
+                    !cfg.aliases.iter().any(|(a, _)| *m == a || m.starts_with(&format!("{a}/")))
+                }).cloned().collect();
+                let (shim_cfg, shim_dir, remaining) =
+                    bundler::create_package_shims(&root, &non_aliased, &shadow_cfg);
+                let entry = bundler::generate_entry(&rerun_files, None, &mock_modules, &shim_cfg, &[], Some(&root));
+                let entry_path = root.join(".hermes-test-watch-entry.js");
+                let _ = std::fs::write(&entry_path, &entry);
+
+                let bundle_result = bundler::bundle_auto_with_config(&entry_path, &root, &remaining, &shim_cfg);
+                let _ = std::fs::remove_file(&entry_path);
+                for dir in &shadow_dirs { let _ = std::fs::remove_dir_all(dir); }
+                if let Some(ref d) = shim_dir { let _ = std::fs::remove_dir_all(d); }
+                if let Some(ref d) = wrapper_shim_dir { let _ = std::fs::remove_dir_all(d); }
+
+                match bundle_result {
+                    Ok(bundle) => {
+                        let eval_result = match crate::hermes::compile_bytecode(&bundle, "bundle.js") {
+                            Ok(bc) => watch_rt.eval_bytes(&bc, "bundle.hbc"),
+                            Err(_) => watch_rt.eval(&bundle, "bundle.js"),
+                        };
+                        if let Err(e) = eval_result {
+                            eprintln!("\x1b[31mTest execution failed: {e}\x1b[0m");
+                        } else {
+                            print_console_logs(&watch_rt);
+                            let elapsed = rerun_start.elapsed();
+                            if let Ok(json) = watch_rt.eval("globalThis.__HT_results", "results") {
+                                let _ = print_summary_with_time(&json, elapsed.as_millis(), rerun_files.len());
                             }
                         }
                     }
+                    Err(e) => eprintln!("\x1b[31mBundle failed: {e}\x1b[0m"),
                 }
             }
             Ok(Err(e)) => {

@@ -36,7 +36,7 @@ Production Expo app (Topdanmark, Danish insurance — 259 files, 1472 tests):
 |---|---|---|---|
 | Full suite (no coverage) | 54s | **0.84s** cached / 2.5s cold | **64x** / **22x** |
 | Full suite (with coverage) | 128s | **5s** | **26x** |
-| Watch rerun | ~3s | **~300ms** | **10x** |
+| Watch rerun | ~3s | **~350ms** | **9x** |
 
 Micro benchmarks (Apple Silicon, no coverage):
 
