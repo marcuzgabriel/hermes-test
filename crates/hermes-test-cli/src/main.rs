@@ -395,6 +395,7 @@ fn run_tests_single(
                 let _ = std::fs::create_dir_all(&cache_dir);
                 let _ = std::fs::write(&coverage_map_path, &coverage_map);
                 let _ = std::fs::write(cache_dir.join("instrumented-debug.js"), &instrumented);
+                let _ = std::fs::write(cache_dir.join("instrumented-debug.js"), &instrumented);
                 Some(instrumented)
             }
             None => {
@@ -418,8 +419,12 @@ fn run_tests_single(
         }
     } else if let Some(ref js) = bundle {
         if coverage {
-            // Coverage: eval JS directly (instrumented code, no bytecode cache)
-            rt.eval(js, "bundle.js")
+            // Coverage: compile to bytecode first (Hermes handles instrumented code
+            // differently in raw JS eval vs bytecode — bytecode is needed for correctness)
+            match crate::hermes::compile_bytecode(js, "bundle.js") {
+                Ok(bytecode) => rt.eval_bytes(&bytecode, "bundle.hbc"),
+                Err(_) => rt.eval(js, "bundle.js"),
+            }
         } else {
             // Try to compile to bytecode and cache it
             match crate::hermes::compile_bytecode(js, "bundle.js") {

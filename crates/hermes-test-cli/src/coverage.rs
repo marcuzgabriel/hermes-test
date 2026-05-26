@@ -12,6 +12,13 @@ pub fn instrument_bundle(source: &str, filename: &str) -> Option<(String, String
     let ret = Parser::new(&allocator, source, SourceType::mjs()).parse();
     if ret.panicked { return None; }
 
+    // Build user code ranges from esbuild module boundaries.
+    // ONLY user module bodies get counters. Everything else (vendor, boilerplate, gaps) is skipped.
+    let user_ranges = build_user_ranges(source);
+    let is_user = |offset: u32| -> bool {
+        user_ranges.iter().any(|(s, e)| offset >= *s && offset < *e)
+    };
+
     let mut stmts: Vec<(u32, u32, bool)> = Vec::new();
     let mut fns: Vec<(u32, u32, String)> = Vec::new();
     let mut fbo: Vec<Option<u32>> = Vec::new();
@@ -31,6 +38,33 @@ pub fn instrument_bundle(source: &str, filename: &str) -> Option<(String, String
         }
         walk_stmt(s, &mut stmts, &mut fns, &mut fbo, &mut br, false);
     }
+
+    // Filter to user code only, skip esbuild module init boilerplate
+    let is_init_boilerplate = |offset: u32| -> bool {
+        let rest = &source[offset as usize..];
+        rest.starts_with("init_") || rest.starts_with("import_") || rest.starts_with("require_")
+    };
+    stmts.retain(|(s, _, _)| is_user(*s) && !is_init_boilerplate(*s));
+    {
+        // For functions: skip __esm/__commonJS callback entry counters.
+        // These are FunctionExpression methods whose name matches the module path.
+        let keep: Vec<bool> = fns.iter().zip(fbo.iter()).map(|((s, _, _), body_off)| {
+            if !is_user(*s) { return false; }
+            // Skip function entry counter if the body starts right at the __esm callback
+            // (the first statement after { would be an init_ call)
+            if let Some(off) = body_off {
+                let rest = &source[*off as usize..];
+                let trimmed = rest.trim_start();
+                if trimmed.starts_with("init_") || trimmed.starts_with("import_") {
+                    return false; // This is an __esm callback body — skip entry counter
+                }
+            }
+            true
+        }).collect();
+        let mut i = 0; fns.retain(|_| { let k = keep[i]; i += 1; k });
+        let mut i = 0; fbo.retain(|_| { let k = keep[i]; i += 1; k });
+    }
+    br.retain(|(s, _, _, _)| is_user(*s));
 
     if stmts.is_empty() && fns.is_empty() {
         return Some((source.to_string(), "{}".to_string()));
@@ -102,6 +136,54 @@ fn walk_expr_iife_body(expr: &Expression, stmts: &mut Vec<(u32,u32,bool)>, fns: 
         }
         _ => { walk_expr(expr, stmts, fns, fbo, br); }
     }
+}
+
+/// Build user code byte ranges from esbuild's module method keys.
+/// Only `"src/..."` modules are user code. Their range extends to the next module start.
+fn build_user_ranges(source: &str) -> Vec<(u32, u32)> {
+    let mut modules: Vec<(u32, bool)> = Vec::new(); // (line_start_offset, is_user)
+    let bytes = source.as_bytes();
+    let len = bytes.len();
+
+    let mut line_start = 0usize;
+    for (i, &b) in bytes.iter().enumerate() {
+        if b == b'\n' || i == len - 1 {
+            let line_end = if b == b'\n' { i } else { i + 1 };
+            let line = &source[line_start..line_end];
+            if line.starts_with("    \"") {
+                if let Some(close_quote) = line[5..].find('"') {
+                    let after = 5 + close_quote + 1;
+                    if after < line.len() && line.as_bytes()[after] == b'(' {
+                        let path = &line[5..5 + close_quote];
+                        let is_user = !path.contains("node_modules")
+                            && !path.contains("hermes-test/src/")
+                            && !path.contains(".hermes-test-entry")
+                            && (path.ends_with(".ts") || path.ends_with(".tsx")
+                                || path.ends_with(".js") || path.ends_with(".jsx")
+                                || path.ends_with(".mjs"));
+                        modules.push((line_start as u32, is_user));
+                    }
+                }
+            }
+            line_start = i + 1;
+        }
+    }
+
+    let mut ranges: Vec<(u32, u32)> = Vec::new();
+    for (idx, (offset, is_user)) in modules.iter().enumerate() {
+        if *is_user {
+            // End at the next module start, or the __esm/commonJS closing `  });`
+            let next_module = if idx + 1 < modules.len() { modules[idx + 1].0 } else { len as u32 };
+            // Scan for `\n  });` between this module and the next (closes __esm block)
+            let search_start = *offset as usize;
+            let search_end = next_module as usize;
+            let end = source[search_start..search_end].find("\n  });")
+                .map(|p| (search_start + p) as u32)
+                .unwrap_or(next_module);
+            ranges.push((*offset, end));
+        }
+    }
+    ranges
 }
 
 fn is_bare(s: &Statement) -> bool { !matches!(s, Statement::BlockStatement(_)) }
