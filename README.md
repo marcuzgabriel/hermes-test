@@ -8,6 +8,10 @@ No Babel transforms. No `transformIgnorePatterns`. No `jest-expo` mock layer. Ju
 1472 tests — 0.84s (cached)  |  5s with coverage
 ```
 
+<p align="center">
+  <img src="docs/demo.gif" alt="hermes-test demo — 1472 tests with coverage in 5s" width="800">
+</p>
+
 > **⚠️ Early release (v0).** hermes-test is battle-tested on a production Expo app (1472 tests, 100% pass rate) but the API may still change.
 >
 > **Recommended approach:** Use `.hermes.test.ts` as your test file suffix. This lets you run hermes-test alongside Jest without overwriting your existing tests. Migrate one file at a time, verify it passes in both runners, then expand. Don't delete your Jest tests until you're confident.
