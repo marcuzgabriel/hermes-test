@@ -12,59 +12,21 @@ pub fn instrument_bundle(source: &str, filename: &str) -> Option<(String, String
     let ret = Parser::new(&allocator, source, SourceType::mjs()).parse();
     if ret.panicked { return None; }
 
-    // Build user code ranges from esbuild module boundaries.
-    // ONLY user module bodies get counters. Everything else (vendor, boilerplate, gaps) is skipped.
-    let user_ranges = build_user_ranges(source);
-    let is_user = |offset: u32| -> bool {
-        user_ranges.iter().any(|(s, e)| offset >= *s && offset < *e)
-    };
-
     let mut stmts: Vec<(u32, u32, bool)> = Vec::new();
     let mut fns: Vec<(u32, u32, String)> = Vec::new();
     let mut fbo: Vec<Option<u32>> = Vec::new();
     let mut br: Vec<(u32, u32, String, u32)> = Vec::new();
 
-    // Walk inside the IIFE body, not the IIFE call itself.
-    // esbuild wraps everything in (() => { ... })() — we instrument the body.
+    // Walk inside the IIFE body (not the IIFE call itself)
     for s in &ret.program.body {
-        // The top-level is typically one ExpressionStatement containing the IIFE call.
-        // Walk INTO its arrow/function body, not the call itself.
         if let Statement::ExpressionStatement(e) = s {
             if let Expression::CallExpression(call) = &e.expression {
-                // (() => { body })() — the callee is a ParenthesizedExpression wrapping an arrow
-                walk_expr_iife_body(&call.callee, &mut stmts, &mut fns, &mut fbo, &mut br);
+                walk_iife(&call.callee, &mut stmts, &mut fns, &mut fbo, &mut br);
                 continue;
             }
         }
         walk_stmt(s, &mut stmts, &mut fns, &mut fbo, &mut br, false);
     }
-
-    // Filter to user code only, skip esbuild module init boilerplate
-    let is_init_boilerplate = |offset: u32| -> bool {
-        let rest = &source[offset as usize..];
-        rest.starts_with("init_") || rest.starts_with("import_") || rest.starts_with("require_")
-    };
-    stmts.retain(|(s, _, _)| is_user(*s) && !is_init_boilerplate(*s));
-    {
-        // For functions: skip __esm/__commonJS callback entry counters.
-        // These are FunctionExpression methods whose name matches the module path.
-        let keep: Vec<bool> = fns.iter().zip(fbo.iter()).map(|((s, _, _), body_off)| {
-            if !is_user(*s) { return false; }
-            // Skip function entry counter if the body starts right at the __esm callback
-            // (the first statement after { would be an init_ call)
-            if let Some(off) = body_off {
-                let rest = &source[*off as usize..];
-                let trimmed = rest.trim_start();
-                if trimmed.starts_with("init_") || trimmed.starts_with("import_") {
-                    return false; // This is an __esm callback body — skip entry counter
-                }
-            }
-            true
-        }).collect();
-        let mut i = 0; fns.retain(|_| { let k = keep[i]; i += 1; k });
-        let mut i = 0; fbo.retain(|_| { let k = keep[i]; i += 1; k });
-    }
-    br.retain(|(s, _, _, _)| is_user(*s));
 
     if stmts.is_empty() && fns.is_empty() {
         return Some((source.to_string(), "{}".to_string()));
@@ -81,12 +43,10 @@ pub fn instrument_bundle(source: &str, filename: &str) -> Option<(String, String
     let fi = build_zero_map(fns.len());
     let bi = build_branch_zero_map(&br);
 
-    // Istanbul pattern: hoisted function with cache
     let preamble = format!(
         "function __cov(){{var c=__cov.__c;if(c)return c;var g=globalThis;if(!g.__coverage__)g.__coverage__={{}};if(!g.__coverage__[\"{fid}\"])g.__coverage__[\"{fid}\"]={{path:\"{fid}\",s:{si},f:{fi},b:{bi}}};__cov.__c=g.__coverage__[\"{fid}\"];return __cov.__c}}\n"
     );
 
-    // Insert preamble inside the IIFE
     let iife = source.find("(() => {").map(|p| p + 8)
         .or_else(|| source.find("(function() {").map(|p| p + 13))
         .unwrap_or(0) as u32;
@@ -122,68 +82,15 @@ pub fn instrument_bundle(source: &str, filename: &str) -> Option<(String, String
     Some((out, cov_map))
 }
 
-/// Unwrap esbuild's IIFE callee and walk its body statements.
-fn walk_expr_iife_body(expr: &Expression, stmts: &mut Vec<(u32,u32,bool)>, fns: &mut Vec<(u32,u32,String)>, fbo: &mut Vec<Option<u32>>, br: &mut Vec<(u32,u32,String,u32)>) {
+// --- AST walker ---
+
+fn walk_iife(expr: &Expression, stmts: &mut Vec<(u32,u32,bool)>, fns: &mut Vec<(u32,u32,String)>, fbo: &mut Vec<Option<u32>>, br: &mut Vec<(u32,u32,String,u32)>) {
     match expr {
-        Expression::ParenthesizedExpression(p) => walk_expr_iife_body(&p.expression, stmts, fns, fbo, br),
-        Expression::ArrowFunctionExpression(a) => {
-            for s in &a.body.statements { walk_stmt(s, stmts, fns, fbo, br, false); }
-        }
-        Expression::FunctionExpression(f) => {
-            if let Some(body) = &f.body {
-                for s in &body.statements { walk_stmt(s, stmts, fns, fbo, br, false); }
-            }
-        }
+        Expression::ParenthesizedExpression(p) => walk_iife(&p.expression, stmts, fns, fbo, br),
+        Expression::ArrowFunctionExpression(a) => { for s in &a.body.statements { walk_stmt(s, stmts, fns, fbo, br, false); } }
+        Expression::FunctionExpression(f) => { if let Some(b) = &f.body { for s in &b.statements { walk_stmt(s, stmts, fns, fbo, br, false); } } }
         _ => { walk_expr(expr, stmts, fns, fbo, br); }
     }
-}
-
-/// Build user code byte ranges from esbuild's module method keys.
-/// Only `"src/..."` modules are user code. Their range extends to the next module start.
-fn build_user_ranges(source: &str) -> Vec<(u32, u32)> {
-    let mut modules: Vec<(u32, bool)> = Vec::new(); // (line_start_offset, is_user)
-    let bytes = source.as_bytes();
-    let len = bytes.len();
-
-    let mut line_start = 0usize;
-    for (i, &b) in bytes.iter().enumerate() {
-        if b == b'\n' || i == len - 1 {
-            let line_end = if b == b'\n' { i } else { i + 1 };
-            let line = &source[line_start..line_end];
-            if line.starts_with("    \"") {
-                if let Some(close_quote) = line[5..].find('"') {
-                    let after = 5 + close_quote + 1;
-                    if after < line.len() && line.as_bytes()[after] == b'(' {
-                        let path = &line[5..5 + close_quote];
-                        let is_user = !path.contains("node_modules")
-                            && !path.contains("hermes-test/src/")
-                            && !path.contains(".hermes-test-entry")
-                            && (path.ends_with(".ts") || path.ends_with(".tsx")
-                                || path.ends_with(".js") || path.ends_with(".jsx")
-                                || path.ends_with(".mjs"));
-                        modules.push((line_start as u32, is_user));
-                    }
-                }
-            }
-            line_start = i + 1;
-        }
-    }
-
-    let mut ranges: Vec<(u32, u32)> = Vec::new();
-    for (idx, (offset, is_user)) in modules.iter().enumerate() {
-        if *is_user {
-            // End at the next module start, or the __esm/commonJS closing `  });`
-            let next_module = if idx + 1 < modules.len() { modules[idx + 1].0 } else { len as u32 };
-            // Scan for `\n  });` between this module and the next (closes __esm block)
-            let search_start = *offset as usize;
-            let search_end = next_module as usize;
-            let end = source[search_start..search_end].find("\n  });")
-                .map(|p| (search_start + p) as u32)
-                .unwrap_or(next_module);
-            ranges.push((*offset, end));
-        }
-    }
-    ranges
 }
 
 fn is_bare(s: &Statement) -> bool { !matches!(s, Statement::BlockStatement(_)) }
@@ -243,6 +150,8 @@ fn walk_class(body: &ClassBody, stmts: &mut Vec<(u32,u32,bool)>, fns: &mut Vec<(
     }
 }
 
+// --- Helpers ---
+
 struct LineTable{line_starts:Vec<u32>}
 impl LineTable{
     fn new(s:&str)->Self{let mut v=vec![0u32];for(i,c)in s.bytes().enumerate(){if c==b'\n'{v.push(i as u32+1);}}Self{line_starts:v}}
@@ -253,6 +162,8 @@ fn build_fn_map(f:&[(u32,u32,String)],lt:&LineTable)->String{let mut o=String::f
 fn build_branch_map(b:&[(u32,u32,String,u32)],lt:&LineTable)->String{let mut o=String::from("{");for(i,(s,e,t,_))in b.iter().enumerate(){let(sl,sc)=lt.lookup(*s);let(el,ec)=lt.lookup(*e);if i>0{o.push(',');}o.push_str(&format!("\"{i}\":{{\"loc\":{{\"start\":{{\"line\":{sl},\"column\":{sc}}},\"end\":{{\"line\":{el},\"column\":{ec}}}}},\"type\":\"{t}\"}}"));}o.push('}');o}
 fn build_zero_map(c:usize)->String{let mut o=String::from("{");for i in 0..c{if i>0{o.push(',');}o.push_str(&format!("\"{i}\":0"));}o.push('}');o}
 fn build_branch_zero_map(b:&[(u32,u32,String,u32)])->String{let mut o=String::from("{");for(i,(_,_,_,p))in b.iter().enumerate(){if i>0{o.push(',');}let z:Vec<&str>=(0..*p).map(|_|"0").collect();o.push_str(&format!("\"{i}\":[{}]",z.join(",")));}o.push('}');o}
+
+// --- Coverage collection ---
 
 pub fn collect_coverage(rt:&crate::hermes::Runtime,map_path:Option<&std::path::Path>)->Option<String>{
     let js=r#"(function(){var c=globalThis.__coverage__;if(!c)return'null';return JSON.stringify(c)})()"#;
