@@ -4,14 +4,14 @@
 `hermes-test --coverage` adds Istanbul-style counters to the bundler's output.
 The bundler already produces a perfect bundle (100% test pass rate).
 
-## Final Solution — 42/42 PASS
-- Post-bundle instrumentation with Istanbul hoisted function pattern
-- `function __cov()` with `__c` cache (hoisted by JS spec, safe in esbuild's `__esm` blocks)
+## Final Solution — 46/46 PASS
+- Post-bundle instrumentation: bundler produces perfect bundle, we add counters
+- Istanbul hoisted function pattern: `function __cov()` with `__c` cache
 - Preamble inside IIFE, split maps to disk (statementMap/fnMap/branchMap stored externally)
 - AST-informed bare-body wrapping, concise arrow skipping
-- User-code-only filtering via `    "path"(` module boundary detection
-- Skips esbuild init boilerplate (`init_*`, `import_*`, `require_*` statements)
-- **Bytecode compilation before eval** (the critical fix — see Approach 11)
+- OXC parser for AST analysis (read-only), string insertion for output
+- **No vendor filtering needed** — counters everywhere work fine
+- **Bytecode compilation before eval** (the only fix that mattered — see Approach 12)
 
 ---
 
@@ -64,20 +64,30 @@ The bundler already produces a perfect bundle (100% test pass rate).
 **What**: Scan source bytes for `"src/..."(` patterns (module method keys), brace-count to find body ranges.
 **Result**: Brace counting breaks on string literals containing `{` and `}` inside vendor code. Vendor ranges overrun into user code.
 
-## Approach 11: Module boundary detection + bytecode compilation (THE FIX)
-**What**: Scan for `    "path"(` at 4-space indent (esbuild's module method keys). Each module boundary defines a range. User ranges capped at `  });` (end of __esm block). User-code-only counters. **Compile instrumented code to bytecode before eval.**
-**Result**: **42/42 pass** including store-selectors.
-**The critical insight**: The store-selectors failure was NEVER about counters, vendor detection, or the preamble. It was about **Hermes's raw JS eval mode** handling the instrumented code differently from **bytecode mode**. The `--coverage` path used `rt.eval(js)` (raw JS) while the normal path used `rt.eval_bytes(bytecode)`. Compiling to bytecode first — the same one-line change that the non-coverage path already does — fixed everything.
+## Approach 11: Module boundary detection + user-code filtering
+**What**: Various attempts to only instrument user code (not vendor). Comment-based, AST-based, brace-counting, 4-space-indent module keys, init boilerplate skipping.
+**Result**: All approaches had edge cases. Some worked for single files but broke on multi-file bundles.
+**Lesson**: This was a waste of time. See Approach 12.
+
+## Approach 12: Bytecode compilation (THE ACTUAL FIX)
+**What**: One line change — compile instrumented code to bytecode before eval, same as non-coverage path.
+**Result**: **46/46 pass**. All tests. No filtering needed.
+**The critical insight**: The `--coverage` path used `rt.eval(js)` (raw JS text) while the normal path used `rt.eval_bytes(bytecode)`. Hermes handles instrumented code differently in raw JS eval vs bytecode. Compiling to bytecode first fixed everything. All the vendor detection work (approaches 8-11) was chasing a symptom, not the cause.
+**How we found it**: Replaced the cached bundle with the instrumented version and ran through the normal (non-coverage) path → passed. That proved the instrumentation was correct and the eval method was wrong.
+
+## Approach 13: Remove all filtering (FINAL)
+**What**: After discovering bytecode was the fix, removed all vendor detection, init boilerplate skipping, and module boundary scanning.
+**Result**: **46/46 pass** with 100 fewer lines of code. Counters everywhere work fine with bytecode.
+**Lesson**: When the root cause is found, delete the workarounds.
 
 ---
 
 ## Key Insights
 
-1. **Post-bundle is the only viable path** — pre-bundle (overlay, transforms) changes how esbuild bundles, breaking vendor code resolution.
+1. **Post-bundle is the only viable path** — pre-bundle (overlay, transforms) changes how esbuild bundles.
 2. **Istanbul's function pattern is essential** — `function __cov()` is hoisted alongside esbuild's hoisted function declarations. `var __cov` gets split.
-3. **Preamble must be inside the IIFE** — before the IIFE causes ASI issues or scope problems.
-4. **User-code detection via 4-space indent module keys** — `    "path"(` is esbuild's exact format for `__esm`/`__commonJS` method keys. Reliable, no false positives from comments or string content.
-5. **Skip init boilerplate** — `init_*()`, `import_* = __toESM(require_*())` are esbuild module init statements. Counters before them change execution context.
-6. **Bytecode compilation is required** — Hermes's raw JS eval handles instrumented code differently from bytecode execution. Always compile to bytecode first, even for coverage.
-7. **The bundler is always right** — every attempt to bypass, overlay, or transform around the bundler failed. The bundler produces a perfect bundle. Instrument it post-bundle. Don't fight it.
-8. **Manual testing reveals the real issue** — replacing the cached bundle with instrumented code and running through the normal (non-coverage) path proved the instrumentation was correct. The bug was in the eval path, not the counters.
+3. **Preamble must be inside the IIFE** — before the IIFE causes ASI issues.
+4. **Bytecode compilation is required** — Hermes's raw JS eval handles code differently from bytecode execution. Always compile to bytecode.
+5. **The bundler is always right** — instrument the perfect bundle post-esbuild. Don't fight it.
+6. **Find the root cause before adding complexity** — 10 approaches tried to work around a symptom. The fix was one line.
+7. **Test the eval path, not just the code** — swapping the instrumented bundle into the non-coverage path immediately revealed the real issue.
