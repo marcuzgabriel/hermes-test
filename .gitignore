@@ -10,3 +10,4 @@ dist/
 /tmp/
 package-lock.json
 bench/fixtures-jest/node_modules/
+.vscode/
