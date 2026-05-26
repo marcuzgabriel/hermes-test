@@ -394,8 +394,6 @@ fn run_tests_single(
                 eprintln!(" \x1b[2mCoverage:\x1b[0m instrumented ({} → {} bytes)", js.len(), instrumented.len());
                 let _ = std::fs::create_dir_all(&cache_dir);
                 let _ = std::fs::write(&coverage_map_path, &coverage_map);
-                let _ = std::fs::write(cache_dir.join("instrumented-debug.js"), &instrumented);
-                let _ = std::fs::write(cache_dir.join("instrumented-debug.js"), &instrumented);
                 Some(instrumented)
             }
             None => {
