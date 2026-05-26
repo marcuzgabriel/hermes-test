@@ -38,7 +38,7 @@ jobs:
           cmake --build build --parallel 4
 
       - name: Bundle harness
-        run: cd packages/hermes-test && bun install --no-save && node bundle.mjs
+        run: cd packages/hermes-test && npm install --ignore-scripts --no-optional 2>/dev/null; node bundle.mjs
 
       - name: Build CLI
         run: cargo build --release
