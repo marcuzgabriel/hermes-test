@@ -202,6 +202,20 @@ export const HttpResponse: {
   error(): MockResponse;
 };
 
+// --- Redux store ---
+
+export interface StoreContext {
+  readonly store: any;
+  dispatch(action: any): any;
+  getState(): any;
+  setState(state: Record<string, any>): void;
+  patchState(partial: Record<string, any>): void;
+  renderHookWithReduxStore<T>(hookFn: (props?: any) => T, options?: { initialProps?: any }): HookResult<T>;
+}
+
+export function withStore(initialState?: Record<string, any>): StoreContext;
+export function withAppReducer(reducer: (state: any, action: any) => any, preloadedState?: Record<string, any>): StoreContext;
+
 // --- Timers ---
 
 export function useFakeTimers(initialTime?: number): void;
