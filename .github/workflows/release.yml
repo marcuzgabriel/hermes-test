@@ -22,10 +22,7 @@ jobs:
             target: aarch64-apple-darwin
             asset: hermes-test-darwin-arm64
             pkg: hermes-test-darwin-arm64
-          - os: macos-13
-            target: x86_64-apple-darwin
-            asset: hermes-test-darwin-x64
-            pkg: hermes-test-darwin-x64
+          # macos-13 (x64) skipped for v0 — runner availability issues
           - os: ubuntu-latest
             target: x86_64-unknown-linux-gnu
             asset: hermes-test-linux-x64
@@ -105,7 +102,7 @@ jobs:
       - name: Bump version
         run: |
           VERSION=${{ inputs.version }}
-          for dir in packages/hermes-test packages/hermes-test-darwin-arm64 packages/hermes-test-darwin-x64 packages/hermes-test-linux-x64; do
+          for dir in packages/hermes-test packages/hermes-test-darwin-arm64 packages/hermes-test-linux-x64; do
             node -e "
               const pkg = require('./${dir}/package.json');
               pkg.version = '${VERSION}';
@@ -141,7 +138,6 @@ jobs:
           name: v${{ inputs.version }}
           files: |
             hermes-test-darwin-arm64/hermes-test-darwin-arm64
-            hermes-test-darwin-x64/hermes-test-darwin-x64
             hermes-test-linux-x64/hermes-test-linux-x64
           generate_release_notes: true
 
@@ -153,7 +149,7 @@ jobs:
 
       - name: Publish to GitHub Packages
         run: |
-          for pkg in darwin-arm64 darwin-x64 linux-x64; do
+          for pkg in darwin-arm64 linux-x64; do
             cd packages/hermes-test-${pkg}
             mkdir -p bin
             cp ../../hermes-test-${pkg}/hermes-test-${pkg} bin/hermes-test
@@ -176,7 +172,7 @@ jobs:
       - name: Publish to npm
         if: ${{ inputs.publish_npm }}
         run: |
-          for pkg in darwin-arm64 darwin-x64 linux-x64; do
+          for pkg in darwin-arm64 linux-x64; do
             cd packages/hermes-test-${pkg}
             mkdir -p bin
             cp ../../hermes-test-${pkg}/hermes-test-${pkg} bin/hermes-test
