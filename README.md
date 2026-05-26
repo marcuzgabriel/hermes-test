@@ -1,8 +1,6 @@
 # hermes-test
 
-**26–64x faster than Jest.** A test runner for React Native and Expo that executes your tests in Hermes — the same JavaScript engine your app ships with.
-
-No Babel transforms. No `transformIgnorePatterns`. No `jest-expo` mock layer. Just your code, running in the real engine, at native speed.
+**26–64x faster than Jest.** A test runner built for React Native and Expo. One esbuild pass, one process, zero Babel — results in under a second.
 
 ```
 1472 tests — 0.84s (cached)  |  5s with coverage
@@ -20,15 +18,15 @@ No Babel transforms. No `transformIgnorePatterns`. No `jest-expo` mock layer. Ju
 
 ### The problem
 
-Every React Native and Expo project tests in Node. Your app runs in Hermes. These are different JavaScript engines with different behaviors. That gap is where bugs hide — and Jest can't find them because it's running in the wrong engine entirely.
+Jest in React Native is slow by design. Every test file spawns a worker, runs Babel transforms, resolves `transformIgnorePatterns` for every `node_modules` import, and coordinates results over IPC. For a mid-size Expo app, that's 1-2 minutes per run. With coverage, even longer.
 
-On top of that, Jest in React Native is slow by design. Every test file spawns a worker, runs Babel transforms, resolves `transformIgnorePatterns` for every `node_modules` import, collects coverage, and coordinates results over IPC. For a mid-size Expo app, that's 2-4 minutes per run. Developers stop running tests. Tests rot. Coverage drops.
+On top of that, the configuration tax is real: `transformIgnorePatterns` breaks every time you add a dependency, `jest-expo` mocks silently drift from real APIs, and `moduleNameMapper` requires manual upkeep for every monorepo alias. Developers stop running tests. Tests rot. Coverage drops.
 
 ### The fix
 
-hermes-test runs your tests directly in Hermes. esbuild bundles your test + source into a single file in <100ms. A Rust CLI feeds it to the Hermes VM. One process, no workers, no transforms. Results appear before your hand leaves `Cmd+S`.
+hermes-test replaces the entire Jest pipeline with two things: **esbuild** (one bundle pass, <100ms) and a **Rust CLI** that evaluates it in a single process. No workers, no Babel, no `transformIgnorePatterns`. Native modules are auto-detected and externalized — zero manual configuration needed.
 
-Most Jest mocks become unnecessary — Hermes runs your real hooks, real Redux store, real business logic natively. Native modules are auto-detected and externalized — zero manual configuration needed.
+Your tests run in Hermes — the same JavaScript engine your app ships with — so you also get engine parity for free. But the real win is speed: results appear before your hand leaves `Cmd+S`.
 
 ### Benchmarks
 
@@ -390,15 +388,15 @@ If total statement coverage is below the threshold, hermes-test exits with code 
 
 | | Jest + jest-expo | hermes-test |
 |---|-----------------|-------------|
-| Engine | Node (not your app) | Hermes (your app) |
+| Bundling | Babel on every import | esbuild, one pass |
 | Startup | ~700ms per worker | ~5ms total |
-| Transforms | Babel on every import | esbuild, one bundle |
 | Native externals | Manual `transformIgnorePatterns` | Auto-detected |
-| Config needed | `externals`, `transformIgnorePatterns`, `moduleNameMapper` | Zero for most projects |
+| Config needed | `transformIgnorePatterns`, `moduleNameMapper`, mocks | Zero for most projects |
 | Watch rerun | ~2-3s | ~300ms |
 | 1472 tests (no coverage) | 54s | **0.84s** |
 | 1472 tests (with coverage) | 128s | **5s** |
 | Coverage | Built-in (v8/Istanbul) | `--coverage` with source maps, HTML report, threshold |
+| Engine | Node | Hermes (same as your app) |
 
 ## Roadmap
 
