@@ -1,8 +1,7 @@
 name: CI
 
 on:
-  push:
-    branches: [main]
+  workflow_dispatch: # Disabled until first release publishes @hermes-test/* packages
 
 # Only repo admins can trigger via push to main.
 # No pull_request trigger — prevents fork PRs from burning macOS runner minutes.
