@@ -1,11 +1,11 @@
 # hermes-test
 
-**29x faster than Jest.** A test runner for React Native and Expo that executes your tests in Hermes — the same JavaScript engine your app ships with.
+**30x faster than Jest.** A test runner for React Native and Expo that executes your tests in Hermes — the same JavaScript engine your app ships with.
 
 No Babel transforms. No `transformIgnorePatterns`. No `jest-expo` mock layer. Just your code, running in the real engine, at native speed.
 
 ```
-1472 tests — 0.79s
+1472 tests — 0.87s (cached)  |  5s with coverage
 ```
 
 > **⚠️ Early release (v0).** hermes-test is battle-tested on a production Expo app (1472 tests, 100% pass rate) but the API may still change.
@@ -30,13 +30,11 @@ Most Jest mocks become unnecessary — Hermes runs your real hooks, real Redux s
 
 Production Expo app (Topdanmark, Danish insurance — 259 files, 1472 tests):
 
-| | Jest (`--no-coverage`) | Jest (with coverage) | hermes-test |
+| | Jest | hermes-test | Speedup |
 |---|---|---|---|
-| Full suite | 23s | 116s | **0.79s** |
-| **Speedup** | **29x** | 147x* | — |
-| Watch rerun | ~3s | — | **~300ms** |
-
-\* The fair apples-to-apples comparison is **29x** (both without coverage). The 147x number reflects real-world workflow where Jest has `collectCoverage: true` enabled by default. hermes-test coverage (`--coverage`) adds ~2-3s overhead.
+| Full suite (no coverage) | 23s | **0.87s** | **26x** |
+| Full suite (with coverage) | 150s | **5s** | **30x** |
+| Watch rerun | ~3s | **~300ms** | **10x** |
 
 Micro benchmarks (Apple Silicon, no coverage):
 
@@ -394,7 +392,8 @@ If total statement coverage is below the threshold, hermes-test exits with code 
 | Native externals | Manual `transformIgnorePatterns` | Auto-detected |
 | Config needed | `externals`, `transformIgnorePatterns`, `moduleNameMapper` | Zero for most projects |
 | Watch rerun | ~2-3s | ~300ms |
-| 1472 tests (no coverage) | 23s | **0.79s** |
+| 1472 tests (no coverage) | 23s | **0.87s** |
+| 1472 tests (with coverage) | 150s | **5s** |
 | Coverage | Built-in (v8/Istanbul) | `--coverage` with source maps, HTML report, threshold |
 
 ## Roadmap

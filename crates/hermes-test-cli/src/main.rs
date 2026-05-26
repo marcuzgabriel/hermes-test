@@ -302,7 +302,7 @@ JSON.stringify({
         if force_per_file {
             run_tests_per_file(&rt, &test_files, &root, &cfg, start);
         } else {
-            let use_split = force_split || cfg.split;
+            let use_split = (force_split || cfg.split) && !coverage;
             if use_split {
                 run_tests_split(&rt, &test_files, &root, &all_mocks, &cfg, start);
             } else {
