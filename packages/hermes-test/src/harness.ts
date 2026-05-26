@@ -156,11 +156,24 @@ function resolveSync(value: any): void {
 // Live output — print to stderr immediately via native __HT_print (if available)
 const _print = (globalThis as any).__HT_print || (() => {});
 
+let _filesCompleted = 0;
+let _testsCompleted = 0;
+let _totalFiles = 0;
+
 function _printFileResult(file: string, passed: number, failed: number, duration: number) {
   const total = passed + failed;
   const time = duration > 0 ? ` \x1b[2m(${duration}ms)\x1b[0m` : '';
+  _filesCompleted++;
+  _testsCompleted += total;
   if (failed > 0) {
+    if ((globalThis as any).__HT_coverage) {
+      // Clear progress line before printing failure
+      _print(`\r\x1b[K`);
+    }
     _print(` \x1b[31mFAIL\x1b[0m  ${file} \x1b[2m(${passed} passed, ${failed} failed)\x1b[0m${time}\n`);
+  } else if ((globalThis as any).__HT_coverage) {
+    // In-place progress counter
+    _print(`\r\x1b[K \x1b[2mRunning...\x1b[0m ${_filesCompleted}/${_totalFiles} files (${_testsCompleted} tests)`);
   } else {
     _print(` \x1b[32mPASS\x1b[0m  ${file} \x1b[2m(${total} tests)\x1b[0m${time}\n`);
   }
@@ -169,6 +182,12 @@ function _printFileResult(file: string, passed: number, failed: number, duration
 function runTests(): TestResult[] {
   const results: TestResult[] = [];
   const hasOnly = tests.some((t) => t.options.only);
+
+  // Count unique files for progress counter
+  const uniqueFiles = new Set(tests.map(t => t.file));
+  _totalFiles = uniqueFiles.size;
+  _filesCompleted = 0;
+  _testsCompleted = 0;
 
   // Track per-file results for live output
   let _currentFile: string | undefined;
@@ -288,6 +307,11 @@ function runTests(): TestResult[] {
 
   // Flush last file
   _flushFileResult();
+
+  // Clear progress line if in coverage mode
+  if ((globalThis as any).__HT_coverage) {
+    _print(`\r\x1b[K`);
+  }
 
   // Run afterAll hooks
   for (const hook of afterAllHooks) {

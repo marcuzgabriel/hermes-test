@@ -23,6 +23,14 @@ pub fn bundle_auto(
     bundle_esbuild(entry_file, &path, external_modules)
 }
 
+/// Bundle result that optionally includes a source map.
+pub struct BundleResult {
+    pub code: String,
+    pub source_map: Option<sourcemap::SourceMap>,
+    /// Number of lines in the bundle before patches were applied.
+    pub pre_patch_line_count: u32,
+}
+
 pub fn find_esbuild(project_root: &Path) -> Result<PathBuf, ()> {
     let local = project_root.join("node_modules/.bin/esbuild");
     if local.exists() {
@@ -64,6 +72,68 @@ pub fn bundle_auto_with_config(
     bundle_esbuild_with_config(entry_file, &path, external_modules, cfg, false)
 }
 
+/// Bundle with esbuild + inline source map for coverage. Returns code, parsed source map,
+/// and the pre-patch line count (used to compute line delta after patches).
+pub fn bundle_esbuild_with_sourcemap(
+    entry_file: &Path,
+    esbuild_path: &Path,
+    external_modules: &[String],
+    cfg: &BundleConfig,
+) -> Result<BundleResult, String> {
+    // Run esbuild with inline source map
+    let raw = bundle_esbuild_with_config_inner(entry_file, esbuild_path, external_modules, cfg, false, true, true)?;
+
+    // Extract inline source map from the bundle
+    let (code, sm) = extract_inline_sourcemap(&raw);
+    let pre_patch_line_count = code.lines().count() as u32;
+
+    // Apply patches (these shift line numbers, we track the delta)
+    let mut code = code;
+    code = super::patches::patch_esbuild_for_hermes(&code);
+    let has_externals = !external_modules.is_empty() || !cfg.externals.is_empty()
+        || code.contains("Dynamic require of");
+    if has_externals {
+        code = super::patches::inject_mock_require_shim(&code);
+    }
+    code = super::patches::hoist_mock_modules(&code);
+
+    Ok(BundleResult { code, source_map: sm, pre_patch_line_count })
+}
+
+/// Extract inline source map from bundle, returning (code_without_map, parsed_map).
+fn extract_inline_sourcemap(code: &str) -> (String, Option<sourcemap::SourceMap>) {
+    let marker = "//# sourceMappingURL=data:application/json;base64,";
+    if let Some(pos) = code.rfind(marker) {
+        let b64 = code[pos + marker.len()..].trim();
+        let clean_code = code[..pos].trim_end().to_string();
+        // Decode base64 source map
+        if let Ok(decoded) = base64_decode(b64) {
+            if let Ok(sm) = sourcemap::SourceMap::from_reader(&decoded[..]) {
+                return (clean_code, Some(sm));
+            }
+        }
+        (clean_code, None)
+    } else {
+        (code.to_string(), None)
+    }
+}
+
+/// Simple base64 decoder (no external crate needed).
+fn base64_decode(input: &str) -> Result<Vec<u8>, ()> {
+    const TABLE: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+    let mut out = Vec::with_capacity(input.len() * 3 / 4);
+    let mut buf = 0u32;
+    let mut bits = 0u32;
+    for &b in input.as_bytes() {
+        if b == b'=' || b == b'\n' || b == b'\r' { continue; }
+        let val = TABLE.iter().position(|&c| c == b).ok_or(())? as u32;
+        buf = (buf << 6) | val;
+        bits += 6;
+        if bits >= 8 { bits -= 8; out.push((buf >> bits) as u8); buf &= (1 << bits) - 1; }
+    }
+    Ok(out)
+}
+
 /// Bundle with esbuild using provided config (avoids re-reading from disk).
 /// When `packages_external` is true, adds --packages=external to externalize all node_modules.
 pub fn bundle_esbuild_with_config(
@@ -72,6 +142,18 @@ pub fn bundle_esbuild_with_config(
     external_modules: &[String],
     cfg: &BundleConfig,
     packages_external: bool,
+) -> Result<String, String> {
+    bundle_esbuild_with_config_inner(entry_file, esbuild_path, external_modules, cfg, packages_external, false, false)
+}
+
+fn bundle_esbuild_with_config_inner(
+    entry_file: &Path,
+    esbuild_path: &Path,
+    external_modules: &[String],
+    cfg: &BundleConfig,
+    packages_external: bool,
+    sourcemap_inline: bool,
+    skip_patches: bool,
 ) -> Result<String, String> {
     let mut cmd = Command::new(esbuild_path);
     cmd.arg(entry_file)
@@ -89,6 +171,10 @@ pub fn bundle_esbuild_with_config(
         .arg("--loader:.gif=empty")
         .arg("--loader:.svg=empty")
         .arg("--external:console");
+
+    if sourcemap_inline {
+        cmd.arg("--sourcemap=inline");
+    }
 
     if packages_external {
         cmd.arg("--packages=external");
@@ -218,6 +304,10 @@ pub fn bundle_esbuild_with_config(
         String::from_utf8(output.stdout).map_err(|e| format!("Invalid UTF-8 from esbuild: {e}"))?;
 
     let mut code = code.to_string();
+
+    if skip_patches {
+        return Ok(code);
+    }
 
     // Patch esbuild runtime helpers for Hermes compat
     code = patch_esbuild_for_hermes(&code);

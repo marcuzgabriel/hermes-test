@@ -7,7 +7,22 @@ use oxc::ast::ast::*;
 use oxc::parser::Parser;
 use oxc::span::{GetSpan, SourceType};
 
+/// Source map info for accurate line mapping.
+pub struct SourceMapInfo {
+    pub source_map: sourcemap::SourceMap,
+    /// Line delta: (patched_lines - unpatched_lines). Patches add lines before module bodies.
+    pub line_delta: u32,
+}
+
 pub fn instrument_bundle(source: &str, filename: &str) -> Option<(String, String)> {
+    instrument_bundle_inner(source, filename, None)
+}
+
+pub fn instrument_bundle_with_sourcemap(source: &str, filename: &str, sm_info: &SourceMapInfo) -> Option<(String, String)> {
+    instrument_bundle_inner(source, filename, Some(sm_info))
+}
+
+fn instrument_bundle_inner(source: &str, filename: &str, sm_info: Option<&SourceMapInfo>) -> Option<(String, String)> {
     let allocator = Allocator::default();
     let ret = Parser::new(&allocator, source, SourceType::mjs()).parse();
     if ret.panicked { return None; }
@@ -17,7 +32,6 @@ pub fn instrument_bundle(source: &str, filename: &str) -> Option<(String, String
     let mut fbo: Vec<Option<u32>> = Vec::new();
     let mut br: Vec<(u32, u32, String, u32)> = Vec::new();
 
-    // Walk inside the IIFE body (not the IIFE call itself)
     for s in &ret.program.body {
         if let Statement::ExpressionStatement(e) = s {
             if let Expression::CallExpression(call) = &e.expression {
@@ -32,46 +46,95 @@ pub fn instrument_bundle(source: &str, filename: &str) -> Option<(String, String
         return Some((source.to_string(), "{}".to_string()));
     }
 
-    // Scan module boundaries to assign statements to source files
-    let modules = scan_module_boundaries(source);
-    let find_file = |offset: u32| -> &str {
-        for (path, start, end) in modules.iter().rev() {
-            if offset >= *start && offset < *end { return path; }
-        }
-        filename // fallback: bundle name
-    };
-
     let lt = LineTable::new(source);
 
-    // Build per-file coverage maps (for disk) and a combined runtime map
-    // The runtime uses global sequential IDs. The disk map records which
-    // global IDs belong to which file (with file-local remapping).
-    let mut file_stmts: BTreeMap<String, Vec<(usize, u32, u32)>> = BTreeMap::new(); // file → [(global_id, start, end)]
+    // Resolve file + source line for a byte offset in the patched bundle.
+    // With source map: look up (unpatched_line, col) → original (file, line).
+    // Without: fall back to module boundary scanning.
+    let modules = scan_module_boundaries(source);
+    let find_file_and_line = |offset: u32| -> Option<(String, u32, u32)> {
+        let (line, col) = lt.lookup(offset);
+        if let Some(info) = sm_info {
+            // Compute the unpatched line (patches add lines before modules)
+            let unpatched_line = line.saturating_sub(info.line_delta);
+            // Source map uses 0-based line/col
+            if let Some(token) = info.source_map.lookup_token(unpatched_line.saturating_sub(1), col) {
+                if let Some(src) = token.get_source() {
+                    let src_line = token.get_src_line(); // 0-based
+                    let src_col = token.get_src_col();
+                    // Filter out unwanted files
+                    if src.contains("node_modules") || is_test_file(src)
+                        || src.starts_with("..") || src.starts_with(".hermes-test-") {
+                        return None;
+                    }
+                    // Skip import/export-from lines (boilerplate, not logic)
+                    if let Some(contents) = info.source_map.get_source_contents(token.get_src_id()) {
+                        if let Some(line_text) = contents.lines().nth(src_line as usize) {
+                            let trimmed = line_text.trim();
+                            if trimmed.starts_with("import ") || trimmed.starts_with("import{")
+                                || (trimmed.starts_with("export ") && trimmed.contains(" from ")) {
+                                return None;
+                            }
+                        }
+                    }
+                    return Some((src.to_string(), src_line + 1, src_col)); // back to 1-based
+                }
+            }
+            None // no source map match = skip this position
+        } else {
+            // Fallback: module boundary approach
+            for (path, start, end) in modules.iter().rev() {
+                if offset >= *start && offset < *end {
+                    let base = lt.lookup(*start).0;
+                    return Some((path.clone(), line.saturating_sub(base), col));
+                }
+            }
+            None // fallback to bundle name → skip
+        }
+    };
+
+    // Build per-file coverage maps grouped by source file
+    let mut file_stmts: BTreeMap<String, Vec<(usize, u32, u32)>> = BTreeMap::new();
     let mut file_fns: BTreeMap<String, Vec<(usize, u32, u32, String)>> = BTreeMap::new();
     let mut file_br: BTreeMap<String, Vec<(usize, u32, u32, String, u32)>> = BTreeMap::new();
+    // Store resolved (source_line, source_col) per global ID for each type
+    let mut stmt_locs: BTreeMap<usize, (u32, u32, u32, u32)> = BTreeMap::new(); // gid → (start_line, start_col, end_line, end_col)
+    let mut fn_locs: BTreeMap<usize, (u32, u32, u32, u32)> = BTreeMap::new();
+    let mut br_locs: BTreeMap<usize, (u32, u32, u32, u32)> = BTreeMap::new();
 
     for (i, (s, e, _)) in stmts.iter().enumerate() {
-        file_stmts.entry(find_file(*s).to_string()).or_default().push((i, *s, *e));
+        if let Some((file, src_line, src_col)) = find_file_and_line(*s) {
+            let end_loc = find_file_and_line(*e);
+            let (el, ec) = end_loc.map(|(_, l, c)| (l, c)).unwrap_or((src_line, src_col + (e - s)));
+            file_stmts.entry(file).or_default().push((i, *s, *e));
+            stmt_locs.insert(i, (src_line, src_col, el, ec));
+        }
     }
     for (i, (s, e, n)) in fns.iter().enumerate() {
-        file_fns.entry(find_file(*s).to_string()).or_default().push((i, *s, *e, n.clone()));
+        if let Some((file, src_line, src_col)) = find_file_and_line(*s) {
+            let end_loc = find_file_and_line(*e);
+            let (el, ec) = end_loc.map(|(_, l, c)| (l, c)).unwrap_or((src_line, src_col + (e - s)));
+            file_fns.entry(file).or_default().push((i, *s, *e, n.clone()));
+            fn_locs.insert(i, (src_line, src_col, el, ec));
+        }
     }
     for (i, (s, e, t, p)) in br.iter().enumerate() {
-        file_br.entry(find_file(*s).to_string()).or_default().push((i, *s, *e, t.clone(), *p));
+        if let Some((file, src_line, src_col)) = find_file_and_line(*s) {
+            let end_loc = find_file_and_line(*e);
+            let (el, ec) = end_loc.map(|(_, l, c)| (l, c)).unwrap_or((src_line, src_col + (e - s)));
+            file_br.entry(file).or_default().push((i, *s, *e, t.clone(), *p));
+            br_locs.insert(i, (src_line, src_col, el, ec));
+        }
     }
 
-    // Build per-file coverage map JSON (global_id → local_id mapping included)
+    // Build per-file coverage map JSON
     let mut cov_map_parts: Vec<String> = Vec::new();
     for (file, stmts_list) in &file_stmts {
-        let s_spans: Vec<(u32,u32)> = stmts_list.iter().map(|(_, s, e)| (*s, *e)).collect();
-        let sm = build_loc_map(&s_spans, &lt);
+        let sm = build_loc_map_resolved(stmts_list.iter().map(|(gid, _, _)| *gid).collect(), &stmt_locs);
         let fns_list = file_fns.get(file).cloned().unwrap_or_default();
-        let fn_spans: Vec<(u32,u32,String)> = fns_list.iter().map(|(_, s, e, n)| (*s, *e, n.clone())).collect();
-        let fm = build_fn_map(&fn_spans, &lt);
+        let fm = build_fn_map_resolved(fns_list.iter().map(|(gid, _, _, n)| (*gid, n.clone())).collect(), &fn_locs);
         let br_list = file_br.get(file).cloned().unwrap_or_default();
-        let br_spans: Vec<(u32,u32,String,u32)> = br_list.iter().map(|(_, s, e, t, p)| (*s, *e, t.clone(), *p)).collect();
-        let bm = build_branch_map(&br_spans, &lt);
-        // Store global→local ID mapping so collect_coverage can split counters
+        let bm = build_branch_map_resolved(br_list.iter().map(|(gid, _, _, t, _)| (*gid, t.clone())).collect(), &br_locs);
         let s_ids: Vec<String> = stmts_list.iter().map(|(gid, _, _)| gid.to_string()).collect();
         let f_ids: Vec<String> = fns_list.iter().map(|(gid, _, _, _)| gid.to_string()).collect();
         let b_ids: Vec<String> = br_list.iter().map(|(gid, _, _, _, _)| gid.to_string()).collect();
@@ -145,8 +208,12 @@ fn scan_module_boundaries(source: &str) -> Vec<(String, u32, u32)> {
                     let after = 5 + close + 1;
                     if after < line.len() && line.as_bytes()[after] == b'(' {
                         let path = &line[5..5 + close];
-                        if path.ends_with(".ts") || path.ends_with(".tsx") || path.ends_with(".js")
-                            || path.ends_with(".jsx") || path.ends_with(".mjs") || path.ends_with(".cjs") {
+                        if (path.ends_with(".ts") || path.ends_with(".tsx") || path.ends_with(".js")
+                            || path.ends_with(".jsx") || path.ends_with(".mjs") || path.ends_with(".cjs"))
+                            && !path.contains("node_modules")
+                            && !is_test_file(path)
+                            && !path.starts_with("..")
+                            && !path.starts_with(".hermes-test-") {
                             modules.push((path.to_string(), line_start as u32));
                         }
                     }
@@ -163,6 +230,10 @@ fn scan_module_boundaries(source: &str) -> Vec<(String, u32, u32)> {
         result.push((path.clone(), *start, end));
     }
     result
+}
+
+fn is_test_file(path: &str) -> bool {
+    path.contains(".test.") || path.contains(".spec.") || path.contains("__tests__")
 }
 
 fn walk_iife(expr: &Expression, stmts: &mut Vec<(u32,u32,bool)>, fns: &mut Vec<(u32,u32,String)>, fbo: &mut Vec<Option<u32>>, br: &mut Vec<(u32,u32,String,u32)>) {
@@ -238,9 +309,42 @@ impl LineTable{
     fn new(s:&str)->Self{let mut v=vec![0u32];for(i,c)in s.bytes().enumerate(){if c==b'\n'{v.push(i as u32+1);}}Self{line_starts:v}}
     fn lookup(&self,o:u32)->(u32,u32){let l=match self.line_starts.binary_search(&o){Ok(i)=>i,Err(i)=>i.saturating_sub(1)};(l as u32+1,o.saturating_sub(self.line_starts[l]))}
 }
-fn build_loc_map(l:&[(u32,u32)],lt:&LineTable)->String{let mut o=String::from("{");for(i,(s,e))in l.iter().enumerate(){let(sl,sc)=lt.lookup(*s);let(el,ec)=lt.lookup(*e);if i>0{o.push(',');}o.push_str(&format!("\"{i}\":{{\"start\":{{\"line\":{sl},\"column\":{sc}}},\"end\":{{\"line\":{el},\"column\":{ec}}}}}"));}o.push('}');o}
-fn build_fn_map(f:&[(u32,u32,String)],lt:&LineTable)->String{let mut o=String::from("{");for(i,(s,e,n))in f.iter().enumerate(){let(sl,sc)=lt.lookup(*s);let(el,ec)=lt.lookup(*e);if i>0{o.push(',');}let n=n.replace('"',"\\\"");o.push_str(&format!("\"{i}\":{{\"name\":\"{n}\",\"decl\":{{\"start\":{{\"line\":{sl},\"column\":{sc}}},\"end\":{{\"line\":{el},\"column\":{ec}}}}},\"loc\":{{\"start\":{{\"line\":{sl},\"column\":{sc}}},\"end\":{{\"line\":{el},\"column\":{ec}}}}}}}"));}o.push('}');o}
-fn build_branch_map(b:&[(u32,u32,String,u32)],lt:&LineTable)->String{let mut o=String::from("{");for(i,(s,e,t,_))in b.iter().enumerate(){let(sl,sc)=lt.lookup(*s);let(el,ec)=lt.lookup(*e);if i>0{o.push(',');}o.push_str(&format!("\"{i}\":{{\"loc\":{{\"start\":{{\"line\":{sl},\"column\":{sc}}},\"end\":{{\"line\":{el},\"column\":{ec}}}}},\"type\":\"{t}\"}}"));}o.push('}');o}
+fn build_loc_map(l:&[(u32,u32)],lt:&LineTable,base:u32)->String{let mut o=String::from("{");for(i,(s,e))in l.iter().enumerate(){let(sl,sc)=lt.lookup(*s);let(el,ec)=lt.lookup(*e);let sl=sl.saturating_sub(base);let el=el.saturating_sub(base);if i>0{o.push(',');}o.push_str(&format!("\"{i}\":{{\"start\":{{\"line\":{sl},\"column\":{sc}}},\"end\":{{\"line\":{el},\"column\":{ec}}}}}"));}o.push('}');o}
+fn build_fn_map(f:&[(u32,u32,String)],lt:&LineTable,base:u32)->String{let mut o=String::from("{");for(i,(s,e,n))in f.iter().enumerate(){let(sl,sc)=lt.lookup(*s);let(el,ec)=lt.lookup(*e);let sl=sl.saturating_sub(base);let el=el.saturating_sub(base);if i>0{o.push(',');}let n=n.replace('"',"\\\"");o.push_str(&format!("\"{i}\":{{\"name\":\"{n}\",\"decl\":{{\"start\":{{\"line\":{sl},\"column\":{sc}}},\"end\":{{\"line\":{el},\"column\":{ec}}}}},\"loc\":{{\"start\":{{\"line\":{sl},\"column\":{sc}}},\"end\":{{\"line\":{el},\"column\":{ec}}}}}}}"));}o.push('}');o}
+fn build_branch_map(b:&[(u32,u32,String,u32)],lt:&LineTable,base:u32)->String{let mut o=String::from("{");for(i,(s,e,t,_))in b.iter().enumerate(){let(sl,sc)=lt.lookup(*s);let(el,ec)=lt.lookup(*e);let sl=sl.saturating_sub(base);let el=el.saturating_sub(base);if i>0{o.push(',');}o.push_str(&format!("\"{i}\":{{\"loc\":{{\"start\":{{\"line\":{sl},\"column\":{sc}}},\"end\":{{\"line\":{el},\"column\":{ec}}}}},\"type\":\"{t}\"}}"));}o.push('}');o}
+// Resolved builders: use pre-computed source locations from source map
+fn build_loc_map_resolved(gids: Vec<usize>, locs: &BTreeMap<usize, (u32, u32, u32, u32)>) -> String {
+    let mut o = String::from("{");
+    for (i, gid) in gids.iter().enumerate() {
+        if let Some(&(sl, sc, el, ec)) = locs.get(gid) {
+            if i > 0 { o.push(','); }
+            o.push_str(&format!("\"{i}\":{{\"start\":{{\"line\":{sl},\"column\":{sc}}},\"end\":{{\"line\":{el},\"column\":{ec}}}}}"));
+        }
+    }
+    o.push('}'); o
+}
+fn build_fn_map_resolved(items: Vec<(usize, String)>, locs: &BTreeMap<usize, (u32, u32, u32, u32)>) -> String {
+    let mut o = String::from("{");
+    for (i, (gid, n)) in items.iter().enumerate() {
+        if let Some(&(sl, sc, el, ec)) = locs.get(gid) {
+            if i > 0 { o.push(','); }
+            let n = n.replace('"', "\\\"");
+            o.push_str(&format!("\"{i}\":{{\"name\":\"{n}\",\"decl\":{{\"start\":{{\"line\":{sl},\"column\":{sc}}},\"end\":{{\"line\":{el},\"column\":{ec}}}}},\"loc\":{{\"start\":{{\"line\":{sl},\"column\":{sc}}},\"end\":{{\"line\":{el},\"column\":{ec}}}}}}}"));
+        }
+    }
+    o.push('}'); o
+}
+fn build_branch_map_resolved(items: Vec<(usize, String)>, locs: &BTreeMap<usize, (u32, u32, u32, u32)>) -> String {
+    let mut o = String::from("{");
+    for (i, (gid, t)) in items.iter().enumerate() {
+        if let Some(&(sl, sc, el, ec)) = locs.get(gid) {
+            if i > 0 { o.push(','); }
+            o.push_str(&format!("\"{i}\":{{\"loc\":{{\"start\":{{\"line\":{sl},\"column\":{sc}}},\"end\":{{\"line\":{el},\"column\":{ec}}}}},\"type\":\"{t}\"}}"));
+        }
+    }
+    o.push('}'); o
+}
+
 fn build_zero_map(c:usize)->String{let mut o=String::from("{");for i in 0..c{if i>0{o.push(',');}o.push_str(&format!("\"{i}\":0"));}o.push('}');o}
 fn build_branch_zero_map(b:&[(u32,u32,String,u32)])->String{let mut o=String::from("{");for(i,(_,_,_,p))in b.iter().enumerate(){if i>0{o.push(',');}let z:Vec<&str>=(0..*p).map(|_|"0").collect();o.push_str(&format!("\"{i}\":[{}]",z.join(",")));}o.push('}');o}
 
@@ -317,7 +421,8 @@ pub fn print_summary(lcov: &str) {
 }
 
 /// Generate a self-contained HTML coverage report from lcov data.
-pub fn generate_html_report(lcov: &str, output_path: &std::path::Path) -> Result<(), String> {
+/// `project_root` is used to read source files for line-by-line display.
+pub fn generate_html_report(lcov: &str, output_path: &std::path::Path, project_root: &std::path::Path) -> Result<(), String> {
     let mut files: Vec<(String, Vec<(u64, u64)>)> = Vec::new(); // (name, [(line, count)])
 
     let mut cur_file = String::new();
@@ -342,82 +447,172 @@ pub fn generate_html_report(lcov: &str, output_path: &std::path::Path) -> Result
     let mut html = String::from(r#"<!DOCTYPE html>
 <html><head><meta charset="utf-8"><title>Coverage Report</title>
 <style>
+  * { box-sizing: border-box; }
   body { font-family: -apple-system, system-ui, sans-serif; margin: 0; padding: 20px; background: #1a1a2e; color: #eee; }
   h1 { color: #e94560; margin-bottom: 5px; }
+  .subtitle { color: #666; margin-bottom: 20px; font-size: 14px; }
   .summary { background: #16213e; padding: 15px; border-radius: 8px; margin-bottom: 20px; }
   .summary table { border-collapse: collapse; width: 100%; }
-  .summary th { text-align: left; padding: 8px 12px; border-bottom: 1px solid #333; color: #888; }
-  .summary td { padding: 8px 12px; }
+  .summary th { text-align: left; padding: 8px 12px; border-bottom: 1px solid #333; color: #888; font-size: 13px; }
+  .summary td { padding: 8px 12px; font-size: 13px; }
+  .summary tr:hover { background: rgba(255,255,255,0.03); }
+  .summary .file-link { color: #7db8ff; text-decoration: none; cursor: pointer; }
+  .summary .file-link:hover { text-decoration: underline; }
   .pct { font-weight: bold; }
   .high { color: #0f9d58; }
   .mid { color: #f4b400; }
   .low { color: #db4437; }
+  .bar { display: inline-block; height: 6px; border-radius: 3px; background: #333; width: 80px; vertical-align: middle; margin-left: 8px; }
+  .bar-fill { height: 100%; border-radius: 3px; }
   .file-section { background: #16213e; border-radius: 8px; margin-bottom: 15px; overflow: hidden; }
-  .file-header { padding: 10px 15px; background: #0f3460; cursor: pointer; display: flex; justify-content: space-between; }
+  .file-header { padding: 12px 15px; background: #0f3460; cursor: pointer; display: flex; justify-content: space-between; align-items: center; }
   .file-header:hover { background: #1a4a7a; }
-  .file-name { font-weight: bold; }
-  .file-body { display: none; }
+  .file-name { font-weight: bold; font-size: 14px; }
+  .file-body { display: none; overflow-x: auto; }
   .file-body.open { display: block; }
-  .line { display: flex; font-family: 'SF Mono', Monaco, monospace; font-size: 12px; line-height: 1.6; }
-  .line-no { width: 50px; text-align: right; padding-right: 10px; color: #555; user-select: none; }
-  .line-count { width: 50px; text-align: right; padding-right: 10px; color: #888; user-select: none; }
-  .line-code { flex: 1; padding-left: 10px; white-space: pre; }
-  .covered { background: rgba(15, 157, 88, 0.15); }
-  .uncovered { background: rgba(219, 68, 55, 0.2); }
+  .source-table { width: 100%; border-collapse: collapse; }
+  .source-table td { padding: 0; vertical-align: top; }
+  .line { display: flex; font-family: 'SF Mono', Monaco, 'Fira Code', monospace; font-size: 12px; line-height: 1.7; border-bottom: 1px solid rgba(255,255,255,0.02); }
+  .line-no { min-width: 45px; width: 45px; text-align: right; padding-right: 8px; color: #444; user-select: none; flex-shrink: 0; }
+  .line-count { min-width: 45px; width: 45px; text-align: right; padding-right: 8px; color: #666; user-select: none; flex-shrink: 0; font-size: 11px; }
+  .line-code { flex: 1; padding-left: 12px; white-space: pre; tab-size: 2; overflow-x: visible; }
+  .covered { background: rgba(15, 157, 88, 0.12); }
+  .covered .line-count { color: #0f9d58; }
+  .uncovered { background: rgba(219, 68, 55, 0.18); }
+  .uncovered .line-code { color: #ffa0a0; }
   .uncovered .line-count { color: #db4437; font-weight: bold; }
+  .neutral { }
+  .toggle-icon { font-size: 12px; color: #666; margin-right: 8px; transition: transform 0.2s; }
+  .file-header.open .toggle-icon { transform: rotate(90deg); }
 </style>
 </head><body>
 <h1>Coverage Report</h1>
 "#);
 
-    // Summary table
-    html.push_str("<div class='summary'><table><tr><th>File</th><th>Lines</th><th>Covered</th><th>%</th></tr>\n");
-    for (name, lines) in &files {
-        let total = lines.len();
-        let covered = lines.iter().filter(|(_, c)| *c > 0).count();
-        let pct = if total > 0 { (covered as f64 / total as f64) * 100.0 } else { 100.0 };
-        let cls = if pct >= 80.0 { "high" } else if pct >= 50.0 { "mid" } else { "low" };
-        html.push_str(&format!(
-            "<tr><td>{name}</td><td>{total}</td><td>{covered}</td><td class='pct {cls}'>{pct:.1}%</td></tr>\n"
-        ));
+    // Pre-read source files to get accurate line counts
+    // Also compute totals for the header
+    let file_sources: Vec<Vec<String>> = files.iter().map(|(name, _)| {
+        let source_path = project_root.join(name);
+        if let Ok(content) = std::fs::read_to_string(&source_path) {
+            content.lines().map(|l| l.to_string()).collect()
+        } else {
+            Vec::new()
+        }
+    }).collect();
+
+    // Compute per-file stats for header
+    let mut grand_total = 0usize;
+    let mut grand_covered = 0usize;
+    let mut file_pcts: Vec<f64> = Vec::new();
+    for (idx, (_, cov_lines)) in files.iter().enumerate() {
+        let src_len = file_sources[idx].len() as u64;
+        let relevant: Vec<&(u64, u64)> = if src_len > 0 {
+            cov_lines.iter().filter(|(l, _)| *l <= src_len).collect()
+        } else {
+            cov_lines.iter().collect()
+        };
+        let t = relevant.len();
+        let c = relevant.iter().filter(|&&&(_, c)| c > 0).count();
+        grand_total += t;
+        grand_covered += c;
+        file_pcts.push(if t > 0 { (c as f64 / t as f64) * 100.0 } else { 100.0 });
     }
-    html.push_str("</table></div>\n");
+    let grand_pct = if grand_total > 0 { (grand_covered as f64 / grand_total as f64) * 100.0 } else { 100.0 };
+    let avg_pct = if !file_pcts.is_empty() { file_pcts.iter().sum::<f64>() / file_pcts.len() as f64 } else { 100.0 };
+    let full_covered = file_pcts.iter().filter(|p| **p >= 100.0).count();
 
-    // Per-file line details
-    for (name, cov_lines) in &files {
-        let total = cov_lines.len();
-        let covered = cov_lines.iter().filter(|(_, c)| *c > 0).count();
+    let pct_color = |p: f64| -> &str { if p >= 80.0 { "#0f9d58" } else if p >= 50.0 { "#f4b400" } else { "#db4437" } };
+
+    html.push_str(&format!(r#"<div style="background:#16213e;padding:20px 24px;border-radius:10px;margin-bottom:24px">
+  <div style="display:flex;gap:32px;align-items:flex-end;flex-wrap:wrap">
+    <div>
+      <div style="color:#888;font-size:11px;text-transform:uppercase;letter-spacing:1px;margin-bottom:4px">Total Coverage</div>
+      <div style="font-size:36px;font-weight:bold;color:{}">{grand_pct:.1}%</div>
+      <div style="color:#666;font-size:13px">{grand_covered} / {grand_total} statements</div>
+    </div>
+    <div>
+      <div style="color:#888;font-size:11px;text-transform:uppercase;letter-spacing:1px;margin-bottom:4px">Avg per File</div>
+      <div style="font-size:36px;font-weight:bold;color:{}">{avg_pct:.1}%</div>
+      <div style="color:#666;font-size:13px">across {} files</div>
+    </div>
+    <div>
+      <div style="color:#888;font-size:11px;text-transform:uppercase;letter-spacing:1px;margin-bottom:4px">Fully Covered</div>
+      <div style="font-size:36px;font-weight:bold;color:#0f9d58">{full_covered}</div>
+      <div style="color:#666;font-size:13px">of {} files at 100%</div>
+    </div>
+  </div>
+  <div style="margin-top:14px;background:#333;height:8px;border-radius:4px;overflow:hidden">
+    <div style="height:100%;width:{grand_pct:.0}%;background:{};border-radius:4px;transition:width 0.3s"></div>
+  </div>
+</div>
+"#, pct_color(grand_pct), pct_color(avg_pct), files.len(), files.len(), pct_color(grand_pct)));
+
+    // Per-file source code with coverage highlighting
+    for (idx, (name, cov_lines)) in files.iter().enumerate() {
+        let source_lines = &file_sources[idx];
+        let src_len = source_lines.len() as u64;
+        let relevant: Vec<&(u64, u64)> = if src_len > 0 {
+            cov_lines.iter().filter(|(l, _)| *l <= src_len).collect()
+        } else {
+            cov_lines.iter().collect()
+        };
+        let total = relevant.len();
+        let covered = relevant.iter().filter(|&&&(_, c)| c > 0).count();
         let pct = if total > 0 { (covered as f64 / total as f64) * 100.0 } else { 100.0 };
         let cls = if pct >= 80.0 { "high" } else if pct >= 50.0 { "mid" } else { "low" };
 
         html.push_str(&format!(
-            "<div class='file-section'><div class='file-header' onclick='this.nextElementSibling.classList.toggle(\"open\")'><span class='file-name'>{name}</span><span class='pct {cls}'>{pct:.1}%</span></div>\n<div class='file-body'>\n"
+            "<div class='file-section' id='file-{idx}'><div class='file-header' onclick='toggleFile(\"file-{idx}\")'><span><span class='toggle-icon'>▶</span><span class='file-name'>{name}</span></span><span class='pct {cls}'>{covered}/{total} ({pct:.1}%)</span></div>\n<div class='file-body'>\n"
         ));
 
-        let max_line = cov_lines.iter().map(|(l, _)| *l).max().unwrap_or(0);
         let cov_map: std::collections::HashMap<u64, u64> = cov_lines.iter().copied().collect();
 
-        for line_no in 1..=max_line {
-            let (cls, count_str) = if let Some(&count) = cov_map.get(&line_no) {
-                if count > 0 {
-                    ("covered", format!("{count}x"))
-                } else {
-                    ("uncovered", "0x".to_string())
-                }
-            } else {
-                ("", String::new())
-            };
-            html.push_str(&format!(
-                "<div class='line {cls}'><span class='line-no'>{line_no}</span><span class='line-count'>{count_str}</span><span class='line-code'></span></div>\n"
-            ));
+        if !source_lines.is_empty() {
+            // Source available: show every source line, overlay coverage data
+            for (i, code) in source_lines.iter().enumerate() {
+                let line_no = (i + 1) as u64;
+                let (cls, count_str) = if let Some(&count) = cov_map.get(&line_no) {
+                    if count > 0 { ("covered", format!("{count}x")) }
+                    else { ("uncovered", "0x".to_string()) }
+                } else { ("neutral", String::new()) };
+                let code = html_escape(code);
+                html.push_str(&format!(
+                    "<div class='line {cls}'><span class='line-no'>{line_no}</span><span class='line-count'>{count_str}</span><span class='line-code'>{code}</span></div>\n"
+                ));
+            }
+        } else {
+            // No source: show only lines with coverage data
+            let max_line = cov_lines.iter().map(|(l, _)| *l).max().unwrap_or(0);
+            for line_no in 1..=max_line {
+                let (cls, count_str) = if let Some(&count) = cov_map.get(&line_no) {
+                    if count > 0 { ("covered", format!("{count}x")) }
+                    else { ("uncovered", "0x".to_string()) }
+                } else { ("neutral", String::new()) };
+                html.push_str(&format!(
+                    "<div class='line {cls}'><span class='line-no'>{line_no}</span><span class='line-count'>{count_str}</span><span class='line-code'></span></div>\n"
+                ));
+            }
         }
 
         html.push_str("</div></div>\n");
     }
 
+    html.push_str(r#"<script>
+function toggleFile(id) {
+  var el = document.getElementById(id);
+  var body = el.querySelector('.file-body');
+  var header = el.querySelector('.file-header');
+  body.classList.toggle('open');
+  header.classList.toggle('open');
+}
+</script>"#);
     html.push_str("</body></html>");
 
     std::fs::write(output_path, &html).map_err(|e| format!("Failed to write HTML report: {e}"))
+}
+
+fn html_escape(s: &str) -> String {
+    s.replace('&', "&amp;").replace('<', "&lt;").replace('>', "&gt;").replace('"', "&quot;")
 }
 
 // --- Coverage collection ---

@@ -15,6 +15,7 @@ notify-debouncer-mini = "0.5"
 regex = "1"
 oxc = { version = "0.132", features = ["semantic"] }
 libc = "0.2"
+sourcemap = "9"
 
 [build-dependencies]
 cc = "1"

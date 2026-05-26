@@ -330,14 +330,17 @@ fn run_tests_single(
     let bytecode_path = cache_dir.join(format!("single-{cache_key}.hbc"));
 
     // Try bytecode cache first (fastest), then JS cache, then fresh bundle.
-    let bundle = if bytecode_path.exists() {
+    // When coverage is enabled, we need source maps so always do a fresh bundle.
+    let mut sm_info: Option<coverage::SourceMapInfo> = None;
+
+    let bundle = if !coverage && bytecode_path.exists() {
         // Bytecode cache hit — skip everything, load directly
         None
-    } else if let Ok(cached) = std::fs::read_to_string(&cache_path) {
+    } else if !coverage && cache_path.exists() {
         // JS cache hit — patched bundle, skip shadow setup + esbuild
-        Some(cached)
+        Some(std::fs::read_to_string(&cache_path).unwrap_or_default())
     } else {
-        // Cache miss — full pipeline: shadow wrappers → esbuild → patch → cache
+        // Cache miss (or coverage mode) — full pipeline
         let (wrapper_cfg, wrapper_shim_dir) = bundler::create_wrapper_shims(root, cfg);
         let (shadow_cfg, shadow_dirs) = bundler::create_shadow_wrappers(root, mock_modules, &wrapper_cfg);
         let non_aliased_mocks: Vec<String> = mock_modules.iter().filter(|m| {
@@ -352,16 +355,50 @@ fn run_tests_single(
             std::process::exit(1);
         });
 
-        let b = match bundler::bundle_auto_with_config(&entry_path, root, &remaining_externals, &shim_cfg) {
-            Ok(b) => b,
-            Err(e) => {
-                let _ = std::fs::remove_file(&entry_path);
-                for dir in &shadow_dirs { let _ = std::fs::remove_dir_all(dir); }
-                if let Some(ref d) = shim_dir { let _ = std::fs::remove_dir_all(d); }
-                if let Some(ref d) = wrapper_shim_dir { let _ = std::fs::remove_dir_all(d); }
-                for (_, temp) in transforms { let _ = std::fs::remove_file(temp); }
-                eprintln!("Bundling failed: {e}");
-                std::process::exit(1);
+        let b = if coverage {
+            // Coverage: use sourcemap-aware bundling
+            let esbuild_path = match bundler::find_esbuild_pub(root) {
+                Ok(p) => p,
+                Err(_) => {
+                    let _ = std::fs::remove_file(&entry_path);
+                    for dir in &shadow_dirs { let _ = std::fs::remove_dir_all(dir); }
+                    if let Some(ref d) = shim_dir { let _ = std::fs::remove_dir_all(d); }
+                    if let Some(ref d) = wrapper_shim_dir { let _ = std::fs::remove_dir_all(d); }
+                    eprintln!("esbuild not found. Install it: bun add -d esbuild");
+                    std::process::exit(1);
+                }
+            };
+            match bundler::bundle_esbuild_with_sourcemap(&entry_path, &esbuild_path, &remaining_externals, &shim_cfg) {
+                Ok(result) => {
+                    let patched_lines = result.code.lines().count() as u32;
+                    let line_delta = patched_lines.saturating_sub(result.pre_patch_line_count);
+                    if let Some(source_map) = result.source_map {
+                        sm_info = Some(coverage::SourceMapInfo { source_map, line_delta });
+                    }
+                    result.code
+                }
+                Err(e) => {
+                    let _ = std::fs::remove_file(&entry_path);
+                    for dir in &shadow_dirs { let _ = std::fs::remove_dir_all(dir); }
+                    if let Some(ref d) = shim_dir { let _ = std::fs::remove_dir_all(d); }
+                    if let Some(ref d) = wrapper_shim_dir { let _ = std::fs::remove_dir_all(d); }
+                    for (_, temp) in transforms { let _ = std::fs::remove_file(temp); }
+                    eprintln!("Bundling failed: {e}");
+                    std::process::exit(1);
+                }
+            }
+        } else {
+            match bundler::bundle_auto_with_config(&entry_path, root, &remaining_externals, &shim_cfg) {
+                Ok(b) => b,
+                Err(e) => {
+                    let _ = std::fs::remove_file(&entry_path);
+                    for dir in &shadow_dirs { let _ = std::fs::remove_dir_all(dir); }
+                    if let Some(ref d) = shim_dir { let _ = std::fs::remove_dir_all(d); }
+                    if let Some(ref d) = wrapper_shim_dir { let _ = std::fs::remove_dir_all(d); }
+                    for (_, temp) in transforms { let _ = std::fs::remove_file(temp); }
+                    eprintln!("Bundling failed: {e}");
+                    std::process::exit(1);
+                }
             }
         };
 
@@ -372,15 +409,17 @@ fn run_tests_single(
         if let Some(ref d) = wrapper_shim_dir { let _ = std::fs::remove_dir_all(d); }
         for (_, temp) in transforms { let _ = std::fs::remove_file(temp); }
 
-        // Cache the PATCHED bundle (patches are already applied by bundle_auto_with_config)
-        let _ = std::fs::create_dir_all(&cache_dir);
-        if let Ok(entries) = std::fs::read_dir(&cache_dir) {
-            for entry in entries.flatten() {
-                let n = entry.file_name(); let n = n.to_string_lossy();
-                if n.starts_with("single-") && !n.contains(&cache_key) { let _ = std::fs::remove_file(entry.path()); }
+        // Cache the PATCHED bundle
+        if !coverage {
+            let _ = std::fs::create_dir_all(&cache_dir);
+            if let Ok(entries) = std::fs::read_dir(&cache_dir) {
+                for entry in entries.flatten() {
+                    let n = entry.file_name(); let n = n.to_string_lossy();
+                    if n.starts_with("single-") && !n.contains(&cache_key) { let _ = std::fs::remove_file(entry.path()); }
+                }
             }
+            let _ = std::fs::write(&cache_path, &b);
         }
-        let _ = std::fs::write(&cache_path, &b);
         Some(b)
     };
 
@@ -389,7 +428,12 @@ fn run_tests_single(
     let bundle = if coverage {
         let js = bundle.or_else(|| std::fs::read_to_string(&cache_path).ok())
             .unwrap_or_else(|| { eprintln!("No bundle for coverage"); std::process::exit(1); });
-        match coverage::instrument_bundle(&js, "bundle.js") {
+        let result = if let Some(ref info) = sm_info {
+            coverage::instrument_bundle_with_sourcemap(&js, "bundle.js", info)
+        } else {
+            coverage::instrument_bundle(&js, "bundle.js")
+        };
+        match result {
             Some((instrumented, coverage_map)) => {
                 eprintln!(" \x1b[2mCoverage:\x1b[0m instrumented ({} → {} bytes)", js.len(), instrumented.len());
                 let _ = std::fs::create_dir_all(&cache_dir);
@@ -404,6 +448,11 @@ fn run_tests_single(
     } else {
         bundle
     };
+
+    // Set coverage flag so harness suppresses PASS lines
+    if coverage {
+        let _ = rt.eval("globalThis.__HT_coverage = true", "coverage-flag");
+    }
 
     // Eval: prefer bytecode → compile+cache bytecode → fallback to JS text
     let eval_result = if !coverage && bytecode_path.exists() {
@@ -459,7 +508,7 @@ fn run_tests_single(
             coverage::print_summary(&lcov);
             // HTML report
             let html_path = cov_dir.join("index.html");
-            match coverage::generate_html_report(&lcov, &html_path) {
+            match coverage::generate_html_report(&lcov, &html_path, &root) {
                 Ok(_) => eprintln!(" \x1b[32mHTML report:\x1b[0m {}", html_path.display()),
                 Err(e) => eprintln!(" \x1b[33mHTML report failed: {e}\x1b[0m"),
             }
