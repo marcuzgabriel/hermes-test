@@ -32,13 +32,58 @@ pub fn instrument_bundle(source: &str, filename: &str) -> Option<(String, String
         return Some((source.to_string(), "{}".to_string()));
     }
 
-    let fid = filename.replace('\\', "/");
+    // Scan module boundaries to assign statements to source files
+    let modules = scan_module_boundaries(source);
+    let find_file = |offset: u32| -> &str {
+        for (path, start, end) in modules.iter().rev() {
+            if offset >= *start && offset < *end { return path; }
+        }
+        filename // fallback: bundle name
+    };
+
     let lt = LineTable::new(source);
-    let spans: Vec<(u32,u32)> = stmts.iter().map(|(s,e,_)|(*s,*e)).collect();
-    let sm = build_loc_map(&spans, &lt);
-    let fm = build_fn_map(&fns, &lt);
-    let bm = build_branch_map(&br, &lt);
-    let cov_map = format!("{{\"{fid}\":{{\"statementMap\":{sm},\"fnMap\":{fm},\"branchMap\":{bm}}}}}");
+
+    // Build per-file coverage maps (for disk) and a combined runtime map
+    // The runtime uses global sequential IDs. The disk map records which
+    // global IDs belong to which file (with file-local remapping).
+    let mut file_stmts: BTreeMap<String, Vec<(usize, u32, u32)>> = BTreeMap::new(); // file → [(global_id, start, end)]
+    let mut file_fns: BTreeMap<String, Vec<(usize, u32, u32, String)>> = BTreeMap::new();
+    let mut file_br: BTreeMap<String, Vec<(usize, u32, u32, String, u32)>> = BTreeMap::new();
+
+    for (i, (s, e, _)) in stmts.iter().enumerate() {
+        file_stmts.entry(find_file(*s).to_string()).or_default().push((i, *s, *e));
+    }
+    for (i, (s, e, n)) in fns.iter().enumerate() {
+        file_fns.entry(find_file(*s).to_string()).or_default().push((i, *s, *e, n.clone()));
+    }
+    for (i, (s, e, t, p)) in br.iter().enumerate() {
+        file_br.entry(find_file(*s).to_string()).or_default().push((i, *s, *e, t.clone(), *p));
+    }
+
+    // Build per-file coverage map JSON (global_id → local_id mapping included)
+    let mut cov_map_parts: Vec<String> = Vec::new();
+    for (file, stmts_list) in &file_stmts {
+        let s_spans: Vec<(u32,u32)> = stmts_list.iter().map(|(_, s, e)| (*s, *e)).collect();
+        let sm = build_loc_map(&s_spans, &lt);
+        let fns_list = file_fns.get(file).cloned().unwrap_or_default();
+        let fn_spans: Vec<(u32,u32,String)> = fns_list.iter().map(|(_, s, e, n)| (*s, *e, n.clone())).collect();
+        let fm = build_fn_map(&fn_spans, &lt);
+        let br_list = file_br.get(file).cloned().unwrap_or_default();
+        let br_spans: Vec<(u32,u32,String,u32)> = br_list.iter().map(|(_, s, e, t, p)| (*s, *e, t.clone(), *p)).collect();
+        let bm = build_branch_map(&br_spans, &lt);
+        // Store global→local ID mapping so collect_coverage can split counters
+        let s_ids: Vec<String> = stmts_list.iter().map(|(gid, _, _)| gid.to_string()).collect();
+        let f_ids: Vec<String> = fns_list.iter().map(|(gid, _, _, _)| gid.to_string()).collect();
+        let b_ids: Vec<String> = br_list.iter().map(|(gid, _, _, _, _)| gid.to_string()).collect();
+        cov_map_parts.push(format!(
+            "\"{file}\":{{\"statementMap\":{sm},\"fnMap\":{fm},\"branchMap\":{bm},\"_sIds\":[{}],\"_fIds\":[{}],\"_bIds\":[{}]}}",
+            s_ids.join(","), f_ids.join(","), b_ids.join(",")
+        ));
+    }
+    let cov_map = format!("{{{}}}", cov_map_parts.join(","));
+
+    // Runtime preamble: one entry with all counters (global IDs)
+    let fid = filename.replace('\\', "/");
     let si = build_zero_map(stmts.len());
     let fi = build_zero_map(fns.len());
     let bi = build_branch_zero_map(&br);
@@ -83,6 +128,42 @@ pub fn instrument_bundle(source: &str, filename: &str) -> Option<(String, String
 }
 
 // --- AST walker ---
+
+/// Scan esbuild's module method keys (`    "path"(`) to get per-file byte ranges.
+fn scan_module_boundaries(source: &str) -> Vec<(String, u32, u32)> {
+    let mut modules: Vec<(String, u32)> = Vec::new(); // (path, start_offset)
+    let bytes = source.as_bytes();
+    let len = bytes.len();
+    let mut line_start = 0usize;
+
+    for (i, &b) in bytes.iter().enumerate() {
+        if b == b'\n' || i == len - 1 {
+            let line_end = if b == b'\n' { i } else { i + 1 };
+            let line = &source[line_start..line_end];
+            if line.starts_with("    \"") {
+                if let Some(close) = line[5..].find('"') {
+                    let after = 5 + close + 1;
+                    if after < line.len() && line.as_bytes()[after] == b'(' {
+                        let path = &line[5..5 + close];
+                        if path.ends_with(".ts") || path.ends_with(".tsx") || path.ends_with(".js")
+                            || path.ends_with(".jsx") || path.ends_with(".mjs") || path.ends_with(".cjs") {
+                            modules.push((path.to_string(), line_start as u32));
+                        }
+                    }
+                }
+            }
+            line_start = i + 1;
+        }
+    }
+
+    // Convert to (path, start, end) — each module extends to the next module's start
+    let mut result: Vec<(String, u32, u32)> = Vec::new();
+    for (idx, (path, start)) in modules.iter().enumerate() {
+        let end = if idx + 1 < modules.len() { modules[idx + 1].1 } else { len as u32 };
+        result.push((path.clone(), *start, end));
+    }
+    result
+}
 
 fn walk_iife(expr: &Expression, stmts: &mut Vec<(u32,u32,bool)>, fns: &mut Vec<(u32,u32,String)>, fbo: &mut Vec<Option<u32>>, br: &mut Vec<(u32,u32,String,u32)>) {
     match expr {
@@ -346,9 +427,70 @@ pub fn collect_coverage(rt:&crate::hermes::Runtime,map_path:Option<&std::path::P
     let raw=rt.eval(js,"coverage-collect").ok()?;
     let json_str:String=serde_json::from_str(&raw).unwrap_or(raw.clone());
     if json_str=="null"||json_str.is_empty(){return None;}
-    let mut cov:serde_json::Value=serde_json::from_str(&json_str).ok()?;
-    if let Some(p)=map_path{if let Ok(ms)=std::fs::read_to_string(p){if let Ok(m)=serde_json::from_str::<serde_json::Value>(&ms){if let(Some(co),Some(mo))=(cov.as_object_mut(),m.as_object()){for(f,md)in mo{if let Some(fc)=co.get_mut(f){if let(Some(fo),Some(d))=(fc.as_object_mut(),md.as_object()){for(k,v)in d{fo.insert(k.clone(),v.clone());}}}}}}}}
-    Some(coverage_to_lcov(&cov))
+    let runtime:serde_json::Value=serde_json::from_str(&json_str).ok()?;
+
+    // Read the per-file map from disk and split runtime counters by file
+    if let Some(p)=map_path{
+        if let Ok(ms)=std::fs::read_to_string(p){
+            if let Ok(file_map)=serde_json::from_str::<serde_json::Value>(&ms){
+                // Get the runtime bundle counters
+                let bundle_key = runtime.as_object()?.keys().next()?.clone();
+                let rt_data = &runtime[&bundle_key];
+                let rt_s = rt_data["s"].as_object()?;
+                let rt_f = rt_data["f"].as_object()?;
+                let rt_b = rt_data["b"].as_object()?;
+
+                // Build per-file coverage entries
+                let mut per_file = serde_json::Map::new();
+                for (file, fdata) in file_map.as_object()? {
+                    let mut entry = serde_json::Map::new();
+                    entry.insert("path".into(), serde_json::Value::String(file.clone()));
+
+                    // Copy statementMap, fnMap, branchMap from disk
+                    if let Some(v) = fdata.get("statementMap") { entry.insert("statementMap".into(), v.clone()); }
+                    if let Some(v) = fdata.get("fnMap") { entry.insert("fnMap".into(), v.clone()); }
+                    if let Some(v) = fdata.get("branchMap") { entry.insert("branchMap".into(), v.clone()); }
+
+                    // Split s counters using _sIds mapping
+                    if let Some(ids) = fdata["_sIds"].as_array() {
+                        let mut s = serde_json::Map::new();
+                        for (local, gid) in ids.iter().enumerate() {
+                            let val = rt_s.get(&gid.to_string().replace('"', "")).cloned()
+                                .unwrap_or(serde_json::Value::Number(0.into()));
+                            s.insert(local.to_string(), val);
+                        }
+                        entry.insert("s".into(), serde_json::Value::Object(s));
+                    }
+                    // Split f counters
+                    if let Some(ids) = fdata["_fIds"].as_array() {
+                        let mut f = serde_json::Map::new();
+                        for (local, gid) in ids.iter().enumerate() {
+                            let val = rt_f.get(&gid.to_string().replace('"', "")).cloned()
+                                .unwrap_or(serde_json::Value::Number(0.into()));
+                            f.insert(local.to_string(), val);
+                        }
+                        entry.insert("f".into(), serde_json::Value::Object(f));
+                    }
+                    // Split b counters
+                    if let Some(ids) = fdata["_bIds"].as_array() {
+                        let mut b = serde_json::Map::new();
+                        for (local, gid) in ids.iter().enumerate() {
+                            let val = rt_b.get(&gid.to_string().replace('"', "")).cloned()
+                                .unwrap_or(serde_json::json!([]));
+                            b.insert(local.to_string(), val);
+                        }
+                        entry.insert("b".into(), serde_json::Value::Object(b));
+                    }
+
+                    per_file.insert(file.clone(), serde_json::Value::Object(entry));
+                }
+                return Some(coverage_to_lcov(&serde_json::Value::Object(per_file)));
+            }
+        }
+    }
+
+    // Fallback: no map file, use runtime as-is
+    Some(coverage_to_lcov(&runtime))
 }
 
 fn coverage_to_lcov(cov:&serde_json::Value)->String{
