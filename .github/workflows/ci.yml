@@ -40,8 +40,11 @@ jobs:
       - name: Bundle harness
         run: |
           cd packages/hermes-test
-          npm install esbuild react react-reconciler @react-native/js-polyfills --no-save
+          # Remove optional deps that don't exist yet (platform binaries published during Release)
+          node -e "const p=require('./package.json'); delete p.optionalDependencies; require('fs').writeFileSync('./package.json', JSON.stringify(p,null,2)+'\n')"
+          bun install --no-save
           node bundle.mjs
+          git checkout package.json
 
       - name: Build CLI
         run: cargo build --release
