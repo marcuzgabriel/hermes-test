@@ -398,9 +398,19 @@ If total statement coverage is below the threshold, hermes-test exits with code 
 | Coverage | Built-in (v8/Istanbul) | `--coverage` with source maps, HTML report, threshold |
 | Engine | Node | Hermes (same as your app) |
 
+## Platform support
+
+| Platform | Status |
+|----------|--------|
+| macOS (Apple Silicon) | Supported |
+| Linux (x64) | Supported |
+| macOS (Intel x64) | Planned |
+| Windows | Not planned |
+
 ## Roadmap
 
 - [x] **Coverage reporting** — source map-based instrumentation, lcov + HTML report, threshold enforcement
+- [ ] **macOS Intel (x64)** — cross-compile or dedicated CI runner
 - [ ] **Component rendering** — `render(<Component />)` with query API (`getByText`, `getByTestId`, `fireEvent`)
 - [ ] **Jest compatibility shim** — `jest.fn()` → `spy()`, `jest.mock()` → `mockModule()`, enables reuse of library `__mocks__/` files
 - [ ] **Library mock support** — auto-load mocks from expo-router, react-native-reanimated, zustand, etc.
