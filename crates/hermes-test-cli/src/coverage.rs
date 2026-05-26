@@ -350,8 +350,8 @@ fn build_branch_zero_map(b:&[(u32,u32,String,u32)])->String{let mut o=String::fr
 
 // --- Coverage reporting ---
 
-/// Parse lcov data and print a terminal summary table.
-pub fn print_summary(lcov: &str) {
+/// Parse lcov data and print a terminal summary table. Returns total line coverage %.
+pub fn print_summary(lcov: &str) -> f64 {
     let mut files: Vec<(String, u64, u64, u64, u64)> = Vec::new(); // (name, hit, total, fn_hit, fn_total)
 
     let mut cur_file = String::new();
@@ -380,7 +380,7 @@ pub fn print_summary(lcov: &str) {
         }
     }
 
-    if files.is_empty() { return; }
+    if files.is_empty() { return 100.0; }
 
     // Find max filename length for formatting
     let max_name = files.iter().map(|(n, _, _, _, _)| n.len()).max().unwrap_or(20).min(60);
@@ -418,6 +418,7 @@ pub fn print_summary(lcov: &str) {
     eprintln!(" {:<width$}  {:>4}/{:<4}  {:>4}/{:<4}",
         "", total_hit, total_lines, total_fn_hit, total_fns, width = max_name);
     eprintln!();
+    total_pct
 }
 
 /// Generate a self-contained HTML coverage report from lcov data.

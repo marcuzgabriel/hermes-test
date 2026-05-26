@@ -494,6 +494,7 @@ fn run_tests_single(
     print_console_logs(rt);
 
     // Collect coverage before printing summary
+    let mut coverage_failed = false;
     if coverage {
         let map_path = if coverage_map_path.exists() { Some(coverage_map_path.as_path()) } else { None };
         if let Some(lcov) = coverage::collect_coverage(rt, map_path) {
@@ -505,12 +506,20 @@ fn run_tests_single(
                 Err(e) => eprintln!(" \x1b[33mCoverage write failed: {e}\x1b[0m"),
             }
             // Terminal summary
-            coverage::print_summary(&lcov);
+            let total_pct = coverage::print_summary(&lcov);
             // HTML report
             let html_path = cov_dir.join("index.html");
             match coverage::generate_html_report(&lcov, &html_path, &root) {
                 Ok(_) => eprintln!(" \x1b[32mHTML report:\x1b[0m {}", html_path.display()),
                 Err(e) => eprintln!(" \x1b[33mHTML report failed: {e}\x1b[0m"),
+            }
+            // Check coverage threshold
+            if let Some(threshold) = cfg.coverage_threshold {
+                if total_pct < threshold {
+                    eprintln!();
+                    eprintln!(" \x1b[31mCoverage {total_pct:.1}% is below threshold {threshold:.0}%\x1b[0m");
+                    coverage_failed = true;
+                }
             }
         } else {
             eprintln!(" \x1b[33mNo coverage data collected\x1b[0m");
@@ -528,6 +537,10 @@ fn run_tests_single(
             eprintln!("Failed to read test results: {e}");
             std::process::exit(1);
         }
+    }
+
+    if coverage_failed {
+        std::process::exit(1);
     }
 }
 

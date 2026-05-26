@@ -8,7 +8,7 @@ No Babel transforms. No `transformIgnorePatterns`. No `jest-expo` mock layer. Ju
 1472 tests — 0.79s
 ```
 
-> **⚠️ Early release (v0).** hermes-test is battle-tested on a production Expo app (1472 tests, 100% pass rate) but the API may still change. Coverage reporting is not yet supported.
+> **⚠️ Early release (v0).** hermes-test is battle-tested on a production Expo app (1472 tests, 100% pass rate) but the API may still change.
 >
 > **Recommended approach:** Use `.hermes.test.ts` as your test file suffix. This lets you run hermes-test alongside Jest without overwriting your existing tests. Migrate one file at a time, verify it passes in both runners, then expand. Don't delete your Jest tests until you're confident.
 
@@ -36,7 +36,7 @@ Production Expo app (Topdanmark, Danish insurance — 259 files, 1472 tests):
 | **Speedup** | **29x** | 147x* | — |
 | Watch rerun | ~3s | — | **~300ms** |
 
-\* hermes-test does not yet support coverage collection. The fair apples-to-apples comparison is **29x** (both without coverage). The 147x number reflects real-world workflow where Jest has `collectCoverage: true` enabled by default.
+\* The fair apples-to-apples comparison is **29x** (both without coverage). The 147x number reflects real-world workflow where Jest has `collectCoverage: true` enabled by default. hermes-test coverage (`--coverage`) adds ~2-3s overhead.
 
 Micro benchmarks (Apple Silicon, no coverage):
 
@@ -247,6 +247,7 @@ hermes-test src/hooks/               # run tests in a directory
 hermes-test src/hooks/useLogin.test.ts  # run a specific file
 hermes-test --watch                  # watch mode — reruns on file changes
 hermes-test --watch useLogin         # watch mode, filtered to matching files
+hermes-test --coverage               # run with coverage (lcov + HTML report)
 ```
 
 ## Configuration
@@ -297,6 +298,7 @@ monorepo/
 | `externals` | Additional modules to externalize | No (most auto-detected) |
 | `shims` | Built-in or custom module replacements | No |
 | `split` | Enable vendor/group bundle splitting for large suites | No |
+| `coverageThreshold` | Minimum coverage % — fails if below (e.g. `65`) | No |
 
 **tsconfig paths** are read automatically — monorepo path aliases just work:
 
@@ -350,6 +352,31 @@ You can also write custom shims for app-specific native modules:
 }
 ```
 
+## Coverage
+
+```bash
+hermes-test --coverage
+```
+
+Generates:
+- **Terminal table** — per-file line + function coverage with color coding
+- **`coverage/lcov.info`** — standard lcov format, works with any lcov tool
+- **`coverage/index.html`** — interactive HTML report with source-level green/red highlighting
+
+Coverage uses esbuild source maps for accurate original-file line mapping. Imports, `node_modules`, test files, and monorepo dependencies are automatically excluded — only your source code is measured.
+
+### Coverage threshold
+
+Add `coverageThreshold` to `hermes-test.config.json` to fail CI when coverage drops:
+
+```json
+{
+  "coverageThreshold": 65
+}
+```
+
+If total statement coverage is below the threshold, hermes-test exits with code 1.
+
 ## Stack
 
 - **Hermes** — the JS engine that ships with React Native and Expo
@@ -368,11 +395,11 @@ You can also write custom shims for app-specific native modules:
 | Config needed | `externals`, `transformIgnorePatterns`, `moduleNameMapper` | Zero for most projects |
 | Watch rerun | ~2-3s | ~300ms |
 | 1472 tests (no coverage) | 23s | **0.79s** |
-| Coverage | Built-in (v8/Istanbul) | Planned (see roadmap) |
+| Coverage | Built-in (v8/Istanbul) | `--coverage` with source maps, HTML report, threshold |
 
 ## Roadmap
 
-- [ ] **Coverage reporting** — Istanbul-compatible via `swc-coverage-instrument` (pure Rust, no Node)
+- [x] **Coverage reporting** — source map-based instrumentation, lcov + HTML report, threshold enforcement
 - [ ] **Component rendering** — `render(<Component />)` with query API (`getByText`, `getByTestId`, `fireEvent`)
 - [ ] **Jest compatibility shim** — `jest.fn()` → `spy()`, `jest.mock()` → `mockModule()`, enables reuse of library `__mocks__/` files
 - [ ] **Library mock support** — auto-load mocks from expo-router, react-native-reanimated, zustand, etc.

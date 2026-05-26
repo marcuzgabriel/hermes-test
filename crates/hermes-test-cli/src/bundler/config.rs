@@ -11,6 +11,7 @@ pub struct BundleConfig {
     pub root: Option<PathBuf>,
     pub split: bool,
     pub test_match: Option<String>, // e.g. ".hermes.test.ts" — only discover matching files
+    pub coverage_threshold: Option<f64>, // e.g. 65.0 — fail if total coverage below this %
 }
 
 /// Strip JS-style comments (// and /* */) from JSON-like content.
@@ -103,6 +104,7 @@ pub fn read_config(project_root: &Path) -> BundleConfig {
     let mut config = BundleConfig {
         aliases: Vec::new(), externals: Vec::new(), shims: Vec::new(),
         wrapper_shims: Vec::new(), root: None, split: false, test_match: None,
+        coverage_threshold: None,
     };
 
     // Find hermes-test.config.json — check project root, then walk up
@@ -174,6 +176,11 @@ pub fn read_config(project_root: &Path) -> BundleConfig {
     // "testMatch" — custom test file pattern
     if let Some(val) = json["testMatch"].as_str() {
         config.test_match = Some(val.to_string());
+    }
+
+    // "coverageThreshold" — minimum coverage % (e.g. 65)
+    if let Some(val) = json["coverageThreshold"].as_f64() {
+        config.coverage_threshold = Some(val);
     }
 
     // Auto-detect native modules by scanning for ios/android dirs.
