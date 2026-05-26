@@ -306,18 +306,7 @@ JSON.stringify({
             if use_split {
                 run_tests_split(&rt, &test_files, &root, &all_mocks, &cfg, start);
             } else {
-                // Coverage: create instrumented copies of test files BEFORE bundling.
-                // Uses the same transforms mechanism as shadow wrappers.
-                let (cov_transforms, cov_dir) = if coverage {
-                    let (t, d) = coverage::create_coverage_transforms(&test_files, &root);
-                    eprintln!(" \x1b[2mCoverage:\x1b[0m instrumented {} test files", t.len());
-                    (t, Some(d))
-                } else {
-                    (Vec::new(), None)
-                };
-                run_tests_single(&rt, &test_files, &root, &all_mocks, &cfg, start, &cov_transforms, coverage);
-                // Cleanup coverage temp dir
-                if let Some(d) = cov_dir { let _ = std::fs::remove_dir_all(d); }
+                run_tests_single(&rt, &test_files, &root, &all_mocks, &cfg, start, &[], coverage);
             }
         }
     }
@@ -341,12 +330,12 @@ fn run_tests_single(
     let bytecode_path = cache_dir.join(format!("single-{cache_key}.hbc"));
 
     // Try bytecode cache first (fastest), then JS cache, then fresh bundle.
-    // Coverage mode always rebuilds (transforms change the test files).
-    let bundle = if !coverage && bytecode_path.exists() {
+    let bundle = if bytecode_path.exists() {
         // Bytecode cache hit — skip everything, load directly
         None
-    } else if !coverage && cache_path.exists() {
-        if let Ok(cached) = std::fs::read_to_string(&cache_path) { Some(cached) } else { None }
+    } else if let Ok(cached) = std::fs::read_to_string(&cache_path) {
+        // JS cache hit — patched bundle, skip shadow setup + esbuild
+        Some(cached)
     } else {
         // Cache miss — full pipeline: shadow wrappers → esbuild → patch → cache
         let (wrapper_cfg, wrapper_shim_dir) = bundler::create_wrapper_shims(root, cfg);
@@ -395,8 +384,27 @@ fn run_tests_single(
         Some(b)
     };
 
-    // No post-bundle instrumentation — coverage transforms are applied per-file
-    // BEFORE esbuild bundles, via the transforms mechanism (same as shadow wrappers).
+    // Coverage: instrument the bundle post-esbuild
+    let coverage_map_path = cache_dir.join("coverage-map.json");
+    let bundle = if coverage {
+        let js = bundle.or_else(|| std::fs::read_to_string(&cache_path).ok())
+            .unwrap_or_else(|| { eprintln!("No bundle for coverage"); std::process::exit(1); });
+        match coverage::instrument_bundle(&js, "bundle.js") {
+            Some((instrumented, coverage_map)) => {
+                eprintln!(" \x1b[2mCoverage:\x1b[0m instrumented ({} → {} bytes)", js.len(), instrumented.len());
+                let _ = std::fs::create_dir_all(&cache_dir);
+                let _ = std::fs::write(&coverage_map_path, &coverage_map);
+                let _ = std::fs::write(cache_dir.join("instrumented-debug.js"), &instrumented);
+                Some(instrumented)
+            }
+            None => {
+                eprintln!(" \x1b[33mCoverage: instrumentation failed, running without\x1b[0m");
+                Some(js)
+            }
+        }
+    } else {
+        bundle
+    };
 
     // Eval: prefer bytecode → compile+cache bytecode → fallback to JS text
     let eval_result = if !coverage && bytecode_path.exists() {
@@ -435,7 +443,8 @@ fn run_tests_single(
 
     // Collect coverage before printing summary
     if coverage {
-        if let Some(lcov) = coverage::collect_coverage(rt) {
+        let map_path = if coverage_map_path.exists() { Some(coverage_map_path.as_path()) } else { None };
+        if let Some(lcov) = coverage::collect_coverage(rt, map_path) {
             let cov_dir = root.join("coverage");
             let _ = std::fs::create_dir_all(&cov_dir);
             let lcov_path = cov_dir.join("lcov.info");
