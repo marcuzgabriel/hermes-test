@@ -1,12 +1,14 @@
 {
   "name": "hermes-test",
-  "version": "0.1.0",
+  "version": "0.2.1",
   "description": "147x faster than Jest. Test runner for React Native and Expo that runs in Hermes.",
   "main": "src/index.ts",
   "types": "index.d.ts",
   "typesVersions": {
     "*": {
-      "store": ["store.d.ts"]
+      "store": [
+        "store.d.ts"
+      ]
     }
   },
   "exports": {
@@ -48,8 +50,16 @@
     "react": ">=18"
   },
   "optionalDependencies": {
-    "@hermes-test/darwin-arm64": "0.1.0",
-    "@hermes-test/darwin-x64": "0.1.0",
-    "@hermes-test/linux-x64": "0.1.0"
-  }
+    "@hermes-test/darwin-arm64": "0.2.1",
+    "@hermes-test/darwin-x64": "0.2.1",
+    "@hermes-test/linux-x64": "0.2.1"
+  },
+  "files": [
+    "src/",
+    "bin/",
+    "dist/",
+    "index.d.ts",
+    "store.d.ts",
+    "shims/"
+  ]
 }

@@ -11,3 +11,4 @@ dist/
 package-lock.json
 bench/fixtures-jest/node_modules/
 .vscode/
+packages/hermes-test-darwin-arm64/bin/
