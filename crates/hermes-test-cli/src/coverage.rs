@@ -163,6 +163,182 @@ fn build_branch_map(b:&[(u32,u32,String,u32)],lt:&LineTable)->String{let mut o=S
 fn build_zero_map(c:usize)->String{let mut o=String::from("{");for i in 0..c{if i>0{o.push(',');}o.push_str(&format!("\"{i}\":0"));}o.push('}');o}
 fn build_branch_zero_map(b:&[(u32,u32,String,u32)])->String{let mut o=String::from("{");for(i,(_,_,_,p))in b.iter().enumerate(){if i>0{o.push(',');}let z:Vec<&str>=(0..*p).map(|_|"0").collect();o.push_str(&format!("\"{i}\":[{}]",z.join(",")));}o.push('}');o}
 
+// --- Coverage reporting ---
+
+/// Parse lcov data and print a terminal summary table.
+pub fn print_summary(lcov: &str) {
+    let mut files: Vec<(String, u64, u64, u64, u64)> = Vec::new(); // (name, hit, total, fn_hit, fn_total)
+
+    let mut cur_file = String::new();
+    let mut hit = 0u64;
+    let mut total = 0u64;
+    let mut fn_hit = 0u64;
+    let mut fn_total = 0u64;
+
+    for line in lcov.lines() {
+        if let Some(f) = line.strip_prefix("SF:") {
+            cur_file = f.to_string();
+            hit = 0; total = 0; fn_hit = 0; fn_total = 0;
+        } else if let Some(da) = line.strip_prefix("DA:") {
+            if let Some((_, count_str)) = da.split_once(',') {
+                total += 1;
+                if count_str.parse::<u64>().unwrap_or(0) > 0 { hit += 1; }
+            }
+        } else if line.starts_with("FN:") {
+            fn_total += 1;
+        } else if let Some(fnda) = line.strip_prefix("FNDA:") {
+            if let Some((count_str, _)) = fnda.split_once(',') {
+                if count_str.parse::<u64>().unwrap_or(0) > 0 { fn_hit += 1; }
+            }
+        } else if line == "end_of_record" && !cur_file.is_empty() {
+            files.push((cur_file.clone(), hit, total, fn_hit, fn_total));
+        }
+    }
+
+    if files.is_empty() { return; }
+
+    // Find max filename length for formatting
+    let max_name = files.iter().map(|(n, _, _, _, _)| n.len()).max().unwrap_or(20).min(60);
+
+    eprintln!();
+    eprintln!(" {:<width$}  {:>7}  {:>7}", "File", "Lines", "Funcs", width = max_name);
+    eprintln!(" {:<width$}  {:>7}  {:>7}", "─".repeat(max_name), "───────", "───────", width = max_name);
+
+    let mut total_hit = 0u64;
+    let mut total_lines = 0u64;
+    let mut total_fn_hit = 0u64;
+    let mut total_fns = 0u64;
+
+    for (name, h, t, fh, ft) in &files {
+        let pct = if *t > 0 { (*h as f64 / *t as f64) * 100.0 } else { 100.0 };
+        let fn_pct = if *ft > 0 { (*fh as f64 / *ft as f64) * 100.0 } else { 100.0 };
+        let color = if pct >= 80.0 { "\x1b[32m" } else if pct >= 50.0 { "\x1b[33m" } else { "\x1b[31m" };
+        let fn_color = if fn_pct >= 80.0 { "\x1b[32m" } else if fn_pct >= 50.0 { "\x1b[33m" } else { "\x1b[31m" };
+
+        let display_name = if name.len() > max_name { &name[name.len() - max_name..] } else { name };
+        eprintln!(" {:<width$}  {color}{:>5.1}%\x1b[0m  {fn_color}{:>5.1}%\x1b[0m",
+            display_name, pct, fn_pct, width = max_name);
+
+        total_hit += h; total_lines += t; total_fn_hit += fh; total_fns += ft;
+    }
+
+    let total_pct = if total_lines > 0 { (total_hit as f64 / total_lines as f64) * 100.0 } else { 100.0 };
+    let total_fn_pct = if total_fns > 0 { (total_fn_hit as f64 / total_fns as f64) * 100.0 } else { 100.0 };
+    let color = if total_pct >= 80.0 { "\x1b[32m" } else if total_pct >= 50.0 { "\x1b[33m" } else { "\x1b[31m" };
+    let fn_color = if total_fn_pct >= 80.0 { "\x1b[32m" } else if total_fn_pct >= 50.0 { "\x1b[33m" } else { "\x1b[31m" };
+
+    eprintln!(" {:<width$}  {:>7}  {:>7}", "─".repeat(max_name), "───────", "───────", width = max_name);
+    eprintln!(" {:<width$}  {color}{:>5.1}%\x1b[0m  {fn_color}{:>5.1}%\x1b[0m",
+        "Total", total_pct, total_fn_pct, width = max_name);
+    eprintln!(" {:<width$}  {:>4}/{:<4}  {:>4}/{:<4}",
+        "", total_hit, total_lines, total_fn_hit, total_fns, width = max_name);
+    eprintln!();
+}
+
+/// Generate a self-contained HTML coverage report from lcov data.
+pub fn generate_html_report(lcov: &str, output_path: &std::path::Path) -> Result<(), String> {
+    let mut files: Vec<(String, Vec<(u64, u64)>)> = Vec::new(); // (name, [(line, count)])
+
+    let mut cur_file = String::new();
+    let mut lines: Vec<(u64, u64)> = Vec::new();
+
+    for line in lcov.lines() {
+        if let Some(f) = line.strip_prefix("SF:") {
+            cur_file = f.to_string();
+            lines = Vec::new();
+        } else if let Some(da) = line.strip_prefix("DA:") {
+            if let Some((line_str, count_str)) = da.split_once(',') {
+                let l = line_str.parse::<u64>().unwrap_or(0);
+                let c = count_str.parse::<u64>().unwrap_or(0);
+                lines.push((l, c));
+            }
+        } else if line == "end_of_record" && !cur_file.is_empty() {
+            lines.sort_by_key(|(l, _)| *l);
+            files.push((cur_file.clone(), lines.clone()));
+        }
+    }
+
+    let mut html = String::from(r#"<!DOCTYPE html>
+<html><head><meta charset="utf-8"><title>Coverage Report</title>
+<style>
+  body { font-family: -apple-system, system-ui, sans-serif; margin: 0; padding: 20px; background: #1a1a2e; color: #eee; }
+  h1 { color: #e94560; margin-bottom: 5px; }
+  .summary { background: #16213e; padding: 15px; border-radius: 8px; margin-bottom: 20px; }
+  .summary table { border-collapse: collapse; width: 100%; }
+  .summary th { text-align: left; padding: 8px 12px; border-bottom: 1px solid #333; color: #888; }
+  .summary td { padding: 8px 12px; }
+  .pct { font-weight: bold; }
+  .high { color: #0f9d58; }
+  .mid { color: #f4b400; }
+  .low { color: #db4437; }
+  .file-section { background: #16213e; border-radius: 8px; margin-bottom: 15px; overflow: hidden; }
+  .file-header { padding: 10px 15px; background: #0f3460; cursor: pointer; display: flex; justify-content: space-between; }
+  .file-header:hover { background: #1a4a7a; }
+  .file-name { font-weight: bold; }
+  .file-body { display: none; }
+  .file-body.open { display: block; }
+  .line { display: flex; font-family: 'SF Mono', Monaco, monospace; font-size: 12px; line-height: 1.6; }
+  .line-no { width: 50px; text-align: right; padding-right: 10px; color: #555; user-select: none; }
+  .line-count { width: 50px; text-align: right; padding-right: 10px; color: #888; user-select: none; }
+  .line-code { flex: 1; padding-left: 10px; white-space: pre; }
+  .covered { background: rgba(15, 157, 88, 0.15); }
+  .uncovered { background: rgba(219, 68, 55, 0.2); }
+  .uncovered .line-count { color: #db4437; font-weight: bold; }
+</style>
+</head><body>
+<h1>Coverage Report</h1>
+"#);
+
+    // Summary table
+    html.push_str("<div class='summary'><table><tr><th>File</th><th>Lines</th><th>Covered</th><th>%</th></tr>\n");
+    for (name, lines) in &files {
+        let total = lines.len();
+        let covered = lines.iter().filter(|(_, c)| *c > 0).count();
+        let pct = if total > 0 { (covered as f64 / total as f64) * 100.0 } else { 100.0 };
+        let cls = if pct >= 80.0 { "high" } else if pct >= 50.0 { "mid" } else { "low" };
+        html.push_str(&format!(
+            "<tr><td>{name}</td><td>{total}</td><td>{covered}</td><td class='pct {cls}'>{pct:.1}%</td></tr>\n"
+        ));
+    }
+    html.push_str("</table></div>\n");
+
+    // Per-file line details
+    for (name, cov_lines) in &files {
+        let total = cov_lines.len();
+        let covered = cov_lines.iter().filter(|(_, c)| *c > 0).count();
+        let pct = if total > 0 { (covered as f64 / total as f64) * 100.0 } else { 100.0 };
+        let cls = if pct >= 80.0 { "high" } else if pct >= 50.0 { "mid" } else { "low" };
+
+        html.push_str(&format!(
+            "<div class='file-section'><div class='file-header' onclick='this.nextElementSibling.classList.toggle(\"open\")'><span class='file-name'>{name}</span><span class='pct {cls}'>{pct:.1}%</span></div>\n<div class='file-body'>\n"
+        ));
+
+        let max_line = cov_lines.iter().map(|(l, _)| *l).max().unwrap_or(0);
+        let cov_map: std::collections::HashMap<u64, u64> = cov_lines.iter().copied().collect();
+
+        for line_no in 1..=max_line {
+            let (cls, count_str) = if let Some(&count) = cov_map.get(&line_no) {
+                if count > 0 {
+                    ("covered", format!("{count}x"))
+                } else {
+                    ("uncovered", "0x".to_string())
+                }
+            } else {
+                ("", String::new())
+            };
+            html.push_str(&format!(
+                "<div class='line {cls}'><span class='line-no'>{line_no}</span><span class='line-count'>{count_str}</span><span class='line-code'></span></div>\n"
+            ));
+        }
+
+        html.push_str("</div></div>\n");
+    }
+
+    html.push_str("</body></html>");
+
+    std::fs::write(output_path, &html).map_err(|e| format!("Failed to write HTML report: {e}"))
+}
+
 // --- Coverage collection ---
 
 pub fn collect_coverage(rt:&crate::hermes::Runtime,map_path:Option<&std::path::Path>)->Option<String>{

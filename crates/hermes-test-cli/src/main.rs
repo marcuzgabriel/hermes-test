@@ -455,6 +455,14 @@ fn run_tests_single(
                 Ok(_) => eprintln!(" \x1b[32mCoverage:\x1b[0m {}", lcov_path.display()),
                 Err(e) => eprintln!(" \x1b[33mCoverage write failed: {e}\x1b[0m"),
             }
+            // Terminal summary
+            coverage::print_summary(&lcov);
+            // HTML report
+            let html_path = cov_dir.join("index.html");
+            match coverage::generate_html_report(&lcov, &html_path) {
+                Ok(_) => eprintln!(" \x1b[32mHTML report:\x1b[0m {}", html_path.display()),
+                Err(e) => eprintln!(" \x1b[33mHTML report failed: {e}\x1b[0m"),
+            }
         } else {
             eprintln!(" \x1b[33mNo coverage data collected\x1b[0m");
         }
