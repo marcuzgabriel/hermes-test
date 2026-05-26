@@ -1,4 +1,5 @@
 name: Release
+# v0.1.0 — arm64 + linux
 
 on:
   workflow_dispatch:
