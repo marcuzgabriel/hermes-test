@@ -7,6 +7,7 @@
 
   // Shims replace native/unsupported modules with hermes-test compatible versions
   "shims": {
+    // react-native shim is auto-included by the CLI, but can be explicitly declared here
     "react-native": "hermes-test/shims/react-native",
     "react-redux": "hermes-test/shims/react-redux",
     "@reduxjs/toolkit/query/react": "hermes-test/shims/rtk-query",
