@@ -1,6 +1,6 @@
 {
   "name": "@hermes-test/linux-x64",
-  "version": "0.2.3",
+  "version": "0.2.4",
   "description": "hermes-test binary for Linux x64",
   "os": [
     "linux"
