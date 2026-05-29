@@ -79,6 +79,9 @@ jobs:
           node bundle.mjs
           git checkout package.json
 
+      - name: Sync Cargo.toml version
+        run: sed -i.bak "s/^version = \".*\"/version = \"${{ inputs.version }}\"/" crates/hermes-test-cli/Cargo.toml
+
       - name: Build CLI
         run: cargo build --release --target ${{ matrix.target }}
 
@@ -123,7 +126,8 @@ jobs:
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
-          git add packages/*/package.json
+          sed -i "s/^version = \".*\"/version = \"${{ inputs.version }}\"/" crates/hermes-test-cli/Cargo.toml
+          git add packages/*/package.json crates/hermes-test-cli/Cargo.toml
           git diff --cached --quiet || git commit -m "v${{ inputs.version }}"
           git push origin main
 

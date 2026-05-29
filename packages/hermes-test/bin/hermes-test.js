@@ -25,7 +25,12 @@ if (!pkg) {
 
 let binPath;
 try {
-  binPath = path.join(require.resolve(`${pkg}/package.json`), "..", "bin", "hermes-test");
+  // Search from cwd and script dir so the platform package is found
+  // even when hoisted to a different node_modules in monorepos (bun/pnpm/yarn workspaces)
+  const resolved = require.resolve(`${pkg}/package.json`, {
+    paths: [process.cwd(), path.join(__dirname, "..")]
+  });
+  binPath = path.join(path.dirname(resolved), "bin", "hermes-test");
 } catch {
   console.error(`hermes-test: platform package ${pkg} not installed.`);
   console.error(`Run: npm install --save-dev ${pkg}`);
