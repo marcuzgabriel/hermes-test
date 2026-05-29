@@ -15,13 +15,12 @@ jobs:
       - name: Clone Hermes
         run: |
           for i in 1 2 3; do
-            git clone --depth 1 https://github.com/facebook/hermes.git vendor/hermes && break
+            git clone --filter=blob:none https://github.com/facebook/hermes.git vendor/hermes && break
             echo "Attempt $i failed, retrying..."
             rm -rf vendor/hermes
             sleep 5
           done
           cd vendor/hermes
-          git fetch --depth 1 origin fd0e1d3ed
           git checkout fd0e1d3ed
           sed -i.bak 's/FATAL_ERROR "Host compiler/WARNING "Host compiler/g' external/llvh/cmake/modules/CheckAtomic.cmake
 
