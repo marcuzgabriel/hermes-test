@@ -1,96 +1,91 @@
----
-title: hermes-test — Full Application Architecture
----
 flowchart TB
-    subgraph USER["User's Project"]
-        TEST["*.test.ts files"]
-        SRC["Source files (hooks, utils)"]
-        NM["node_modules/\n(react, axios, date-fns, etc.)"]
+    subgraph PROJECT["User's Project"]
+        TEST["*.test.ts/tsx/js/jsx"]
+        SRC["Source files"]
+        NM["node_modules"]
     end
 
-    subgraph CLI["Rust CLI (hermes-test-cli)"]
-        PARSE["Parse CLI args\n(clap)"]
-        DISCOVER["Discover test files\n(walk *.test.ts)"]
-        ENTRY["Generate entry file\n(.hermes-test-entry.js)"]
-        CHOOSE{Bundler?}
+    subgraph CLI["Rust CLI (clap)"]
+        DISCOVER["Discover test files"]
+        ENTRY["Generate .hermes-test-entry.js"]
+        CACHE{Cache hit?}
+        DISCOVER --> ENTRY --> CACHE
     end
 
-    subgraph BUNDLE["Bundling Phase (~7ms esbuild / ~470ms Metro)"]
-        subgraph ESBUILD["esbuild (default)"]
-            EB_RESOLVE["Resolve full import graph\n(source + node_modules)"]
-            EB_TRANSFORM["Transform TS/JSX → JS"]
-            EB_BUNDLE["Bundle into single IIFE"]
-            EB_PATCH["Patch for Hermes\n• fix for-let-of closure bug\n• add configurable:true\n• downlevel async/await"]
+    subgraph BUNDLING["esbuild (~7ms)"]
+        RESOLVE["Resolve imports\n(source + node_modules)"]
+        TRANSFORM["Transform TS/JSX -> JS"]
+        BUNDLE["Bundle into single IIFE"]
+        RESOLVE --> TRANSFORM --> BUNDLE
+    end
+
+    subgraph PATCHES["Hermes Patches"]
+        P1["for-let-of closure fix"]
+        P2["configurable:true\n(enables mocking)"]
+        P3["__toESM Proxy fix"]
+        P4["class extends downlevel"]
+    end
+
+    subgraph MOCKING["Shadow Wrapper System"]
+        SHADOW["Alias modules at build time"]
+        PROXY["Proxy-based mock registry"]
+        ISOLATION["Per-file mock isolation"]
+        SHADOW --> PROXY --> ISOLATION
+    end
+
+    subgraph BYTECODE["Bytecode Cache (.hermes-test-cache/)"]
+        JS_CACHE[".js cache"]
+        HBC_CACHE[".hbc bytecode cache"]
+    end
+
+    subgraph HERMES["Hermes Runtime (embedded via C++ FFI)"]
+        subgraph POLYFILLS["Phase 0: Polyfills"]
+            POL1["process.env / nextTick"]
+            POL2["setTimeout / setImmediate"]
+            POL3["crypto.getRandomValues"]
+            POL4["MessageChannel"]
         end
-        subgraph METRO["Metro (--bundler metro)"]
-            M_CONFIG["Load metro.config.js"]
-            M_BUILD["runBuild()\n• Babel transform\n• RN-specific resolution\n• .ios.ts / .native.ts"]
+
+        subgraph HARNESS["Phase 1: Harness (globalThis.__HT)"]
+            H_TEST["test / expect / group"]
+            H_HOOKS["renderHook / act / waitFor"]
+            H_MOCK["spy / mockModule / mockFetch"]
+            H_TIMER["useFakeTimers / advanceTimersByTime"]
+            H_LIFE["beforeEach / afterEach / beforeAll / afterAll"]
         end
-    end
 
-    subgraph ENTRY_FILE["Generated Entry File"]
-        direction TB
-        BOOTSTRAP["globalThis.__React = require('react')\nglobalThis.__ReactTestRenderer = require('react-test-renderer')"]
-        IMPORTS["require('./src/useAuth.test.ts')\nrequire('./src/utils.test.ts')\n..."]
-        RUN["globalThis.__metroTest.runTests()\n→ stash results on globalThis.__metroTestResults"]
-    end
+        subgraph EXECUTION["Phase 2: Test Execution"]
+            REACT["globalThis.__HT_React\n(react-reconciler renderer)"]
+            REGISTER["Tests register via test()"]
+            RUN["runTests() executes all"]
+            REACT --> REGISTER --> RUN
+        end
 
-    subgraph HERMES["Hermes Runtime"]
-        direction TB
-        POLYFILLS["Phase 0: Polyfills\n(process.env, setTimeout,\nsetImmediate, console)"]
-        HARNESS["Phase 1: Eval harness.bundle.js (16KB)\n→ globalThis.__metroTest =\n{ test, expect, spy, renderHook,\n  act, waitFor, useMock, runTests }"]
-        EVAL_BUNDLE["Phase 2: Eval test bundle\n→ React loaded onto globalThis\n→ tests registered via test()\n→ runTests() executes all"]
-        RESULTS["Phase 3: Read results\n→ eval('globalThis.__metroTestResults')"]
-    end
+        subgraph RESULTS["Phase 3: Results"]
+            COLLECT["globalThis.__HT_results"]
+            DATA["tests[] / passed / failed / skipped / total"]
+            COLLECT --> DATA
+        end
 
-    subgraph REACT_BRIDGE["React Singleton Bridge"]
-        direction LR
-        GLOBAL_R["globalThis.__React"]
-        HARNESS_READ["harness hooks.ts\ngetReact() reads global"]
-        USER_CODE["User's hooks\nimport { useState } from 'react'"]
-        SAME["Same React instance\n(hooks work correctly)"]
+        POLYFILLS --> HARNESS --> EXECUTION --> RESULTS
     end
 
     subgraph OUTPUT["Output"]
-        PRETTY["Pretty Reporter\n(stderr, colored)"]
-        JSON_OUT["JSON Results\n(stdout)"]
-        EXIT["Exit code\n0 = pass, 1 = fail"]
+        PRETTY["Pretty reporter\n(stderr, colored, live)"]
+        JSON_OUT["JSON results (stdout)"]
+        EXIT["Exit code 0/1"]
     end
 
-    TEST --> PARSE
-    PARSE --> DISCOVER
-    DISCOVER --> ENTRY
-    ENTRY --> CHOOSE
+    PROJECT --> DISCOVER
 
-    CHOOSE -->|"--bundler esbuild\n(default)"| EB_RESOLVE
-    CHOOSE -->|"--bundler metro"| M_CONFIG
+    CACHE -->|"miss"| RESOLVE
+    CACHE -->|"hit"| HBC_CACHE
 
-    EB_RESOLVE --> EB_TRANSFORM
-    SRC --> EB_RESOLVE
-    NM --> EB_RESOLVE
-    EB_TRANSFORM --> EB_BUNDLE
-    EB_BUNDLE --> EB_PATCH
+    BUNDLE --> PATCHES
+    PATCHES --> MOCKING
+    MOCKING --> JS_CACHE
+    JS_CACHE --> HBC_CACHE
 
-    M_CONFIG --> M_BUILD
-    SRC --> M_BUILD
-    NM --> M_BUILD
+    HBC_CACHE --> POLYFILLS
 
-    ENTRY_FILE -.-> EB_RESOLVE
-    ENTRY_FILE -.-> M_BUILD
-
-    EB_PATCH --> POLYFILLS
-    M_BUILD --> POLYFILLS
-
-    POLYFILLS --> HARNESS
-    HARNESS --> EVAL_BUNDLE
-    EVAL_BUNDLE --> RESULTS
-
-    BOOTSTRAP --> GLOBAL_R
-    GLOBAL_R --> HARNESS_READ
-    GLOBAL_R --> USER_CODE
-    HARNESS_READ --> SAME
-    USER_CODE --> SAME
-
-    RESULTS --> PRETTY
-    RESULTS --> JSON_OUT
-    RESULTS --> EXIT
+    DATA --> OUTPUT

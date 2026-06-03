@@ -1,0 +1,51 @@
+flowchart TB
+    subgraph ENTRY["Generated Entry File"]
+        direction TB
+        E1["globalThis.__HT_React = require('react')"]
+        E2["Pre-register mock placeholders"]
+        E3["require('./src/*.test.ts') for each test"]
+        E4["globalThis.__HT.runTests()"]
+        E1 --> E2 --> E3 --> E4
+    end
+
+    subgraph CACHE["Bundle Cache (.hermes-test-cache/)"]
+        CHECK{Cache hit?}
+        JS["JS cache (single-{hash}.js)"]
+        HBC["Bytecode cache (single-{hash}.hbc)"]
+    end
+
+    subgraph ESBUILD["esbuild Pipeline (~7ms)"]
+        direction TB
+        RESOLVE["Resolve full import graph\n(source + node_modules)"]
+        TRANSFORM["Transform TS/JSX -> JS"]
+        BUNDLE["Bundle into single IIFE"]
+        RESOLVE --> TRANSFORM --> BUNDLE
+    end
+
+    subgraph PATCHES["Hermes Patches"]
+        direction TB
+        P1["Fix for-let-of closure bug\n(rewrite __copyProps to var + bind)"]
+        P2["Add configurable:true\n(ESM namespace getters, enables mocking)"]
+        P3["Fix __toESM for Proxy\n(skip copying for Proxy-wrapped modules)"]
+        P4["Downlevel class extends\n(convert to Reflect.construct)"]
+    end
+
+    subgraph SHADOW["Shadow Wrapper System"]
+        SW1["Alias modules for mock isolation"]
+        SW2["Package shims for externalized modules"]
+    end
+
+    subgraph SPLIT["Split Bundle Mode (--split)"]
+        VENDOR["Vendor bundle (node_modules)"]
+        GROUPS["Group bundles (per test file groups)"]
+    end
+
+    ENTRY --> CHECK
+    CHECK -->|"miss"| ESBUILD
+    CHECK -->|"hit"| JS
+    CHECK -->|"hit"| HBC
+
+    BUNDLE --> PATCHES
+    PATCHES --> SHADOW
+
+    ESBUILD -.->|"--split"| SPLIT

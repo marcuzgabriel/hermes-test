@@ -1,0 +1,46 @@
+flowchart TB
+    subgraph PHASE0["Phase 0: Polyfills"]
+        direction LR
+        P1["process.env\nprocess.nextTick"]
+        P2["setTimeout\nsetImmediate"]
+        P3["crypto.getRandomValues"]
+        P4["MessageChannel\nObject.fromEntries"]
+    end
+
+    subgraph PHASE1["Phase 1: Harness (embedded in binary)"]
+        direction TB
+        H1["Eval harness.bundle.js"]
+        H2["globalThis.__HT exposes:\ntest, expect, spy, spyOn,\nrenderHook, act, waitFor,\nuseMock, mockModule, mockFetch,\nuseFakeTimers, runTests,\nbeforeEach, afterEach,\nbeforeAll, afterAll, group"]
+        H1 --> H2
+    end
+
+    subgraph PHASE2["Phase 2: Test Execution"]
+        direction TB
+        T1["React loaded -> globalThis.__HT_React"]
+        T2["Mock placeholders registered"]
+        T3["Test files register via test()"]
+        T4["runTests() executes all tests"]
+        T1 --> T2 --> T3 --> T4
+    end
+
+    subgraph PHASE3["Phase 3: Results"]
+        direction TB
+        R1["eval('globalThis.__HT_results')"]
+        R2["JSON: tests[], passed, failed,\nskipped, total"]
+        R1 --> R2
+    end
+
+    subgraph REACT["React Singleton Bridge (react-reconciler)"]
+        direction TB
+        RB1["Entry sets globalThis.__HT_React"]
+        RB2["Harness uses react-reconciler\n(custom renderer, replaces\ndeprecated react-test-renderer)"]
+        RB3["User code imports react normally"]
+        RB4["Same React instance shared\n= hooks (useState, useEffect) work correctly"]
+        RB1 --> RB2
+        RB1 --> RB3
+        RB2 --> RB4
+        RB3 --> RB4
+    end
+
+    PHASE0 --> PHASE1 --> PHASE2 --> PHASE3
+    PHASE2 -.-> REACT

@@ -1,0 +1,43 @@
+flowchart TB
+    subgraph API["Mock API (globalThis.__HT)"]
+        SPY["spy() / spyOn()\nReplace individual functions"]
+        MOCK_MOD["mockModule()\nReplace entire module imports"]
+        MOCK_FETCH["mockFetch() / http / HttpResponse\nIntercept network requests"]
+        TIMERS["useFakeTimers() / advanceTimersByTime()\nControl time"]
+    end
+
+    subgraph SHADOW["Shadow Wrapper System (build-time)"]
+        direction TB
+        S1["esbuild aliases each module\nto a shadow wrapper"]
+        S2["Shadow wrapper checks mock registry\nbefore returning real module"]
+        S3["Package shims for\nexternalized node_modules"]
+        S1 --> S2 --> S3
+    end
+
+    subgraph PROXY["Proxy-Based Registry (runtime)"]
+        direction TB
+        PR1["Exports wrapped in ES Proxy"]
+        PR2["Property access checks\nmock registry first"]
+        PR3["Falls through to real module\nif no mock registered"]
+        PR1 --> PR2 --> PR3
+    end
+
+    subgraph ISOLATION["Per-File Mock Isolation"]
+        direction TB
+        I1["globalThis.__currentTestFile\nset before each test file"]
+        I2["Mocks scoped to current file"]
+        I3["clearAllMocks() / resetRegistry()\nbetween files"]
+        I1 --> I2 --> I3
+    end
+
+    subgraph UNMOCKABLE["Cannot Bundle - Must Mock"]
+        FETCH["fetch API\n(no network in Hermes)"]
+        NATIVE["RN native modules\n(no native runtime)"]
+    end
+
+    API --> SHADOW
+    SHADOW --> PROXY
+    PROXY --> ISOLATION
+
+    MOCK_FETCH -.-> FETCH
+    MOCK_MOD -.-> NATIVE
