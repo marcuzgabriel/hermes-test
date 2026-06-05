@@ -205,6 +205,17 @@ expect(button).toBeEnabled();       expect(button).toBeDisabled();
 expect(element).toBeVisible();      // checks display + opacity
 ```
 
+### Snapshot testing
+
+```ts
+// First run: creates __snapshots__/myComponent.test.tsx.snap
+expect(toJSON()).toMatchSnapshot();
+
+// Subsequent runs: compares against stored snapshot, fails on mismatch
+// Update snapshots:
+// hermes-test --update-snapshots
+```
+
 ### Fetch mocking (MSW-style)
 
 ```ts

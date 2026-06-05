@@ -253,9 +253,9 @@ try {
             .unwrap_or_else(|| file.file_name()
                 .map(|n| n.to_string_lossy().to_string())
                 .unwrap_or_else(|| path.to_string()));
+        // __currentTestFilePath has the full require path for snapshot file resolution
         entry.push_str(&format!(
-            "if (globalThis.__HT && globalThis.__HT.resetMockModulePatches) globalThis.__HT.resetMockModulePatches();\nglobalThis.__currentTestFile = '{}';\ntry {{ require('{}'); }} catch(e) {{ if (globalThis.__HT) globalThis.__HT.registerCrash('{}', String(e && e.message || e)); }}\n",
-            file_id, require_path, file_id
+            "if (globalThis.__HT && globalThis.__HT.resetMockModulePatches) globalThis.__HT.resetMockModulePatches();\nglobalThis.__currentTestFile = '{file_id}';\nglobalThis.__currentTestFilePath = '{require_path}';\ntry {{ require('{require_path}'); }} catch(e) {{ if (globalThis.__HT) globalThis.__HT.registerCrash('{file_id}', String(e && e.message || e)); }}\n",
         ));
     }
 

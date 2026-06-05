@@ -82,6 +82,7 @@ export interface Assertion<T = unknown> {
   toBeEnabled(): void;
   toBeDisabled(): void;
   toBeVisible(): void;
+  toMatchSnapshot(): void;
 
   not: Assertion<T>;
 

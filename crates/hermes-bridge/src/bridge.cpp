@@ -8,6 +8,7 @@
 #include <cstring>
 #include <memory>
 #include <string>
+#include <sys/stat.h>
 
 namespace jsi = facebook::jsi;
 
@@ -106,6 +107,55 @@ static void installConsole(jsi::Runtime& runtime) {
           fflush(stderr);
         }
         return jsi::Value::undefined();
+      }));
+
+  // Install __HT_readFile — read file contents (for snapshot testing)
+  runtime.global().setProperty(runtime, "__HT_readFile",
+    jsi::Function::createFromHostFunction(runtime,
+      jsi::PropNameID::forAscii(runtime, "__HT_readFile"), 1,
+      [](jsi::Runtime& rt, const jsi::Value&,
+         const jsi::Value* args, size_t count) -> jsi::Value {
+        if (count == 0 || !args[0].isString())
+          return jsi::Value::null();
+        auto path = args[0].getString(rt).utf8(rt);
+        FILE* f = fopen(path.c_str(), "r");
+        if (!f) return jsi::Value::null();
+        fseek(f, 0, SEEK_END);
+        long size = ftell(f);
+        fseek(f, 0, SEEK_SET);
+        std::string content(size, '\0');
+        fread(&content[0], 1, size, f);
+        fclose(f);
+        return jsi::String::createFromUtf8(rt, content);
+      }));
+
+  // Install __HT_writeFile — write file contents (for snapshot testing)
+  runtime.global().setProperty(runtime, "__HT_writeFile",
+    jsi::Function::createFromHostFunction(runtime,
+      jsi::PropNameID::forAscii(runtime, "__HT_writeFile"), 2,
+      [](jsi::Runtime& rt, const jsi::Value&,
+         const jsi::Value* args, size_t count) -> jsi::Value {
+        if (count < 2 || !args[0].isString() || !args[1].isString())
+          return jsi::Value(false);
+        auto path = args[0].getString(rt).utf8(rt);
+        auto content = args[1].getString(rt).utf8(rt);
+        // Create parent directories if needed
+        auto lastSlash = path.rfind('/');
+        if (lastSlash != std::string::npos) {
+          auto dir = path.substr(0, lastSlash);
+          // Simple recursive mkdir (POSIX)
+          std::string built;
+          for (auto& ch : dir) {
+            built += ch;
+            if (ch == '/') mkdir(built.c_str(), 0755);
+          }
+          mkdir(dir.c_str(), 0755);
+        }
+        FILE* f = fopen(path.c_str(), "w");
+        if (!f) return jsi::Value(false);
+        fwrite(content.c_str(), 1, content.size(), f);
+        fclose(f);
+        return jsi::Value(true);
       }));
 
   // Install __HT_drain — calls Hermes's real microtask queue drain.

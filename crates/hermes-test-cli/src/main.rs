@@ -61,6 +61,10 @@ struct Cli {
     #[arg(long)]
     coverage: bool,
 
+    /// Update snapshot files instead of comparing
+    #[arg(long, alias = "update-snapshots")]
+    update_snapshots: bool,
+
     #[command(subcommand)]
     command: Option<Commands>,
 }
@@ -95,7 +99,7 @@ fn main() {
                 root,
                 no_bundle,
             } => {
-                run_tests(&files, &root, no_bundle, false, false);
+                run_tests(&files, &root, no_bundle, false, false, false);
             }
             Commands::Watch {
                 files,
@@ -121,7 +125,7 @@ fn main() {
     if cli.watch {
         watch_tests(&files, &root);
     } else {
-        run_tests(&files, &root, cli.no_bundle, cli.split, cli.coverage);
+        run_tests(&files, &root, cli.no_bundle, cli.split, cli.coverage, cli.update_snapshots);
     }
 }
 
@@ -209,7 +213,7 @@ fn eval_file(path: &str) {
     }
 }
 
-fn run_tests(files: &[PathBuf], root: &PathBuf, no_bundle: bool, force_split: bool, coverage: bool) {
+fn run_tests(files: &[PathBuf], root: &PathBuf, no_bundle: bool, force_split: bool, coverage: bool, update_snapshots: bool) {
     let root = std::fs::canonicalize(root).unwrap_or_else(|e| {
         eprintln!("Invalid root directory: {e}");
         std::process::exit(1);
@@ -306,7 +310,7 @@ JSON.stringify({
             if use_split {
                 run_tests_split(&rt, &test_files, &root, &all_mocks, &cfg, start);
             } else {
-                run_tests_single(&rt, &test_files, &root, &all_mocks, &cfg, start, &[], coverage);
+                run_tests_single(&rt, &test_files, &root, &all_mocks, &cfg, start, &[], coverage, update_snapshots);
             }
         }
     }
@@ -322,6 +326,7 @@ fn run_tests_single(
     start: Instant,
     transforms: &[(PathBuf, PathBuf)],
     coverage: bool,
+    update_snapshots: bool,
 ) {
     // Check single-bundle cache FIRST — skip shadow wrapper/shim setup if cached.
     let cache_key = bundler::compute_single_bundle_cache_key(test_files, root, mock_modules, cfg);
@@ -452,6 +457,11 @@ fn run_tests_single(
     // Set coverage flag so harness suppresses PASS lines
     if coverage {
         let _ = rt.eval("globalThis.__HT_coverage = true", "coverage-flag");
+    }
+
+    // Set update-snapshots flag
+    if update_snapshots {
+        let _ = rt.eval("globalThis.__HT_updateSnapshots = true", "snapshot-flag");
     }
 
     // Eval: prefer bytecode → compile+cache bytecode → fallback to JS text

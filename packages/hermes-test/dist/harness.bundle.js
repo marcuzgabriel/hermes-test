@@ -392,6 +392,70 @@ var __metroTestHarness = (() => {
   });
 
   // src/expect.ts
+  var _readFile = globalThis.__HT_readFile || (() => null);
+  var _writeFile = globalThis.__HT_writeFile || (() => false);
+  var _snapshotFile = "";
+  var _snapshotTestName = "";
+  var _snapshotCounter = 0;
+  var _updateSnapshots = false;
+  var _snapshotCache = {};
+  function _setSnapshotContext(file, testName, update) {
+    _snapshotFile = file;
+    _snapshotTestName = testName;
+    _snapshotCounter = 0;
+    _updateSnapshots = update;
+  }
+  function _serializeSnapshot(value) {
+    return JSON.stringify(value, (_key, val) => {
+      if (typeof val === "function") return "[Function]";
+      return val;
+    }, 2);
+  }
+  function _loadSnapshots(path) {
+    if (_snapshotCache[path]) return _snapshotCache[path];
+    const content = _readFile(path);
+    if (content) {
+      try {
+        _snapshotCache[path] = JSON.parse(content);
+      } catch {
+        _snapshotCache[path] = {};
+      }
+    } else {
+      _snapshotCache[path] = {};
+    }
+    return _snapshotCache[path];
+  }
+  function _saveSnapshots(path, data) {
+    _snapshotCache[path] = data;
+    _writeFile(path, JSON.stringify(data, null, 2) + "\n");
+  }
+  function _matchSnapshot(actual) {
+    _snapshotCounter++;
+    const key = _snapshotTestName + (_snapshotCounter > 1 ? ` ${_snapshotCounter}` : "");
+    const serialized = _serializeSnapshot(actual);
+    if (!_snapshotFile) {
+      throw new Error("toMatchSnapshot: no snapshot file configured. Is __currentTestFile set?");
+    }
+    const snapshots = _loadSnapshots(_snapshotFile);
+    if (_updateSnapshots || !(key in snapshots)) {
+      snapshots[key] = serialized;
+      _saveSnapshots(_snapshotFile, snapshots);
+      return;
+    }
+    const expected = snapshots[key];
+    if (serialized !== expected) {
+      throw new Error(
+        `Snapshot mismatch for "${key}":
+Expected:
+${expected}
+
+Received:
+${serialized}
+
+Run with --update-snapshots to update.`
+      );
+    }
+  }
   function deepEqual(a, b) {
     if (b != null && typeof b === "object" && b.__htMatcher && typeof b.matches === "function") return b.matches(a);
     if (a != null && typeof a === "object" && a.__htMatcher && typeof a.matches === "function") return a.matches(b);
@@ -708,6 +772,10 @@ var __metroTestHarness = (() => {
           !hidden,
           negated ? `Expected element not to be visible` : `Expected element to be visible, but it is hidden`
         );
+      },
+      // --- Snapshot matcher ---
+      toMatchSnapshot() {
+        _matchSnapshot(actual);
       }
     };
     if (!negated) {
@@ -1895,6 +1963,15 @@ ${pad}</${type}>`;
           beforeAllRan.add(hook);
           resolveSync(hook.fn());
         }
+      }
+      {
+        const filePath = globalThis.__currentTestFilePath || entry.file || "unknown";
+        const clean = filePath.startsWith("./") ? filePath.substring(2) : filePath;
+        const lastSlash = clean.lastIndexOf("/");
+        const dir = lastSlash >= 0 ? clean.substring(0, lastSlash) : ".";
+        const basename = lastSlash >= 0 ? clean.substring(lastSlash + 1) : clean;
+        const snapFile = dir + "/__snapshots__/" + basename + ".snap";
+        _setSnapshotContext(snapFile, entry.name, !!globalThis.__HT_updateSnapshots);
       }
       const timeoutMs = entry.options.timeout ?? DEFAULT_TIMEOUT_MS;
       __testTimeoutMs = timeoutMs;

@@ -1,5 +1,82 @@
 import type { Spy } from './spy';
 
+// --- Snapshot support ---
+
+const _readFile = (globalThis as any).__HT_readFile || (() => null);
+const _writeFile = (globalThis as any).__HT_writeFile || (() => false);
+
+// Snapshot state — set by the harness before each test runs
+let _snapshotFile = '';      // path to .snap file
+let _snapshotTestName = '';  // current test name (used as snapshot key)
+let _snapshotCounter = 0;    // counter for multiple snapshots in one test
+let _updateSnapshots = false;
+
+// Cache of loaded snapshot files: path → { key → serialized value }
+const _snapshotCache: Record<string, Record<string, string>> = {};
+
+function _setSnapshotContext(file: string, testName: string, update: boolean) {
+  _snapshotFile = file;
+  _snapshotTestName = testName;
+  _snapshotCounter = 0;
+  _updateSnapshots = update;
+}
+
+function _serializeSnapshot(value: any): string {
+  return JSON.stringify(value, (_key, val) => {
+    if (typeof val === 'function') return '[Function]';
+    return val;
+  }, 2);
+}
+
+function _loadSnapshots(path: string): Record<string, string> {
+  if (_snapshotCache[path]) return _snapshotCache[path];
+  const content = _readFile(path);
+  if (content) {
+    try {
+      _snapshotCache[path] = JSON.parse(content);
+    } catch {
+      _snapshotCache[path] = {};
+    }
+  } else {
+    _snapshotCache[path] = {};
+  }
+  return _snapshotCache[path];
+}
+
+function _saveSnapshots(path: string, data: Record<string, string>) {
+  _snapshotCache[path] = data;
+  _writeFile(path, JSON.stringify(data, null, 2) + '\n');
+}
+
+function _matchSnapshot(actual: any): void {
+  _snapshotCounter++;
+  const key = _snapshotTestName + (_snapshotCounter > 1 ? ` ${_snapshotCounter}` : '');
+  const serialized = _serializeSnapshot(actual);
+
+  if (!_snapshotFile) {
+    throw new Error('toMatchSnapshot: no snapshot file configured. Is __currentTestFile set?');
+  }
+
+  const snapshots = _loadSnapshots(_snapshotFile);
+
+  if (_updateSnapshots || !(key in snapshots)) {
+    // Write new or updated snapshot
+    snapshots[key] = serialized;
+    _saveSnapshots(_snapshotFile, snapshots);
+    return;
+  }
+
+  // Compare
+  const expected = snapshots[key];
+  if (serialized !== expected) {
+    throw new Error(
+      `Snapshot mismatch for "${key}":\n` +
+      `Expected:\n${expected}\n\nReceived:\n${serialized}\n\n` +
+      `Run with --update-snapshots to update.`
+    );
+  }
+}
+
 function deepEqual(a: any, b: any): boolean {
   // Support asymmetric matchers (expect.anything(), expect.any(), expect.objectContaining())
   if (b != null && typeof b === 'object' && b.__htMatcher && typeof b.matches === 'function') return b.matches(a);
@@ -444,6 +521,12 @@ function createAssertion(actual: any, negated: boolean): any {
           : `Expected element to be visible, but it is hidden`
       );
     },
+
+    // --- Snapshot matcher ---
+
+    toMatchSnapshot() {
+      _matchSnapshot(actual);
+    },
   };
 
   if (!negated) {
@@ -505,3 +588,5 @@ expect.stringMatching = (pattern: RegExp | string) => makeMatcher((v) => {
   const re = typeof pattern === 'string' ? new RegExp(pattern) : pattern;
   return typeof v === 'string' && re.test(v);
 });
+
+export { _setSnapshotContext };

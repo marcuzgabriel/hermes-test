@@ -1,7 +1,7 @@
 // Polyfills (process, setImmediate) are injected via esbuild banner in bundle.mjs
 // to ensure they run before any bundled dependency (React checks process.env.NODE_ENV at load time)
 
-import { expect } from './expect';
+import { expect, _setSnapshotContext } from './expect';
 import { spy, spyOn, clearAllMocks } from './spy';
 import { renderHook, act, waitFor } from './hooks';
 import { render, fireEvent } from './render';
@@ -236,6 +236,19 @@ function runTests(): TestResult[] {
         beforeAllRan.add(hook);
         resolveSync(hook.fn());
       }
+    }
+
+    // Set up snapshot context for this test
+    {
+      // Use full file path (set by entry code) for correct snapshot directory
+      const filePath = (globalThis as any).__currentTestFilePath || entry.file || 'unknown';
+      // Strip leading ./ if present
+      const clean = filePath.startsWith('./') ? filePath.substring(2) : filePath;
+      const lastSlash = clean.lastIndexOf('/');
+      const dir = lastSlash >= 0 ? clean.substring(0, lastSlash) : '.';
+      const basename = lastSlash >= 0 ? clean.substring(lastSlash + 1) : clean;
+      const snapFile = dir + '/__snapshots__/' + basename + '.snap';
+      _setSnapshotContext(snapFile, entry.name, !!(globalThis as any).__HT_updateSnapshots);
     }
 
     // Set up timeout for this test
