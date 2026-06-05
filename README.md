@@ -163,6 +163,48 @@ expect(result.current.count).toBe(1);
 expect(renderCount).toBe(2);
 ```
 
+### Component rendering
+
+```ts
+import { render, fireEvent, expect } from 'hermes-test';
+
+const { getByText, getByTestId, toJSON } = render(<MyComponent />);
+
+// Queries (all have get/getAll/query/queryAll variants)
+getByText('Hello');                  getByText(/hello/i);
+getByTestId('submit-btn');           getByProps({ disabled: true });
+getByType('View');
+
+// Fire events
+fireEvent.press(getByTestId('btn'));
+fireEvent.changeText(getByTestId('input'), 'new value');
+fireEvent.scroll(getByTestId('list'), { nativeEvent: { contentOffset: { y: 100 } } });
+fireEvent(node, 'focus');            // generic
+
+// Serialization
+toJSON();                            // plain object tree
+toTree();                            // pretty-printed JSX string
+
+// Lifecycle
+rerender(<MyComponent updated />);
+unmount();
+```
+
+### Element matchers
+
+```ts
+expect(element).toBeRendered();
+expect(element).toHaveTextContent('Hello');
+expect(element).toHaveTextContent(/hello/i);
+expect(element).toContainElement(child);
+expect(element).toBeEmpty();
+expect(input).toHaveDisplayValue('current value');
+expect(element).toHaveProp('testID', 'my-id');
+expect(element).toHaveStyle({ backgroundColor: 'red' });
+expect(button).toBeEnabled();       expect(button).toBeDisabled();
+expect(element).toBeVisible();      // checks display + opacity
+```
+
 ### Fetch mocking (MSW-style)
 
 ```ts
@@ -411,7 +453,7 @@ If total statement coverage is below the threshold, hermes-test exits with code 
 
 - [x] **Coverage reporting** — source map-based instrumentation, lcov + HTML report, threshold enforcement
 - [ ] **macOS Intel (x64)** — cross-compile or dedicated CI runner
-- [ ] **Component rendering** — `render(<Component />)` with query API (`getByText`, `getByTestId`, `fireEvent`)
+- [x] **Component rendering** — `render(<Component />)` with query API (`getByText`, `getByTestId`, `fireEvent`)
 - [ ] **Jest compatibility shim** — `jest.fn()` → `spy()`, `jest.mock()` → `mockModule()`, enables reuse of library `__mocks__/` files
 - [ ] **Library mock support** — auto-load mocks from expo-router, react-native-reanimated, zustand, etc.
 - [ ] **`setupFiles` config** — load setup files before tests (like Jest's `setupFilesAfterFramework`)

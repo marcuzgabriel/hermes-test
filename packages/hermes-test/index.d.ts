@@ -71,6 +71,18 @@ export interface Assertion<T = unknown> {
   toHaveBeenCalledWith(...args: any[]): void;
   toHaveBeenLastCalledWith(...args: any[]): void;
 
+  // Element matchers (for render() results)
+  toBeRendered(): void;
+  toHaveTextContent(expected: string | RegExp): void;
+  toContainElement(child: unknown): void;
+  toBeEmpty(): void;
+  toHaveDisplayValue(expected: string | RegExp): void;
+  toHaveProp(name: string, value?: unknown): void;
+  toHaveStyle(expected: Record<string, unknown>): void;
+  toBeEnabled(): void;
+  toBeDisabled(): void;
+  toBeVisible(): void;
+
   not: Assertion<T>;
 
   resolves: {
@@ -151,6 +163,50 @@ export function waitFor<T>(
 
 export function flushAsync<T>(promise: Promise<T>): T;
 export function flushAsync<T>(value: T): T;
+
+// --- Component rendering ---
+
+export interface HTNode {
+  type: string;
+  props: Record<string, any>;
+  children: HTNode[];
+  text?: string;
+}
+
+export interface RenderResult {
+  container: HTNode;
+  getByText(text: string | RegExp): HTNode;
+  getAllByText(text: string | RegExp): HTNode[];
+  queryByText(text: string | RegExp): HTNode | null;
+  queryAllByText(text: string | RegExp): HTNode[];
+  getByTestId(testID: string | RegExp): HTNode;
+  getAllByTestId(testID: string | RegExp): HTNode[];
+  queryByTestId(testID: string | RegExp): HTNode | null;
+  queryAllByTestId(testID: string | RegExp): HTNode[];
+  getByProps(props: Record<string, any>): HTNode;
+  getAllByProps(props: Record<string, any>): HTNode[];
+  queryByProps(props: Record<string, any>): HTNode | null;
+  queryAllByProps(props: Record<string, any>): HTNode[];
+  getByType(type: string): HTNode;
+  getAllByType(type: string): HTNode[];
+  queryByType(type: string): HTNode | null;
+  queryAllByType(type: string): HTNode[];
+  toJSON(): any;
+  toTree(): string;
+  rerender(element: React.ReactElement): void;
+  unmount(): void;
+}
+
+export function render(element: React.ReactElement): RenderResult;
+
+export interface FireEventObject {
+  (node: HTNode, eventName: string, ...args: any[]): void;
+  press(node: HTNode, event?: any): void;
+  changeText(node: HTNode, text: string): void;
+  scroll(node: HTNode, event: any): void;
+}
+
+export const fireEvent: FireEventObject;
 
 // --- Mocking ---
 

@@ -31,6 +31,47 @@ pub struct BundleResult {
     pub pre_patch_line_count: u32,
 }
 
+/// Find react-reconciler by walking up from the test files' directory.
+/// Prefers the location closest to where the user's React is installed,
+/// so the reconciler version matches the user's React version.
+fn find_react_reconciler(project_dir: &Path, config_root: Option<&Path>, test_files: &[PathBuf]) -> Option<PathBuf> {
+    let target = "react-reconciler";
+
+    // 1. Find from test files' directory (closest to user's React)
+    if let Some(first_test) = test_files.first() {
+        let mut dir = first_test.parent();
+        while let Some(d) = dir {
+            let candidate = d.join("node_modules").join(target);
+            if candidate.is_dir() {
+                return Some(candidate);
+            }
+            dir = d.parent();
+        }
+    }
+
+    // 2. Walk up from project dir (entry file location)
+    let mut dir = Some(project_dir);
+    while let Some(d) = dir {
+        let candidate = d.join("node_modules").join(target);
+        if candidate.is_dir() {
+            return Some(candidate);
+        }
+        dir = d.parent();
+    }
+
+    // 3. Check hermes-test's own node_modules
+    if let Some(root) = config_root {
+        for sub in &["packages/hermes-test/node_modules", "node_modules/hermes-test/node_modules"] {
+            let candidate = root.join(sub).join(target);
+            if candidate.is_dir() {
+                return Some(candidate);
+            }
+        }
+    }
+
+    None
+}
+
 pub fn find_esbuild(project_root: &Path) -> Result<PathBuf, ()> {
     let local = project_root.join("node_modules/.bin/esbuild");
     if local.exists() {
@@ -239,6 +280,42 @@ fn bundle_esbuild_with_config_inner(
             }
         }
     }
+    // Alias react-reconciler to its resolved path so esbuild can find it
+    // regardless of package manager layout (bun, pnpm, yarn workspaces).
+    // The reconciler is bundled into the test bundle alongside the user's React,
+    // ensuring version compatibility.
+    // We read test file paths from the entry to find the closest react-reconciler.
+    {
+        // Extract test file paths from the entry content to locate the closest react-reconciler
+        let entry_content = std::fs::read_to_string(entry_file).unwrap_or_default();
+        let test_files: Vec<PathBuf> = entry_content.lines()
+            .filter_map(|l| {
+                // Match: require('./path/to/file.test.tsx')
+                if let Some(start) = l.find("require('") {
+                    let rest = &l[start + 9..];
+                    if let Some(end) = rest.find("')") {
+                        let path = &rest[..end];
+                        if path.contains(".test.") {
+                            return Some(PathBuf::from(path));
+                        }
+                    }
+                }
+                None
+            })
+            .collect();
+        if let Some(rec_path) = find_react_reconciler(
+            entry_file.parent().unwrap_or(Path::new(".")),
+            cfg.root.as_deref(),
+            &test_files,
+        ) {
+            cmd.arg(format!("--alias:react-reconciler={}", rec_path.to_string_lossy()));
+            let constants = rec_path.join("constants.js");
+            if constants.exists() {
+                cmd.arg(format!("--alias:react-reconciler/constants={}", constants.to_string_lossy()));
+            }
+        }
+    }
+
     // react-native uses Flow syntax that esbuild can't parse — always external.
     // All other native packages are auto-detected or user-configured.
     for ext in &["react-native", "react-native/*"] {
@@ -755,6 +832,9 @@ fn generate_vendor_entry(packages: &[String], setup_code: &str) -> String {
     // React bootstrap — vendor bundles the real React
     entry.push_str(
         "try { var __htReact = require('react'); globalThis.__HT_React = __htReact; globalThis.__HT_mocks['react'] = __htReact; globalThis.IS_REACT_ACT_ENVIRONMENT = true; } catch(e) {}\n"
+    );
+    entry.push_str(
+        "try { var __htRec = require('react-reconciler'); globalThis.__HT_Reconciler = typeof __htRec === 'function' ? __htRec : (__htRec.default || __htRec); var __htRecC = require('react-reconciler/constants'); globalThis.__HT_ReconcilerConstants = __htRecC.__esModule ? __htRecC : (__htRecC.default || __htRecC); } catch(e) {}\n"
     );
 
     // Require each discovered package and register on __HT_mocks

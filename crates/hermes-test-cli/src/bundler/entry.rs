@@ -223,6 +223,12 @@ pub fn generate_entry(
   globalThis.__HT_React = require('react');
   globalThis.IS_REACT_ACT_ENVIRONMENT = true;
 } catch(e) {}
+try {
+  var __htRec = require('react-reconciler');
+  globalThis.__HT_Reconciler = typeof __htRec === 'function' ? __htRec : (__htRec.default || __htRec);
+  var __htRecC = require('react-reconciler/constants');
+  globalThis.__HT_ReconcilerConstants = __htRecC.__esModule ? __htRecC : (__htRecC.default || __htRecC);
+} catch(e) {}
 "#,
         );
     }

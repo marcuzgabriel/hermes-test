@@ -40,6 +40,14 @@ function formatValue(v: any): string {
   }
 }
 
+// Extract text content from an HTNode tree (for element matchers)
+function _getTextContent(node: any): string {
+  if (!node || typeof node !== 'object') return '';
+  if (node.type === '__TEXT__') return node.text || '';
+  if (!node.children) return '';
+  return node.children.map(_getTextContent).join('');
+}
+
 function createAssertion(actual: any, negated: boolean): any {
   function assert(condition: boolean, message: string) {
     const pass = negated ? !condition : condition;
@@ -291,6 +299,151 @@ function createAssertion(actual: any, negated: boolean): any {
     toHaveBeenCalledTimes(n: number) { return this.wasCalledTimes(n); },
     toHaveBeenCalledWith(...args: any[]) { return this.wasCalledWith(...args); },
     toHaveBeenLastCalledWith(...args: any[]) { return this.wasLastCalledWith(...args); },
+
+    // --- Element matchers (for render() HTNode results) ---
+
+    toBeRendered() {
+      const el = actual;
+      const isNode = el && typeof el === 'object' && 'type' in el && 'children' in el;
+      assert(
+        isNode && el.type !== '__ROOT__',
+        negated
+          ? `Expected element not to be rendered`
+          : `Expected element to be rendered, got ${formatValue(el)}`
+      );
+    },
+
+    toHaveTextContent(expected: string | RegExp) {
+      const text = _getTextContent(actual);
+      const matches = typeof expected === 'string'
+        ? text === expected || text.includes(expected)
+        : expected.test(text);
+      assert(
+        matches,
+        negated
+          ? `Expected element not to have text content "${expected}", but it does`
+          : `Expected text content "${expected}", got "${text}"`
+      );
+    },
+
+    toContainElement(child: any) {
+      function _contains(node: any, target: any): boolean {
+        if (node === target) return true;
+        if (!node?.children) return false;
+        return node.children.some((c: any) => _contains(c, target));
+      }
+      assert(
+        _contains(actual, child),
+        negated
+          ? `Expected element not to contain the given child`
+          : `Expected element to contain the given child`
+      );
+    },
+
+    toBeEmpty() {
+      const empty = !actual?.children || actual.children.length === 0;
+      assert(
+        empty,
+        negated
+          ? `Expected element not to be empty, but it has no children`
+          : `Expected element to be empty, but it has ${actual?.children?.length} children`
+      );
+    },
+
+    toHaveDisplayValue(expected: string | RegExp) {
+      const value = actual?.props?.value ?? '';
+      const matches = typeof expected === 'string' ? value === expected : expected.test(value);
+      assert(
+        matches,
+        negated
+          ? `Expected display value not to be "${expected}"`
+          : `Expected display value "${expected}", got "${value}"`
+      );
+    },
+
+    toHaveProp(name: string, value?: any) {
+      const hasProp = actual?.props && name in actual.props;
+      if (value === undefined) {
+        assert(
+          hasProp,
+          negated
+            ? `Expected element not to have prop "${name}"`
+            : `Expected element to have prop "${name}"`
+        );
+      } else {
+        const propVal = actual?.props?.[name];
+        assert(
+          hasProp && deepEqual(propVal, value),
+          negated
+            ? `Expected prop "${name}" not to be ${formatValue(value)}`
+            : `Expected prop "${name}" to be ${formatValue(value)}, got ${formatValue(propVal)}`
+        );
+      }
+    },
+
+    toHaveStyle(expected: Record<string, any>) {
+      const style = actual?.props?.style || {};
+      // RN styles can be arrays — flatten
+      const flat: Record<string, any> = {};
+      const styles = Array.isArray(style) ? style : [style];
+      for (const s of styles) {
+        if (s && typeof s === 'object') Object.assign(flat, s);
+      }
+      const allMatch = Object.keys(expected).every((k) => deepEqual(flat[k], expected[k]));
+      const mismatches = Object.keys(expected)
+        .filter((k) => !deepEqual(flat[k], expected[k]))
+        .map((k) => `${k}: expected ${formatValue(expected[k])}, got ${formatValue(flat[k])}`);
+      assert(
+        allMatch,
+        negated
+          ? `Expected element not to have styles ${formatValue(expected)}`
+          : `Style mismatch: ${mismatches.join('; ')}`
+      );
+    },
+
+    toBeEnabled() {
+      const disabled = actual?.props?.disabled === true
+        || actual?.props?.editable === false
+        || actual?.props?.accessibilityState?.disabled === true
+        || actual?.props?.['aria-disabled'] === true;
+      assert(
+        !disabled,
+        negated
+          ? `Expected element to be disabled, but it is enabled`
+          : `Expected element to be enabled, but it is disabled`
+      );
+    },
+
+    toBeDisabled() {
+      const disabled = actual?.props?.disabled === true
+        || actual?.props?.editable === false
+        || actual?.props?.accessibilityState?.disabled === true
+        || actual?.props?.['aria-disabled'] === true;
+      assert(
+        disabled,
+        negated
+          ? `Expected element not to be disabled, but it is`
+          : `Expected element to be disabled, but it is enabled`
+      );
+    },
+
+    toBeVisible() {
+      const style = actual?.props?.style || {};
+      const styles = Array.isArray(style) ? style : [style];
+      const flat: Record<string, any> = {};
+      for (const s of styles) {
+        if (s && typeof s === 'object') Object.assign(flat, s);
+      }
+      const hidden = flat.display === 'none' || flat.opacity === 0
+        || actual?.props?.accessibilityElementsHidden === true
+        || actual?.props?.importantForAccessibility === 'no-hide-descendants';
+      assert(
+        !hidden,
+        negated
+          ? `Expected element not to be visible`
+          : `Expected element to be visible, but it is hidden`
+      );
+    },
   };
 
   if (!negated) {
