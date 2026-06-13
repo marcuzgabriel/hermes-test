@@ -37,23 +37,39 @@ npm install -D hermes-test
 
 ```ts
 // useCounter.test.ts
-import { test, renderHook, act } from 'hermes-test';
+import { test, mock, renderHook, act, spy, http, HttpResponse } from 'hermes-test';
 
-test('useCounter tracks state history', async ({ expect }) => {
-  const { result, history, renderCount } = renderHook(() => useCounter(0));
-  
+// Mock a module (barrel paths + node_modules)
+mock('./analytics', () => ({ track: spy() }));
+
+// Mock fetch (MSW-like API)
+mock.fetch(
+  http.get('/api/count', () => HttpResponse.json({ count: 42 })),
+);
+
+test('useCounter tracks state', async ({ expect }) => {
+  const { result } = renderHook(() => useCounter(0));
+
   await act(() => result.current.increment());
   await act(() => result.current.increment());
-  
+
   expect(result.current.count).toBe(2);
-  expect(history.map(h => h.count)).toEqual([0, 1, 2]);
-  expect(renderCount).toBe(3);
 });
 ```
 
 ```bash
 npx hermes-test watch
 # sub-200ms reruns on file save
+```
+
+### Mock API
+
+```ts
+mock(path, factory)          // mock a module
+mock.fetch(handler...)       // register fetch handlers
+mock.fetch.overwrite(handler...) // per-test overrides (like MSW server.use)
+mock.fetch.reset()           // clear per-test overrides
+mock.fetch.clear()           // clear all handlers
 ```
 
 ## Status
