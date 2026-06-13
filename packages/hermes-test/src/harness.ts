@@ -360,6 +360,23 @@ function resetRegistry(): void {
   resetMockModulePatches();
 }
 
+// --- mock namespace: mock(path, factory) + mock.fetch / mock.fetch.overwrite / mock.fetch.reset / mock.fetch.clear ---
+const mock = mockModule as typeof mockModule & {
+  fetch: typeof mockFetch & {
+    overwrite: typeof mockFetchUse;
+    reset: typeof mockFetchReset;
+    clear: typeof mockFetchClear;
+  };
+};
+mock.fetch = mockFetch as typeof mockFetch & {
+  overwrite: typeof mockFetchUse;
+  reset: typeof mockFetchReset;
+  clear: typeof mockFetchClear;
+};
+mock.fetch.overwrite = mockFetchUse;
+mock.fetch.reset = mockFetchReset;
+mock.fetch.clear = mockFetchClear;
+
 // Expose to the global scope for the harness entry
 (globalThis as any).__HT = {
   test,
@@ -377,6 +394,8 @@ function resetRegistry(): void {
   act,
   waitFor,
   useMock,
+  mock,
+  // Legacy aliases (backwards compat)
   mockModule,
   mockFetch,
   mockFetchUse,
@@ -399,4 +418,4 @@ function resetRegistry(): void {
   advanceTimersToNextTimer,
 };
 
-export { test, expect, spy, spyOn, clearAllMocks, group, beforeEach, afterEach, beforeAll, afterAll, renderHook, act, waitFor, render, fireEvent, useMock, mockModule, mockFetch, mockFetchUse, mockFetchReset, mockFetchClear, http, HttpResponse, flushAsync, useFakeTimers, useRealTimers, advanceTimersByTime, runAllTimers, getTimerCount, advanceTimersToNextTimer };
+export { test, expect, spy, spyOn, clearAllMocks, group, beforeEach, afterEach, beforeAll, afterAll, renderHook, act, waitFor, render, fireEvent, useMock, mock, mockModule, mockFetch, mockFetchUse, mockFetchReset, mockFetchClear, http, HttpResponse, flushAsync, useFakeTimers, useRealTimers, advanceTimersByTime, runAllTimers, getTimerCount, advanceTimersToNextTimer };

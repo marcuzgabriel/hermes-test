@@ -112,8 +112,10 @@ export const afterAll = ht.afterAll;
 export const renderHook = ht.renderHook;
 export const act = ht.act;
 export const waitFor = ht.waitFor;
-export const mockModule = ht.mockModule;
+export const mock = ht.mock;
 export const useMock = ht.useMock;
+// Legacy aliases (backwards compat)
+export const mockModule = ht.mockModule;
 export const mockFetch = ht.mockFetch;
 export const mockFetchUse = ht.mockFetchUse;
 export const mockFetchReset = ht.mockFetchReset;

@@ -11,7 +11,7 @@
     "react-native": "hermes-test/shims/react-native",
     "react-redux": "hermes-test/shims/react-redux",
     "@reduxjs/toolkit/query/react": "hermes-test/shims/rtk-query",
-    "@reduxjs/toolkit/query": "hermes-test/shims/rtk-query",
+    "@reduxjs/toolkit/query": "hermes-test/shims/rtk-query-core",
     "@reduxjs/toolkit": "hermes-test/shims/reduxjs-toolkit"
   }
 }

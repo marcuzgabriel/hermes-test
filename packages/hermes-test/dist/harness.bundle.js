@@ -374,6 +374,7 @@ var __metroTestHarness = (() => {
     getTimerCount: () => getTimerCount,
     group: () => group,
     http: () => http,
+    mock: () => mock,
     mockFetch: () => mockFetch,
     mockFetchClear: () => mockFetchClear,
     mockFetchReset: () => mockFetchReset,
@@ -2057,6 +2058,11 @@ ${pad}</${type}>`;
     if (globalThis.__HT_file_mocks) globalThis.__HT_file_mocks = {};
     resetMockModulePatches();
   }
+  var mock = mockModule;
+  mock.fetch = mockFetch;
+  mock.fetch.overwrite = mockFetchUse;
+  mock.fetch.reset = mockFetchReset;
+  mock.fetch.clear = mockFetchClear;
   globalThis.__HT = {
     test,
     expect,
@@ -2073,6 +2079,8 @@ ${pad}</${type}>`;
     act,
     waitFor,
     useMock,
+    mock,
+    // Legacy aliases (backwards compat)
     mockModule,
     mockFetch,
     mockFetchUse,
