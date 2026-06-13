@@ -1,5 +1,4 @@
 // Type declarations for hermes-test
-/// <reference path="global.d.ts" />
 
 // --- Spy ---
 
@@ -281,3 +280,21 @@ export function advanceTimersToNextTimer(): void;
 
 // React types used if @types/react is installed
 import type React from 'react';
+
+// --- ht global (available without import, like jest) ---
+
+declare global {
+  interface HtMockFetch {
+    (...handlers: FetchHandler[]): void;
+    overwrite(...handlers: FetchHandler[]): void;
+    reset(): void;
+    clear(): void;
+  }
+
+  interface HtMock {
+    (modulePath: string, factory: () => Record<string, unknown>): void;
+    fetch: HtMockFetch;
+  }
+
+  const ht: { mock: HtMock };
+}
