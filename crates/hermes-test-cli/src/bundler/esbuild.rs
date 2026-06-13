@@ -242,7 +242,7 @@ fn bundle_esbuild_with_config_inner(
     // Path aliases from tsconfig (resolved by config).
     // Skip aliases when:
     // 1. The package is in the externals list (native modules)
-    // 2. Any mockModule path is a sub-path of this alias — esbuild aliases run BEFORE
+    // 2. Any mock() path is a sub-path of this alias — esbuild aliases run BEFORE
     //    external checks, so mocked imports would get inlined instead of intercepted.
     //    Skipping the alias means ALL sub-paths go through __require → mock shim.
     for (alias, target) in &cfg.aliases {
@@ -396,7 +396,7 @@ fn bundle_esbuild_with_config_inner(
         code = inject_mock_require_shim(&code);
     }
 
-    // Hoist mockModule() calls before require() calls so aliased shadow-wrapper mocks
+    // Hoist mock() calls before require() calls so aliased shadow-wrapper mocks
     // are registered before the module initializers run (captures dispatch, getState, etc.)
     let hoisted = hoist_mock_modules(&code);
     if std::env::var("HT_DEBUG_BUNDLE").is_ok() {
@@ -526,7 +526,7 @@ pub fn bundle_with_depgraph(
         code = inject_mock_require_shim(&code);
     }
 
-    // Hoist mockModule() calls before require() calls so aliased shadow-wrapper mocks
+    // Hoist mock() calls before require() calls so aliased shadow-wrapper mocks
     // are registered before the module initializers run
     code = hoist_mock_modules(&code);
 

@@ -201,7 +201,7 @@ export type RenderResult = {
   unmount(): void;
 };
 
-export function render(element: any): RenderResult {
+export function render(element: any, options?: { shallow?: boolean }): RenderResult {
   const reconciler = createReconciler();
 
   const container: HTNode = { type: '__ROOT__', props: {}, children: [] };
@@ -216,9 +216,34 @@ export function render(element: any): RenderResult {
     () => {},
   );
 
-  act(() => {
-    reconciler.updateContainer(element, root, null, null);
-  });
+  const React = (globalThis as any).__HT_React;
+
+  if (options?.shallow && React) {
+    // Shallow rendering: patch React.createElement so child function components
+    // become host elements (strings) instead of being called by the reconciler.
+    // The top-level component still renders fully (hooks run, JSX returned),
+    // but its children are stubbed — no deep import chains, no native module crashes.
+    const topType = element.type;
+    const origCE = React.createElement;
+
+    React.createElement = function(type: any, ...args: any[]) {
+      if (typeof type === 'function' && type !== topType) {
+        const name = type.displayName || type.name || 'Component';
+        return origCE.call(React, name, ...args);
+      }
+      return origCE.call(React, type, ...args);
+    };
+
+    act(() => {
+      reconciler.updateContainer(element, root, null, null);
+    });
+
+    React.createElement = origCE;
+  } else {
+    act(() => {
+      reconciler.updateContainer(element, root, null, null);
+    });
+  }
 
   const result: RenderResult = {
     container,

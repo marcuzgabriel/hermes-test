@@ -5,9 +5,9 @@ pub fn inject_mock_require_shim(code: &str) -> String {
     //   throw Error('Dynamic require of "' + x + '" is not supported');
     // Replace it with a __HT_mocks lookup.
     // Return a Proxy for externalized modules so that properties added later
-    // via mockModule() are visible even though import destructuring already ran.
+    // via mock() are visible even though import destructuring already ran.
     // This solves the ESM import hoisting problem: `import {X} from 'mod'` runs
-    // before `mockModule('mod', () => ({X: ...}))` but the Proxy delegates reads
+    // before `mock('mod', () => ({X: ...}))` but the Proxy delegates reads
     // to the live mock registry entry.
     // esbuild may use different variable names (x, x2, etc.) depending on version.
     let throw_re = regex::Regex::new(
@@ -30,11 +30,11 @@ pub fn inject_mock_require_shim(code: &str) -> String {
     throw_re.replace(&code, |caps: &regex::Captures| {
         let v = &caps[1];
         // Proxy with get trap that checks per-file mocks first, then global mocks.
-        // Per-file mocks: __HT_file_mocks[__currentTestFile][path] — set by mockModule()
+        // Per-file mocks: __HT_file_mocks[__currentTestFile][path] — set by mock()
         // Global mocks: __HT_mocks[path] — fallback for backward compat
         // The Proxy's get trap checks per-file mocks first (for mock isolation),
         // then global mocks. For aliased mocks, __require receives the resolved path
-        // (e.g. "/abs/src/hooks") but mockModule registers under the original path
+        // (e.g. "/abs/src/hooks") but mock() registers under the original path
         // (e.g. "@scope/pkg/hooks"). __HT_mock_aliases maps resolved → original.
         format!(
             r#"{{ var __r = globalThis.__HT_mocks || (globalThis.__HT_mocks = {{}}); var __k = {v}.replace(/^\.\//, ''); var __t = __r[{v}] || __r[__k] || __r['./' + __k] || {{}}; return typeof Proxy !== 'undefined' ? new Proxy(__t, {{ get: function(t,p) {{ if (p === Symbol.toPrimitive || p === 'then' || p === '$$typeof') return undefined; if (p === '__esModule') return true; var __fm = globalThis.__HT_file_mocks; var __cf = globalThis.__currentTestFile; var __pf = __fm && __cf && __fm[__cf]; var __al = globalThis.__HT_mock_aliases || {{}}; var __orig = __al[{v}] || __al[__k]; var __m = (__pf && (__pf[{v}] || __pf[__k] || __pf['./' + __k] || (__orig && __pf[__orig]))) || __r[{v}] || __r[__k] || __r['./' + __k]; if (p === 'default') {{ var __d = __m && __m['default']; return __d !== undefined ? __d : (__m || t); }} var val = __m ? __m[p] : t[p]; return val !== undefined ? val : __HT_noop; }}, apply: function() {{ return __HT_noop; }}, construct: function() {{ return {{}}; }}, ownKeys: function(t) {{ return Object.getOwnPropertyNames(t); }}, getOwnPropertyDescriptor: function(t, p) {{ return Object.getOwnPropertyDescriptor(t, p) || {{ configurable: true, enumerable: false, writable: true, value: undefined }}; }} }}) : __t }}"#,
@@ -42,13 +42,13 @@ pub fn inject_mock_require_shim(code: &str) -> String {
     }).to_string()
 }
 
-/// Hoist mockModule() calls before init_*() calls in esbuild's bundled output.
-/// Hoist mockModule() calls before init_*() / require() calls so that when a module's
+/// Hoist mock() calls before init_*() calls in esbuild's bundled output.
+/// Hoist mock() calls before init_*() / require() calls so that when a module's
 /// initializer runs (e.g. `const { dispatch, getState } = store`), the mock is already
 /// registered in __HT_file_mocks and the shadow-wrapper Proxy returns the mock value.
 pub fn hoist_mock_modules(code: &str) -> String {
-    // Pattern: (0, import_hermes_test.mockModule)("path", () => ({ ... }));
-    // or: (0, import_hermes_test2.mockModule)("path", () => ({ ... }));
+    // Pattern: (0, import_hermes_test.mock)("path", () => ({ ... }));
+    // or: (0, import_hermes_test2.mock)("path", () => ({ ... }));
     // We need to find these, extract them, and move them before init_*() calls.
 
     let mut result = String::with_capacity(code.len());
@@ -72,7 +72,7 @@ pub fn hoist_mock_modules(code: &str) -> String {
                     // Copy everything up to body_start
                     result.push_str(&code[i..body_start]);
 
-                    // Process this function body: extract mockModule calls and hoist them
+                    // Process this function body: extract mock() calls and hoist them
                     let body = &code[body_start..body_end];
                     let hoisted = hoist_mocks_in_body(body);
                     if std::env::var("HT_DEBUG_BUNDLE").is_ok() && hoisted != body {
@@ -195,13 +195,13 @@ fn extract_call_end(code: &str, start: usize) -> usize {
 }
 
 /// Within a single function body, move init_*() calls for non-hermes modules to AFTER
-/// the last mockModule() call. This ensures that:
-/// 1. Variable declarations (mockDispatch, mockGetState etc.) execute before mockModule() factories
-/// 2. mockModule() registers its mock values before modules initialize (init_*() runs)
+/// the last mock() call. This ensures that:
+/// 1. Variable declarations (mockDispatch, mockGetState etc.) execute before mock() factories
+/// 2. mock() registers its mock values before modules initialize (init_*() runs)
 /// 3. When a module's initializer captures values like `const { dispatch } = store`, the mock is live
 ///
-/// Strategy: "push init_* calls down" rather than "pull mockModule calls up".
-/// This preserves the relative order of variable declarations and mockModule calls.
+/// Strategy: "push init_* calls down" rather than "pull mock() calls up".
+/// This preserves the relative order of variable declarations and mock() calls.
 pub fn hoist_mocks_in_body(body: &str) -> String {
     // Find all mock() calls to determine if hoisting is needed
     // After bundling, esbuild outputs `.mock)("path"` for `(0, import_hermes_test.mock)("path", ...)`
@@ -291,7 +291,7 @@ pub fn hoist_mocks_in_body(body: &str) -> String {
     // We need to handle the case where last_mock_end > pos
     result.push_str(&body[pos..last_mock_end]);
 
-    // Insert collected init_* calls after all mockModule calls
+    // Insert collected init_* calls after all mock() calls
     result.push_str(&collected_inits);
 
     // Copy the rest

@@ -1400,7 +1400,7 @@ ${pad}</${type}>`;
       }
     }
   );
-  function render(element) {
+  function render(element, options) {
     const reconciler = createReconciler();
     const container = { type: "__ROOT__", props: {}, children: [] };
     const root = reconciler.createContainer(
@@ -1422,9 +1422,26 @@ ${pad}</${type}>`;
       () => {
       }
     );
-    act(() => {
-      reconciler.updateContainer(element, root, null, null);
-    });
+    const React = globalThis.__HT_React;
+    if (options?.shallow && React) {
+      const topType = element.type;
+      const origCE = React.createElement;
+      React.createElement = function(type, ...args) {
+        if (typeof type === "function" && type !== topType) {
+          const name = type.displayName || type.name || "Component";
+          return origCE.call(React, name, ...args);
+        }
+        return origCE.call(React, type, ...args);
+      };
+      act(() => {
+        reconciler.updateContainer(element, root, null, null);
+      });
+      React.createElement = origCE;
+    } else {
+      act(() => {
+        reconciler.updateContainer(element, root, null, null);
+      });
+    }
     const result = {
       container,
       getByText: (t) => textQ.get(container, t),
@@ -1622,7 +1639,7 @@ ${pad}</${type}>`;
     }
     const handler = findHandler(method, url);
     if (!handler) {
-      const msg = `[mockFetch] Unhandled ${method} ${url}`;
+      const msg = `[mock.fetch] Unhandled ${method} ${url}`;
       return Promise.resolve({
         ok: false,
         status: 500,

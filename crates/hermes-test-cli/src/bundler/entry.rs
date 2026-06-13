@@ -52,7 +52,7 @@ fn walk_dir(dir: &Path, files: &mut Vec<PathBuf>, pattern: Option<&str>) {
     }
 }
 
-/// Scan test files for mockModule() and jest.mock() calls and return the module paths.
+/// Scan test files for mock() and jest.mock() calls and return the module paths.
 /// These modules will be externalized in esbuild so that useMock can intercept them.
 pub fn find_mock_modules(test_files: &[PathBuf]) -> Vec<String> {
     let mut mocks = Vec::new();

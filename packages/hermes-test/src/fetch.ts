@@ -1,4 +1,4 @@
-// mockFetch — lightweight fetch mock for Hermes
+// mock.fetch — lightweight fetch mock for Hermes
 // Replaces globalThis.fetch with a handler-based mock (like MSW but pure JS)
 
 type Method = 'GET' | 'POST' | 'PUT' | 'DELETE' | 'PATCH' | 'HEAD' | 'OPTIONS';
@@ -91,7 +91,7 @@ function fakeFetch(input: any, init?: any): any {
 
   if (!handler) {
     // Unhandled request — return a rejected-style response
-    const msg = `[mockFetch] Unhandled ${method} ${url}`;
+    const msg = `[mock.fetch] Unhandled ${method} ${url}`;
     // Return a promise that resolves to a 500 response
     return Promise.resolve({
       ok: false,
