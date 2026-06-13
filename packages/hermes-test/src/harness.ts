@@ -395,12 +395,6 @@ mock.fetch.clear = mockFetchClear;
   waitFor,
   useMock,
   mock,
-  // Legacy aliases (backwards compat)
-  mockModule,
-  mockFetch,
-  mockFetchUse,
-  mockFetchReset,
-  mockFetchClear,
   http,
   HttpResponse,
   render,
@@ -418,4 +412,4 @@ mock.fetch.clear = mockFetchClear;
   advanceTimersToNextTimer,
 };
 
-export { test, expect, spy, spyOn, clearAllMocks, group, beforeEach, afterEach, beforeAll, afterAll, renderHook, act, waitFor, render, fireEvent, useMock, mock, mockModule, mockFetch, mockFetchUse, mockFetchReset, mockFetchClear, http, HttpResponse, flushAsync, useFakeTimers, useRealTimers, advanceTimersByTime, runAllTimers, getTimerCount, advanceTimersToNextTimer };
+export { test, expect, spy, spyOn, clearAllMocks, group, beforeEach, afterEach, beforeAll, afterAll, renderHook, act, waitFor, render, fireEvent, useMock, mock, http, HttpResponse, flushAsync, useFakeTimers, useRealTimers, advanceTimersByTime, runAllTimers, getTimerCount, advanceTimersToNextTimer };

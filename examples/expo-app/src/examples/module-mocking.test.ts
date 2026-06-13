@@ -1,6 +1,6 @@
 // Pattern: Hook with mocked module dependencies
 // Demonstrates: mockModule, spy, shadow wrapper mock isolation
-import { test, group, beforeEach, renderHook, act, spy, mockModule, expect } from 'hermes-test';
+import { test, group, beforeEach, renderHook, act, spy, expect, mock } from 'hermes-test';
 import { useState, useCallback } from 'react';
 
 // --- Mock return values (changed per test) ---
@@ -9,9 +9,9 @@ let settingsReturn: any = { theme: 'dark', locale: 'en' };
 const analyticsTrack = spy((_event: string, _data?: any) => {});
 
 // --- Register mocks BEFORE imports ---
-mockModule('./useAuth', () => ({ useAuth: () => authReturn }));
-mockModule('./useSettings', () => ({ useSettings: () => settingsReturn }));
-mockModule('./useAnalytics', () => ({ useAnalytics: () => ({ track: analyticsTrack }) }));
+mock('./useAuth', () => ({ useAuth: () => authReturn }));
+mock('./useSettings', () => ({ useSettings: () => settingsReturn }));
+mock('./useAnalytics', () => ({ useAnalytics: () => ({ track: analyticsTrack }) }));
 
 // --- Hook under test (uses mocked deps) ---
 // In a real project this would be imported from its own file.

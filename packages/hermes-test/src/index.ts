@@ -114,12 +114,6 @@ export const act = ht.act;
 export const waitFor = ht.waitFor;
 export const mock = ht.mock;
 export const useMock = ht.useMock;
-// Legacy aliases (backwards compat)
-export const mockModule = ht.mockModule;
-export const mockFetch = ht.mockFetch;
-export const mockFetchUse = ht.mockFetchUse;
-export const mockFetchReset = ht.mockFetchReset;
-export const mockFetchClear = ht.mockFetchClear;
 export const http = ht.http;
 export const HttpResponse = ht.HttpResponse;
 export const render = ht.render;

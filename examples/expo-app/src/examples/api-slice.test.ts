@@ -1,6 +1,6 @@
 // Pattern: RTK Query API slice with real Redux store
 // Demonstrates: setupApiStore, mockFetch, flushAsync, http, HttpResponse
-import { test, group, beforeEach, afterEach, setupApiStore, mockFetch, mockFetchUse, mockFetchReset, flushAsync, http, HttpResponse, expect } from 'hermes-test';
+import { test, group, beforeEach, afterEach, setupApiStore, flushAsync, http, HttpResponse, expect, mock } from 'hermes-test';
 import { createApi, fetchBaseQuery } from '@reduxjs/toolkit/query';
 
 // --- API slice (self-contained) ---
@@ -20,7 +20,7 @@ const postsApi = createApi({
 // --- Mock data ---
 const mockPosts = [{ id: 1, title: 'First' }, { id: 2, title: 'Second' }];
 
-mockFetch(
+mock.fetch(
   http.get('https://api.example.com/posts', () => HttpResponse.json(mockPosts)),
   http.post('https://api.example.com/posts', (req: any) =>
     HttpResponse.json({ id: 3, ...req.body })),
@@ -29,7 +29,7 @@ mockFetch(
 let ctx: ReturnType<typeof setupApiStore>;
 
 beforeEach(() => { ctx = setupApiStore([postsApi]); });
-afterEach(() => { ctx.store.dispatch(postsApi.util.resetApiState()); mockFetchReset(); });
+afterEach(() => { ctx.store.dispatch(postsApi.util.resetApiState()); mock.fetch.reset(); });
 
 // --- Tests ---
 group('postsApi', () => {
@@ -40,7 +40,7 @@ group('postsApi', () => {
   });
 
   test('getPosts error response', () => {
-    mockFetchUse(http.get('https://api.example.com/posts', () =>
+    mock.fetch.overwrite(http.get('https://api.example.com/posts', () =>
       HttpResponse.json({ msg: 'forbidden' }, { status: 403 })));
     const result = flushAsync(ctx.dispatch(postsApi.endpoints.getPosts.initiate()));
     expect(result.error).toBeDefined();

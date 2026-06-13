@@ -1,9 +1,9 @@
 // Pattern: Advanced fetch mocking — all HTTP methods, body assertions, overrides
 // Demonstrates: mockFetch, mockFetchUse, mockFetchReset, http, HttpResponse
-import { test, group, afterEach, mockFetch, mockFetchUse, mockFetchReset, http, HttpResponse, flushAsync, expect } from 'hermes-test';
+import { test, group, afterEach, http, HttpResponse, flushAsync, expect, mock } from 'hermes-test';
 
 // --- Base handlers ---
-mockFetch(
+mock.fetch(
   http.get('https://api.example.com/items', () =>
     HttpResponse.json([{ id: 1, name: 'Widget' }])),
   http.post('https://api.example.com/items', (req: any) =>
@@ -14,7 +14,7 @@ mockFetch(
     HttpResponse.json(null, { status: 204 })),
 );
 
-afterEach(() => { mockFetchReset(); });
+afterEach(() => { mock.fetch.reset(); });
 
 // --- Tests ---
 group('GET requests', () => {
@@ -24,7 +24,7 @@ group('GET requests', () => {
   });
 
   test('per-test override returns different data', () => {
-    mockFetchUse(http.get('https://api.example.com/items', () =>
+    mock.fetch.overwrite(http.get('https://api.example.com/items', () =>
       HttpResponse.json([{ id: 99, name: 'Override' }])));
     const res = flushAsync(fetch('https://api.example.com/items').then(r => r.json()));
     expect(res[0].name).toBe('Override');
@@ -64,7 +64,7 @@ group('DELETE requests', () => {
 
 group('error responses', () => {
   test('server error override', () => {
-    mockFetchUse(http.get('https://api.example.com/items', () =>
+    mock.fetch.overwrite(http.get('https://api.example.com/items', () =>
       HttpResponse.json({ error: 'down' }, { status: 500 })));
     const res = flushAsync(fetch('https://api.example.com/items'));
     expect(res.status).toBe(500);
