@@ -1,6 +1,6 @@
 // Pattern: Multi-API async hook with loading/error/success states
 // Demonstrates: renderHook, act, mockFetch, http, HttpResponse, waitFor
-import { test, group, beforeEach, afterEach, renderHook, act, waitFor, http, HttpResponse, expect, mock } from 'hermes-test';
+import { test, group, beforeEach, afterEach, renderHook, act, waitFor, http, HttpResponse, expect } from 'hermes-test';
 import { useState, useEffect, useCallback } from 'react';
 
 // --- Hook under test (self-contained) ---
@@ -37,12 +37,12 @@ function useDataFetcher(userId: string) {
 const mockUser = { id: 'u1', name: 'Alice' };
 const mockPosts = [{ id: 'p1', title: 'Hello' }, { id: 'p2', title: 'World' }];
 
-mock.fetch(
+ht.mock.fetch(
   http.get('https://api.example.com/users/u1', () => HttpResponse.json(mockUser)),
   http.get('https://api.example.com/users/u1/posts', () => HttpResponse.json(mockPosts)),
 );
 
-afterEach(() => { mock.fetch.reset(); });
+afterEach(() => { ht.mock.fetch.reset(); });
 
 // --- Tests ---
 group('useDataFetcher', () => {
@@ -55,7 +55,7 @@ group('useDataFetcher', () => {
   });
 
   test('handles API error', () => {
-    mock.fetch.overwrite(
+    ht.mock.fetch.overwrite(
       http.get('https://api.example.com/users/u1', () =>
         HttpResponse.json({ msg: 'fail' }, { status: 500 })),
     );

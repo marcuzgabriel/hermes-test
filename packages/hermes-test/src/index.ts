@@ -112,7 +112,6 @@ export const afterAll = ht.afterAll;
 export const renderHook = ht.renderHook;
 export const act = ht.act;
 export const waitFor = ht.waitFor;
-export const mock = ht.mock;
 export const useMock = ht.useMock;
 export const http = ht.http;
 export const HttpResponse = ht.HttpResponse;

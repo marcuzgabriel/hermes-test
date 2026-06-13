@@ -52,12 +52,12 @@ fn walk_dir(dir: &Path, files: &mut Vec<PathBuf>, pattern: Option<&str>) {
     }
 }
 
-/// Scan test files for mock() and jest.mock() calls and return the module paths.
+/// Scan test files for ht.mock() calls and return the module paths.
 /// These modules will be externalized in esbuild so that useMock can intercept them.
 pub fn find_mock_modules(test_files: &[PathBuf]) -> Vec<String> {
     let mut mocks = Vec::new();
-    let re_single = regex::Regex::new(r#"mock\(\s*['"]([^'"]+)['"]\s*,"#).ok();
-    let re_double = regex::Regex::new(r#"mock\(\s*"([^"]+)"\s*,"#).ok();
+    let re_single = regex::Regex::new(r#"ht\.mock\(\s*['"]([^'"]+)['"]\s*,"#).ok();
+    let re_double = regex::Regex::new(r#"ht\.mock\(\s*"([^"]+)"\s*,"#).ok();
 
     for file in test_files {
         if let Ok(content) = std::fs::read_to_string(file) {

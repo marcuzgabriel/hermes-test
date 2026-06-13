@@ -1,4 +1,5 @@
 // Type declarations for hermes-test
+/// <reference path="global.d.ts" />
 
 // --- Spy ---
 
@@ -198,7 +199,7 @@ export interface RenderResult {
   unmount(): void;
 }
 
-export function render(element: React.ReactElement): RenderResult;
+export function render(element: React.ReactElement, options?: { shallow?: boolean }): RenderResult;
 
 export interface FireEventObject {
   (node: HTNode, eventName: string, ...args: any[]): void;
@@ -211,13 +212,12 @@ export const fireEvent: FireEventObject;
 
 // --- Mocking ---
 
-export function mockModule(modulePath: string, factory: () => Record<string, unknown>): void;
 export function useMock<T extends Record<string, unknown>>(
   moduleExports: T,
   implementation: Partial<{ [K in keyof T]: T[K] extends (...args: any[]) => any ? Spy<T[K]> | T[K] : T[K] }>,
 ): void;
 
-// --- Fetch mocking ---
+// --- Fetch mocking types ---
 
 export interface MockRequest {
   method: string;
@@ -239,11 +239,6 @@ export type FetchHandler = {
   handler: (req: MockRequest) => MockResponse;
   once?: boolean;
 };
-
-export function mockFetch(...handlers: FetchHandler[]): void;
-export function mockFetchUse(...handlers: FetchHandler[]): void;
-export function mockFetchReset(): void;
-export function mockFetchClear(): void;
 
 export const http: {
   get(url: string | RegExp, handler: (req: MockRequest) => MockResponse): FetchHandler;

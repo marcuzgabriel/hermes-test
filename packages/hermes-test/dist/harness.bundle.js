@@ -374,7 +374,6 @@ var __metroTestHarness = (() => {
     getTimerCount: () => getTimerCount,
     group: () => group,
     http: () => http,
-    mock: () => mock,
     render: () => render,
     renderHook: () => renderHook,
     runAllTimers: () => runAllTimers,
@@ -2075,6 +2074,7 @@ ${pad}</${type}>`;
   mock.fetch.overwrite = mockFetchUse;
   mock.fetch.reset = mockFetchReset;
   mock.fetch.clear = mockFetchClear;
+  globalThis.ht = { mock };
   globalThis.__HT = {
     test,
     expect,
@@ -2091,7 +2091,6 @@ ${pad}</${type}>`;
     act,
     waitFor,
     useMock,
-    mock,
     http,
     HttpResponse,
     render,

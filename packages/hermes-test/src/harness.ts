@@ -360,7 +360,8 @@ function resetRegistry(): void {
   resetMockModulePatches();
 }
 
-// --- mock namespace: mock(path, factory) + mock.fetch / mock.fetch.overwrite / mock.fetch.reset / mock.fetch.clear ---
+// --- ht global: ht.mock(path, factory) + ht.mock.fetch / ht.mock.fetch.overwrite / etc. ---
+// Available globally without import, like jest.mock().
 const mock = mockModule as typeof mockModule & {
   fetch: typeof mockFetch & {
     overwrite: typeof mockFetchUse;
@@ -376,6 +377,8 @@ mock.fetch = mockFetch as typeof mockFetch & {
 mock.fetch.overwrite = mockFetchUse;
 mock.fetch.reset = mockFetchReset;
 mock.fetch.clear = mockFetchClear;
+
+(globalThis as any).ht = { mock };
 
 // Expose to the global scope for the harness entry
 (globalThis as any).__HT = {
@@ -394,7 +397,6 @@ mock.fetch.clear = mockFetchClear;
   act,
   waitFor,
   useMock,
-  mock,
   http,
   HttpResponse,
   render,
@@ -412,4 +414,4 @@ mock.fetch.clear = mockFetchClear;
   advanceTimersToNextTimer,
 };
 
-export { test, expect, spy, spyOn, clearAllMocks, group, beforeEach, afterEach, beforeAll, afterAll, renderHook, act, waitFor, render, fireEvent, useMock, mock, http, HttpResponse, flushAsync, useFakeTimers, useRealTimers, advanceTimersByTime, runAllTimers, getTimerCount, advanceTimersToNextTimer };
+export { test, expect, spy, spyOn, clearAllMocks, group, beforeEach, afterEach, beforeAll, afterAll, renderHook, act, waitFor, render, fireEvent, useMock, http, HttpResponse, flushAsync, useFakeTimers, useRealTimers, advanceTimersByTime, runAllTimers, getTimerCount, advanceTimersToNextTimer };

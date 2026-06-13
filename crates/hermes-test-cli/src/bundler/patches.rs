@@ -203,9 +203,9 @@ fn extract_call_end(code: &str, start: usize) -> usize {
 /// Strategy: "push init_* calls down" rather than "pull mock() calls up".
 /// This preserves the relative order of variable declarations and mock() calls.
 pub fn hoist_mocks_in_body(body: &str) -> String {
-    // Find all mock() calls to determine if hoisting is needed
-    // After bundling, esbuild outputs `.mock)("path"` for `(0, import_hermes_test.mock)("path", ...)`
-    let mock_pattern = ".mock)(";
+    // Find all ht.mock() calls to determine if hoisting is needed
+    // After bundling, ht.mock("path", ...) stays as-is (ht is a global)
+    let mock_pattern = "ht.mock(";
     if !body.contains(mock_pattern) {
         if std::env::var("HT_DEBUG_BUNDLE").is_ok() {
             eprintln!("[HOIST_BODY] no mock calls found in body (len={})", body.len());
@@ -216,11 +216,12 @@ pub fn hoist_mocks_in_body(body: &str) -> String {
         eprintln!("[HOIST_BODY] found mock calls, body len={}", body.len());
     }
 
-    // Find the last mock() call's end position
+    // Find the last ht.mock() call's end position
     let mut last_mock_end = 0;
     let mut search_start = 0;
     while let Some(pos) = body[search_start..].find(mock_pattern) {
         let abs_pos = search_start + pos;
+        // "ht.mock(" — the opening paren is at the end of the pattern
         let outer_call_start = abs_pos + mock_pattern.len() - 1;
         let outer_end = extract_call_end(body, outer_call_start);
         // Extend to include trailing semicolon and newline
