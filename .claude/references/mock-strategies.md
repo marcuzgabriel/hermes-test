@@ -1,17 +1,17 @@
 # Mock Strategies — Reference
 
 ## Current State
-- 1409 passing, 47 failing (Topdanmark, 259 files, ~3s) — **96.8%**
+- **1472 passing, 0 failing (Topdanmark, 259 files, ~2s) — 100%**
 - 1411 passing (expo-app, 30 files, ~1.5s) — **100%**
 - Run from: `apps/topdanmark/` (NOT monorepo root)
-- Core strategy: **shadow wrappers + function Proxy apply traps + withApiStore rewrites**
+- Core strategy: **shadow wrappers + function Proxy apply traps + ecosystem shims + withApiStore rewrites**
 
 ## What Works Today
 
 ### Shadow Wrappers (aliased paths)
 How: For each aliased mock path, create a shadow directory tree. Mocked files are replaced with CJS Proxy wrappers that check `__HT_file_mocks[__currentTestFile]` on every property access. esbuild alias points to shadow dir. Non-mocked files are symlinked to the real source.
 
-Why it works: esbuild's `__toESM` + `__copyProps` creates live getters. The `__toESM` patch returns Proxy directly when `__esModule` is true. Every property access goes through the Proxy → per-file mock check → real module fallback via `_getReal()`.
+Why it works: ESM imports are hoisted and statically resolved — esbuild turns them into direct variable bindings at build time, so there's nothing to intercept at runtime. CJS stays as a runtime operation. The wrappers use CJS (`module.exports = new Proxy(...)`) deliberately, which forces esbuild to use `__toESM` + `__copyProps` — creating live getters where every property access goes through `Proxy.get()` at runtime → per-file mock check → real module fallback via `_getReal()`.
 
 Works for: Barrel-path imports (`@scope/hooks/redux/useRedux`).
 Doesn't work for: Relative imports (`../redux/useRedux`) — esbuild resolves these to shared top-level vars at bundle time. No Proxy interception point exists.
@@ -52,26 +52,16 @@ Real hooks run with real store, fetch returns controlled data, assertions on hoo
 Used to rewrite useActionMessages from 3/26 → 24/24. Key: seed `defaultAppState` with
 `loading: { tags: [] }` and `errorHandling: { currentErrors: [] }` for useIsLoading/useErrorHandling.
 
-## The 47 Remaining Failures (16 files)
+## All Failures Resolved (Day 21: 1472/1472)
 
-### Category 1: Relative imports + complex hook mocking (~12 fails)
-Problem: Hooks mock internal dependencies via barrel paths, but hook imports via relative paths.
-Function Proxy apply trap helps for function exports, but complex state flows need full rewrites.
-Files: useMarketingConsent (7), useTopGPTConsent (4), usePrimoPurchaseTravelCoverageSubmission (1)
-Fix: Convert to withApiStore+mockFetch like useActionMessages.
+All 47 remaining failures from Day 20 were resolved through:
+- **withApiStore + mockFetch rewrites** for relative-import hooks (useMarketingConsent, useTopGPTConsent, etc.)
+- **setupApiStore pattern** for standalone test bugs (apiBaseQuery, useSsoLogin, etc.)
+- **RTK contamination afterEach restore** for data-shape issues
+- **Deep-clone before delete** for shared mock mutation
+- **URLSearchParams polyfill** for missing browser APIs
 
-### Category 2: Standalone bugs (~18 fails)
-Problem: Tests fail even when run alone. Not contamination.
-Files: apiBaseQuery (6), useSsoLogin (5), useFetchOverviewDetails (3), useFileUpload (3),
-  useFormCoordinator (1), useGetInsuranceMetaInfoGuidewire (1)
-
-### Category 3: Data-shape / contamination (~12 fails)
-Problem: Zod unwrapData returns raw response, AsyncStorage mock caching, console externalization.
-Files: guidewireDetails (2), guidewirePolicy (3), keyValueStorage (4), resourceBundle (2),
-  useContactInfo (1), useUserPanelParticipation (1), FirebaseAnalyticsTracker (3)
-
-### Category 4: Missing mockFetch / URL mismatch (~2 fails)
-Files: resourceBundle (2) — CMS baseQuery URL doesn't match mockFetch handler
+See `challenges.md` Day 21 for the full breakdown.
 
 ## Strategies Tried (16 total, see challenges.md for details)
 

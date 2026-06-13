@@ -29,7 +29,7 @@ Today's RN testing stack is structurally wrong:
 
 hermes-test fixes all four by running tests in Hermes (your app's engine), via Metro (your app's bundler), with a typed API that's explicit and AI-friendly.
 
-## Quickstart (target API, not yet implemented)
+## Quickstart
 
 ```bash
 npm install -D hermes-test
@@ -58,23 +58,23 @@ npx hermes-test watch
 
 ## Status
 
-v0 in progress. Roadmap in `.claude/references/roadmap.md`.
+v0 complete. Published on npm as `hermes-test@0.2.1`. Topdanmark: 259 files, 1472 tests, 100% passing, 100% unit test coverage.
 
 | Week | Deliverable | Status |
 |------|-------------|--------|
-| 1 | Hermes embed + Rust CLI skeleton | Not started |
-| 2 | esbuild integration + harness | Not started |
-| 3 | Hooks, mocks, state history | Not started |
-| 4 | Watch mode, reporter, codemod, ship 0.1 | Not started |
+| 1 | Hermes embed + Rust CLI skeleton | Done |
+| 2 | esbuild integration + harness | Done |
+| 3 | Hooks, mocks, state history | Done |
+| 4 | Watch mode, reporter, codemod, ship 0.1 | Done |
 
-Speed targets (predictions until measured — see `BENCHMARKS.md` for real data):
+Measured performance (Topdanmark, 1472 tests, 259 files):
 
-| Scenario | Target |
-|----------|--------|
-| 50 hook tests cold | < 350ms |
-| Watch rerun (1 file) | < 200ms |
-| 1000 mixed tests cold | < 4s |
-| vs Jest+@swc/jest+jest-expo | 5-10x faster |
+| Scenario | hermes-test | Jest | Speedup |
+|----------|-------------|------|---------|
+| Cached run | 0.84s | 54s | **64x** |
+| Cold run | 2.5s | 54s | **22x** |
+| With coverage | 5s | 128s | **26x** |
+| Watch rerun | ~350ms | — | — |
 
 ## Structure
 
