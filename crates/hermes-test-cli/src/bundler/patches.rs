@@ -203,32 +203,48 @@ fn extract_call_end(code: &str, start: usize) -> usize {
 /// Strategy: "push init_* calls down" rather than "pull mockModule calls up".
 /// This preserves the relative order of variable declarations and mockModule calls.
 pub fn hoist_mocks_in_body(body: &str) -> String {
-    // Find all mockModule calls to determine if hoisting is needed
-    let mock_pattern = ".mockModule)(";
-    if !body.contains(mock_pattern) {
+    // Find all mock/mockModule calls to determine if hoisting is needed
+    // After bundling, esbuild outputs either `.mockModule)("path"` or `.mock)("path"`
+    let mock_pattern_old = ".mockModule)(";
+    let mock_pattern_new = ".mock)(";
+    let has_old = body.contains(mock_pattern_old);
+    let has_new = body.contains(mock_pattern_new);
+    if !has_old && !has_new {
         if std::env::var("HT_DEBUG_BUNDLE").is_ok() {
-            eprintln!("[HOIST_BODY] no mockModule calls found in body (len={})", body.len());
+            eprintln!("[HOIST_BODY] no mock/mockModule calls found in body (len={})", body.len());
         }
         return body.to_string();
     }
     if std::env::var("HT_DEBUG_BUNDLE").is_ok() {
-        eprintln!("[HOIST_BODY] found mockModule calls, body len={}", body.len());
+        eprintln!("[HOIST_BODY] found mock calls, body len={}", body.len());
     }
 
-    // Find the last mockModule call's end position
+    // Find the last mock/mockModule call's end position
     let mut last_mock_end = 0;
-    let mut search_start = 0;
-    while let Some(pos) = body[search_start..].find(mock_pattern) {
-        let abs_pos = search_start + pos;
-        let outer_call_start = abs_pos + mock_pattern.len() - 1;
-        let outer_end = extract_call_end(body, outer_call_start);
-        // Extend to include trailing semicolon and newline
-        let mut end = outer_end;
-        let bytes = body.as_bytes();
-        if end < bytes.len() && bytes[end] == b';' { end += 1; }
-        if end < bytes.len() && bytes[end] == b'\n' { end += 1; }
-        if end > last_mock_end { last_mock_end = end; }
-        search_start = outer_end;
+    for mock_pattern in &[mock_pattern_old, mock_pattern_new] {
+        let mut search_start = 0;
+        while let Some(pos) = body[search_start..].find(mock_pattern) {
+            let abs_pos = search_start + pos;
+            // For ".mock)(", verify it's not ".mockSomethingElse)(" by checking the char before
+            if *mock_pattern == mock_pattern_new {
+                // Check that the char before ".mock" is not a letter (to avoid matching .mockFetch etc.)
+                let prefix_start = if abs_pos >= 10 { abs_pos - 10 } else { 0 };
+                let prefix = &body[prefix_start..abs_pos];
+                if prefix.ends_with(".mockModule") || prefix.ends_with(".mockFetch") {
+                    search_start = abs_pos + mock_pattern.len();
+                    continue;
+                }
+            }
+            let outer_call_start = abs_pos + mock_pattern.len() - 1;
+            let outer_end = extract_call_end(body, outer_call_start);
+            // Extend to include trailing semicolon and newline
+            let mut end = outer_end;
+            let bytes = body.as_bytes();
+            if end < bytes.len() && bytes[end] == b';' { end += 1; }
+            if end < bytes.len() && bytes[end] == b'\n' { end += 1; }
+            if end > last_mock_end { last_mock_end = end; }
+            search_start = outer_end;
+        }
     }
 
     if last_mock_end == 0 {
