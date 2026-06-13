@@ -15,12 +15,12 @@
 - Relative imports (`../redux/useRedux`) can't be mocked this way — esbuild resolves them as ESM top-level vars
 
 ### Per-file mock scoping (__HT_file_mocks)
-- mockModule writes to __HT_file_mocks[filename][path], not global
+- mock() writes to __HT_file_mocks[filename][path], not global
 - __require Proxy checks per-file mocks first, then global
 - Prevents cross-file mock pollution for externalized modules
 
 ### Mock hoisting (Rust post-processing)
-- Moves init_*() calls after mockModule() calls in test file bodies
+- Moves init_*() calls after mock() calls in test file bodies
 - Ensures mocks are registered before modules capture values
 
 ### Mini-vendor for non-aliased mocked packages (Day 19)
@@ -136,7 +136,7 @@ The 143 failures from Day 19 were resolved through a combination of strategies:
 1. **Function Proxy apply traps (Day 20)** — wrap function exports in `new Proxy(fn, { apply })` so mock checks happen at call time, not import time. Fixed module-scope captures like useDispatch, useSelector.
 2. **Ecosystem wrapper shims (Day 20)** — config-driven shims for RTK Query, react-redux, etc. with singleton cache management.
 3. **RTK contamination fix** — afterEach restore for mutated shared singletons (+18 tests)
-4. **withApiStore + mockFetch rewrites (Day 20-21)** — real Redux store + mock network layer instead of mocking hooks (+21 tests)
+4. **withApiStore + mock.fetch rewrites (Day 20-21)** — real Redux store + mock network layer instead of mocking hooks (+21 tests)
 5. **setupApiStore pattern (Day 21)** — final push to 1472/1472 (100%)
 
 See `challenges.md` for the full day-by-day journey.

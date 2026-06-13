@@ -114,7 +114,7 @@ Fix: use `withStore` pattern (real Redux store, no mocking needed).
 | Split mode | Working | Working, 3.3s | Working, ~2s |
 | expo-app | 1411/1411 | 1411/1411 | 1411/1411 |
 
-The remaining failures after package shims were solved by function Proxy apply traps, ecosystem wrapper shims, RTK contamination fixes, and withApiStore+mockFetch rewrites (see `mock-strategies.md` and `challenges.md`).
+The remaining failures after package shims were solved by function Proxy apply traps, ecosystem wrapper shims, RTK contamination fixes, and withApiStore+mock.fetch rewrites (see `mock-strategies.md` and `challenges.md`).
 
 ## Implementation
 

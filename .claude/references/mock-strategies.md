@@ -26,8 +26,8 @@ Result: +52 tests fixed (1315 → 1367) by eliminating `__HT_noop` fallback for 
 ### Split Mode
 How: Vendor bundle (npm packages + aliased source) + group bundles (10 test files each with --packages=external). Shadow wrappers and package shims applied to group bundles. Vendor passes empty mock_modules so aliases resolve and real source is bundled.
 
-### mockModule + Per-file Scoping
-How: `mockModule('path', factory)` registers in `__HT_file_mocks[currentFile][path]`. The `__require` Proxy and shadow wrapper Proxies check per-file mocks first, then fall through to real module.
+### mock() + Per-file Scoping
+How: `mock('path', factory)` registers in `__HT_file_mocks[currentFile][path]`. The `__require` Proxy and shadow wrapper Proxies check per-file mocks first, then fall through to real module.
 
 ### Function Proxy Apply Traps (Day 20)
 How: When a shadow wrapper or package shim Proxy returns a function, wrap it in `new Proxy(fn, { apply })`. The `apply` trap re-checks per-file mocks at CALL time.
@@ -40,14 +40,14 @@ How: `"shims": { "pkg": "hermes-test/shims/name" }` in config. Bundler resolves 
 Files: rtk-query.js, reduxjs-toolkit.js, react-redux.js, tanstack-query.js
 
 ### Mock Hoisting
-How: Rust post-processing moves `init_*()` calls to AFTER `mockModule()` calls in test file bodies.
+How: Rust post-processing moves `init_*()` calls to AFTER `mock()` calls in test file bodies.
 
 ### withStore / withApiStore (Pattern 2)
 How: Real Redux store with configurable initial state. Hooks use real `useSelector` — no mocking needed.
 Works for: Relative-import hooks that use Redux. Proven for useActionMessages (24 tests), RTK slice tests.
 
-### withApiStore + mockFetch (Pattern 3, Day 20)
-How: Create real RTK Query store, mock the network layer with `mockFetch(http.get(...))`.
+### withApiStore + mock.fetch (Pattern 3, Day 20)
+How: Create real RTK Query store, mock the network layer with `mock.fetch(http.get(...))`.
 Real hooks run with real store, fetch returns controlled data, assertions on hook output.
 Used to rewrite useActionMessages from 3/26 → 24/24. Key: seed `defaultAppState` with
 `loading: { tags: [] }` and `errorHandling: { currentErrors: [] }` for useIsLoading/useErrorHandling.
@@ -55,7 +55,7 @@ Used to rewrite useActionMessages from 3/26 → 24/24. Key: seed `defaultAppStat
 ## All Failures Resolved (Day 21: 1472/1472)
 
 All 47 remaining failures from Day 20 were resolved through:
-- **withApiStore + mockFetch rewrites** for relative-import hooks (useMarketingConsent, useTopGPTConsent, etc.)
+- **withApiStore + mock.fetch rewrites** for relative-import hooks (useMarketingConsent, useTopGPTConsent, etc.)
 - **setupApiStore pattern** for standalone test bugs (apiBaseQuery, useSsoLogin, etc.)
 - **RTK contamination afterEach restore** for data-shape issues
 - **Deep-clone before delete** for shared mock mutation
@@ -71,10 +71,10 @@ Working strategies:
 3. Function Proxy apply traps (call-time mock checking) — **+3 tests**
 4. Ecosystem wrapper shims (single-instance + test instrumentation)
 5. Live Proxy mock placeholders (defense-in-depth for externals)
-6. mockModule patching + resetMockModulePatches (save/restore between files)
+6. mock() patching + resetMockModulePatches (save/restore between files)
 7. Shared mock mutation detection (deep-clone before delete) — **+1 test**
 8. RTK contamination fix (afterEach restore) — **+18 tests**
-9. withApiStore+mockFetch rewrite (useActionMessages) — **+21 tests**
+9. withApiStore+mock.fetch rewrite (useActionMessages) — **+21 tests**
 10. URLSearchParams polyfill (object constructor + iterator)
 
 Failed strategies:
@@ -88,7 +88,7 @@ Failed strategies:
 Key lessons:
 - **Function Proxy apply traps** are the breakthrough for module-scope capture.
   Preserve references, check mocks at call time, zero perf cost with caching.
-- **withApiStore+mockFetch** is the correct pattern for hooks with relative imports.
+- **withApiStore+mock.fetch** is the correct pattern for hooks with relative imports.
   Don't mock hooks — provide real store state and mock the network layer.
 - **afterEach restore is mandatory** when mutating shared singletons.
 - **Deep-clone before delete** when modifying shared mock data objects.

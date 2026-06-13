@@ -34,7 +34,7 @@
 - Based on `mdjastrzebski/test-renderer` (universal-test-renderer for React 19)
 
 ### 2. Jest compatibility shim
-- `globalThis.jest = { fn: spy, mock: mockModule, spyOn, ... }`
+- `globalThis.jest = { fn: spy, mock: mock, spyOn, ... }`
 - `jest.requireActual(path)` — return real module
 - `jest.useFakeTimers()` / `jest.useRealTimers()`
 - `jest.clearAllMocks()` → `clearAllMocks()`
@@ -64,5 +64,5 @@
 - ~150 lines Rust duplication → single `fn generate_proxy_wrapper()` function
 
 ### 7. Error diagnostics
-- Warn when `mockModule` path doesn't match any shadow wrapper
+- Warn when `mock()` path doesn't match any shadow wrapper
 - Suggest fixes for common errors (missing Provider, relative import bypass)

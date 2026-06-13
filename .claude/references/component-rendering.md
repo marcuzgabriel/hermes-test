@@ -62,7 +62,7 @@ render(<BasketDetails {...props} />, { shallow: true })
 - `getByType('InsuranceCard')` — find by component name
 - `toHaveProp('insurance', ...)` — assert props passed to children
 - `toMatchSnapshot()` — captures structure without child internals
-- No `mockModule` needed for child components
+- No `mock()` needed for child components
 - No UI library shims needed
 
 ### What still needs full render
