@@ -8,12 +8,16 @@
     "*": {
       "store": [
         "store.d.ts"
+      ],
+      "globals": [
+        "globals.d.ts"
       ]
     }
   },
   "exports": {
     ".": "./src/index.ts",
-    "./store": "./src/store.ts"
+    "./store": "./src/store.ts",
+    "./globals": "./globals.d.ts"
   },
   "bin": {
     "hermes-test": "bin/hermes-test.js"
