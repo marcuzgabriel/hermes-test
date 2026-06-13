@@ -70,7 +70,6 @@ There are 1472+ passing tests. Study them. Follow the same patterns. Do NOT inve
 - `HttpResponse.json(data, { status? })` — build response
 - URL matching: exact string, prefix match, or RegExp
 
-Legacy aliases (`mockModule`, `mockFetch`, `mockFetchUse`, `mockFetchReset`, `mockFetchClear`) still work for backwards compat.
 
 ### Timers
 - `useFakeTimers(timestamp?)`, `useRealTimers()`
@@ -142,7 +141,7 @@ test('it works', ({ expect }) => {
 This is how the 835 original passing tests work. **Follow this pattern first.**
 
 ### Pattern 2: Relative-import hooks (useErrorHandling, useIsLoading, useActionMessages, etc.)
-These hooks import dependencies via relative paths (`../redux/useRedux`, `../i18n`). Shadow wrappers do NOT intercept relative imports. mockModule on barrel path won't work.
+These hooks import dependencies via relative paths (`../redux/useRedux`, `../i18n`). Shadow wrappers do NOT intercept relative imports. `mock()` on barrel path won't work.
 
 For these, use `withStore` from `test/testStore.ts`:
 
@@ -208,7 +207,7 @@ See `examples/expo-app/src/prod-tests/`. Copy hook locally, use `useSelector` fr
 - In single-bundle mode, all test files share one JS context
 - mock() writes to per-file scope (`__HT_file_mocks[filename]`)
 - Shadow wrappers check per-file mocks at runtime
-- Do NOT mock `react-redux` or `react-i18next` via mockModule — these contaminate globally
+- Do NOT mock `react-redux` or `react-i18next` via `mock()` — these contaminate globally
 - `react-i18next` is shimmed globally in hermes-test.config.json
 - For Redux, use `withStore` instead of mocking
 
@@ -238,7 +237,7 @@ See `examples/expo-app/src/prod-tests/`. Copy hook locally, use `useSelector` fr
 ## DO NOT
 - Use agents to bulk-rewrite test files
 - Create new test infrastructure (testStore etc.) — it already exists
-- Mock react-redux or react-i18next via mockModule
+- Mock react-redux or react-i18next via `mock()`
 - Use `.mock.calls` (Jest API) — use `.calls`
 - Use `new Response()` — Hermes doesn't have it
 - Assert exact call counts on `useAppDispatch` — React re-renders cause extra calls
