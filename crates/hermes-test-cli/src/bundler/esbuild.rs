@@ -206,6 +206,7 @@ fn bundle_esbuild_with_config_inner(
         .arg("--define:process.env.NODE_ENV=\"test\"")
         .arg("--define:process.env.JEST_WORKER_ID=\"1\"")
         .arg("--define:global=globalThis")
+        .arg("--jsx=automatic")
         .arg("--loader:.js=jsx")
         .arg("--loader:.png=empty")
         .arg("--loader:.jpg=empty")
@@ -773,7 +774,8 @@ fn pkg_matches_external(pkg: &str, external: &str) -> bool {
 
 /// Internal version of generate_group_entry used by bundle_split.
 fn generate_group_entry_internal(test_files: &[PathBuf], mock_modules: &[String], project_root: Option<&Path>) -> String {
-    generate_group_entry_pub(test_files, mock_modules, project_root)
+    // Split mode doesn't use shallow auto-mocks (handled by the single-bundle path)
+    generate_group_entry_pub(test_files, mock_modules, project_root, &[])
 }
 
 /// Setup code eval'd before vendor: shims, mock placeholders, harness mocks.

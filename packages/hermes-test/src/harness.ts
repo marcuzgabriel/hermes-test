@@ -308,11 +308,59 @@ function runTests(): TestResult[] {
       resetMocks();
 
       _fileFailed++;
-      _fileFailures.push({ name: entry.name, error: e?.message ?? String(e) });
+      let errMsg = e?.stack ?? e?.message ?? String(e);
+      // Parse stack trace for source file paths and suggest ht.mock() fixes.
+      // esbuild names __esm init functions with the source path (e.g. "src/utils/string.ts").
+      if (e?.stack) {
+        const lines = (e.stack as string).split('\n');
+        // Find first application source file in the stack (not harness, not native, not node_modules)
+        for (const line of lines) {
+          const match = line.match(/at\s+(?:([^\s(]+)\s+\()?(?:bundle\.js|[^)]+):(\d+)/);
+          if (!match) continue;
+          const fnName = match[1] || '';
+          // Skip framework internals
+          if (fnName.includes('harness') || fnName === 'anonymous' || fnName === '__init'
+              || fnName === 'apply' || fnName === 'global' || fnName.startsWith('react')
+              || fnName.startsWith('run') || fnName.startsWith('perform')
+              || fnName.startsWith('work') || fnName.startsWith('flush')
+              || fnName.startsWith('begin') || fnName.startsWith('update')
+              || fnName.startsWith('reconcile') || fnName.startsWith('create')) continue;
+          // If fnName looks like a file path (contains / or .tsx/.ts), suggest mocking it
+          if (fnName.includes('/') && (fnName.includes('.ts') || fnName.includes('.js'))) {
+            // Convert src path to alias path for the hint
+            const srcPath = fnName.replace(/^(\.\.\/)*/, '').replace(/\/index\.(tsx?|jsx?)$/, '');
+            errMsg += '\n\n  Hint: Module "' + srcPath + '" crashed during initialization.'
+              + '\n  Consider adding: ht.mock(\'<alias>/' + srcPath + '\', () => ({ ... }))';
+            break;
+          }
+          // If fnName is a function name (like formatLocalePrice), show it
+          // and resolve module path from the shallow import map if available
+          if (fnName && !fnName.includes('(') && fnName.length > 2) {
+            const importMap = (globalThis as any).__HT_shallow_imports;
+            const modPath = importMap && importMap[fnName];
+            if (modPath) {
+              // Collect all exports from the same module for a complete mock
+              const siblings: string[] = [];
+              for (const k in importMap) {
+                if (importMap[k] === modPath && siblings.indexOf(k) === -1) siblings.push(k);
+              }
+              const mockBody = siblings.map(s => '  ' + s + ': () => {}').join(',\n');
+              errMsg += '\n\n  Hint: "' + fnName + '" from "' + modPath + '" failed.'
+                + '\n  Add this mock to your test file:\n\n'
+                + "  ht.mock('" + modPath + "', () => ({\n" + mockBody + '\n  }));\n';
+            } else {
+              errMsg += '\n\n  Hint: Function "' + fnName + '" is undefined or calls undefined.'
+                + '\n  Find which module exports it and add ht.mock() for that module.';
+            }
+            break;
+          }
+        }
+      }
+      _fileFailures.push({ name: entry.name, error: errMsg });
       results.push({
         name: entry.name,
         status: 'fail',
-        error: e?.message ?? String(e),
+        error: errMsg,
         duration: Date.now() - start,
         file: entry.file,
       });
@@ -378,7 +426,8 @@ mock.fetch.overwrite = mockFetchUse;
 mock.fetch.reset = mockFetchReset;
 mock.fetch.clear = mockFetchClear;
 
-(globalThis as any).ht = { mock };
+const shallow = (_componentPath: string) => {};
+(globalThis as any).ht = { mock, shallow };
 
 // Expose to the global scope for the harness entry
 (globalThis as any).__HT = {
