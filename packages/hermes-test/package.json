@@ -63,6 +63,7 @@
     "bin/",
     "dist/",
     "index.d.ts",
+    "globals.d.ts",
     "store.d.ts",
     "shims/"
   ]

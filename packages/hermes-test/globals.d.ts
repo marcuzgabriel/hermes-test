@@ -1,27 +1,16 @@
-// Global type declarations for hermes-test
-// ht is available globally without import, like jest.
+declare global {
+  interface HtMockFetch {
+    (...handlers: import('hermes-test').FetchHandler[]): void
+    overwrite(...handlers: import('hermes-test').FetchHandler[]): void
+    reset(): void
+    clear(): void
+  }
 
-interface HtFetchHandler {
-  method: string;
-  url: string | RegExp;
-  handler: (req: any) => any;
-  once?: boolean;
+  interface HtMock {
+    (modulePath: string, factory: () => Record<string, unknown>): void
+    fetch: HtMockFetch
+  }
+
+  const ht: { mock: HtMock }
 }
-
-interface HtMockFetch {
-  (...handlers: HtFetchHandler[]): void;
-  overwrite(...handlers: HtFetchHandler[]): void;
-  reset(): void;
-  clear(): void;
-}
-
-interface HtMock {
-  (modulePath: string, factory: () => Record<string, unknown>): void;
-  fetch: HtMockFetch;
-}
-
-interface Ht {
-  mock: HtMock;
-}
-
-declare const ht: Ht;
+export {}
