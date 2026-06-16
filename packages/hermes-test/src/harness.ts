@@ -19,8 +19,9 @@
     warn: (...args: any[]) => p('\x1b[33m⚠ ' + fmt(...args) + '\x1b[0m'),
     error: (...args: any[]) => {
       const msg = fmt(...args);
-      // Filter only our custom react-reconciler host config noise
+      // Filter internal framework noise (not actionable by test authors)
       if (msg.includes('Expected host context to exist')) return;
+      if (msg.includes('An unhandled error occurred processing a request for the endpoint')) return;
       p('\x1b[31m✗ ' + msg + '\x1b[0m');
     },
   };

@@ -1896,6 +1896,7 @@ ${pad}</${type}>`;
       error: (...args) => {
         const msg = fmt(...args);
         if (msg.includes("Expected host context to exist")) return;
+        if (msg.includes("An unhandled error occurred processing a request for the endpoint")) return;
         p("\x1B[31m\u2717 " + msg + "\x1B[0m");
       }
     };
