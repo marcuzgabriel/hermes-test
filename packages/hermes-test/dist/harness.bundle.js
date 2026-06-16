@@ -1884,10 +1884,16 @@ ${pad}</${type}>`;
       log: (...args) => p(fmt(...args)),
       info: (...args) => p(fmt(...args)),
       debug: (...args) => p(fmt(...args)),
-      warn: (...args) => p("\x1B[33m\u26A0 " + fmt(...args) + "\x1B[0m"),
+      warn: (...args) => {
+        const msg = fmt(...args);
+        if (msg.includes("input selector returned a different result")) return;
+        p("\x1B[33m\u26A0 " + msg + "\x1B[0m");
+      },
       error: (...args) => {
         const msg = fmt(...args);
         if (msg.includes("Expected host context to exist")) return;
+        if (msg.includes("not wrapped in act(")) return;
+        if (msg.includes("An unhandled error occurred processing a request")) return;
         p("\x1B[31m\u2717 " + msg + "\x1B[0m");
       }
     };

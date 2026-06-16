@@ -16,10 +16,17 @@
     log: (...args: any[]) => p(fmt(...args)),
     info: (...args: any[]) => p(fmt(...args)),
     debug: (...args: any[]) => p(fmt(...args)),
-    warn: (...args: any[]) => p('\x1b[33m⚠ ' + fmt(...args) + '\x1b[0m'),
+    warn: (...args: any[]) => {
+      const msg = fmt(...args);
+      if (msg.includes('input selector returned a different result')) return;
+      p('\x1b[33m⚠ ' + msg + '\x1b[0m');
+    },
     error: (...args: any[]) => {
       const msg = fmt(...args);
+      // Filter known noise from react-reconciler and React internals
       if (msg.includes('Expected host context to exist')) return;
+      if (msg.includes('not wrapped in act(')) return;
+      if (msg.includes('An unhandled error occurred processing a request')) return;
       p('\x1b[31m✗ ' + msg + '\x1b[0m');
     },
   };
