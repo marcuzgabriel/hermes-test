@@ -1874,7 +1874,7 @@ ${pad}</${type}>`;
     function fmt(...args) {
       return args.map((a) => {
         try {
-          return typeof a === "string" ? a : JSON.stringify(a);
+          return typeof a === "string" ? a : JSON.stringify(a, null, 2);
         } catch {
           return String(a);
         }

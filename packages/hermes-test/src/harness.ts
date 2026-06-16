@@ -8,7 +8,7 @@
   const p = (globalThis as any).print || (() => {});
   function fmt(...args: any[]) {
     return args.map((a: any) => {
-      try { return typeof a === 'string' ? a : JSON.stringify(a); }
+      try { return typeof a === 'string' ? a : JSON.stringify(a, null, 2); }
       catch { return String(a); }
     }).join(' ');
   }
