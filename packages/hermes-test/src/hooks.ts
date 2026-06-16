@@ -109,7 +109,9 @@ function flush() {
   drain();
 }
 
-// Enable React.act() support
+// React act() support — IS_REACT_ACT_ENVIRONMENT must be true for act() to work.
+// We keep it true globally. To suppress warnings from async effects that resolve
+// after act() returns, we temporarily set it false during drain/flush cycles.
 (globalThis as any).IS_REACT_ACT_ENVIRONMENT = true;
 
 export function act(fn: () => void | Promise<void>): void {
