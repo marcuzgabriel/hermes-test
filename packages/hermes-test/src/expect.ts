@@ -129,7 +129,11 @@ function createAssertion(actual: any, negated: boolean): any {
   function assert(condition: boolean, message: string) {
     const pass = negated ? !condition : condition;
     if (!pass) {
-      throw new Error(message);
+      let hint = '';
+      if (actual === undefined && !negated) {
+        hint = '\n    Hint: Received is undefined. This usually means the module needs to be mocked with ht.mock().';
+      }
+      throw new Error(message + hint);
     }
   }
 
@@ -138,8 +142,8 @@ function createAssertion(actual: any, negated: boolean): any {
       assert(
         actual === expected,
         negated
-          ? `Expected ${formatValue(actual)} not to be ${formatValue(expected)}`
-          : `Expected ${formatValue(expected)}, got ${formatValue(actual)}`
+          ? `expect(received).not.toBe(expected)\n\n    Expected: not ${formatValue(expected)}\n    Received: ${formatValue(actual)}`
+          : `expect(received).toBe(expected)\n\n    Expected: ${formatValue(expected)}\n    Received: ${formatValue(actual)}`
       );
     },
 
@@ -147,8 +151,8 @@ function createAssertion(actual: any, negated: boolean): any {
       assert(
         deepEqual(actual, expected),
         negated
-          ? `Expected ${formatValue(actual)} not to deeply equal ${formatValue(expected)}`
-          : `Expected deep equal to ${formatValue(expected)}, got ${formatValue(actual)}`
+          ? `expect(received).not.toEqual(expected)\n\n    Expected: not ${formatValue(expected)}\n    Received: ${formatValue(actual)}`
+          : `expect(received).toEqual(expected)\n\n    Expected: ${formatValue(expected)}\n    Received: ${formatValue(actual)}`
       );
     },
 
@@ -156,8 +160,8 @@ function createAssertion(actual: any, negated: boolean): any {
       assert(
         actual !== undefined,
         negated
-          ? `Expected value to be undefined, got ${formatValue(actual)}`
-          : `Expected value to be defined, got undefined`
+          ? `expect(received).not.toBeDefined()\n\n    Received: ${formatValue(actual)}`
+          : `expect(received).toBeDefined()\n\n    Received: undefined`
       );
     },
 
@@ -165,8 +169,8 @@ function createAssertion(actual: any, negated: boolean): any {
       assert(
         actual === undefined,
         negated
-          ? `Expected value not to be undefined`
-          : `Expected undefined, got ${formatValue(actual)}`
+          ? `expect(received).not.toBeUndefined()\n\n    Received: ${formatValue(actual)}`
+          : `expect(received).toBeUndefined()\n\n    Received: ${formatValue(actual)}`
       );
     },
 
@@ -174,8 +178,8 @@ function createAssertion(actual: any, negated: boolean): any {
       assert(
         actual === null,
         negated
-          ? `Expected value not to be null`
-          : `Expected null, got ${formatValue(actual)}`
+          ? `expect(received).not.toBeNull()\n\n    Received: ${formatValue(actual)}`
+          : `expect(received).toBeNull()\n\n    Received: ${formatValue(actual)}`
       );
     },
 
@@ -184,8 +188,8 @@ function createAssertion(actual: any, negated: boolean): any {
       assert(
         len === expected,
         negated
-          ? `Expected length not to be ${expected}, but it was`
-          : `Expected length ${expected}, got ${len}`
+          ? `expect(received).not.toHaveLength(expected)\n\n    Expected: not ${expected}\n    Received length: ${len}`
+          : `expect(received).toHaveLength(expected)\n\n    Expected: ${expected}\n    Received length: ${len}`
       );
     },
 
@@ -193,8 +197,8 @@ function createAssertion(actual: any, negated: boolean): any {
       assert(
         actual instanceof expected,
         negated
-          ? `Expected ${formatValue(actual)} not to be instance of ${expected?.name ?? expected}`
-          : `Expected instance of ${expected?.name ?? expected}, got ${formatValue(actual)}`
+          ? `expect(received).not.toBeInstanceOf(expected)\n\n    Expected: not ${expected?.name ?? expected}`
+          : `expect(received).toBeInstanceOf(expected)\n\n    Expected: ${expected?.name ?? expected}\n    Received: ${formatValue(actual)}`
       );
     },
 
@@ -202,8 +206,8 @@ function createAssertion(actual: any, negated: boolean): any {
       assert(
         !!actual,
         negated
-          ? `Expected ${formatValue(actual)} to be falsy`
-          : `Expected truthy value, got ${formatValue(actual)}`
+          ? `expect(received).not.toBeTruthy()\n\n    Received: ${formatValue(actual)}`
+          : `expect(received).toBeTruthy()\n\n    Received: ${formatValue(actual)}`
       );
     },
 
@@ -211,8 +215,8 @@ function createAssertion(actual: any, negated: boolean): any {
       assert(
         !actual,
         negated
-          ? `Expected ${formatValue(actual)} to be truthy`
-          : `Expected falsy value, got ${formatValue(actual)}`
+          ? `expect(received).not.toBeFalsy()\n\n    Received: ${formatValue(actual)}`
+          : `expect(received).toBeFalsy()\n\n    Received: ${formatValue(actual)}`
       );
     },
 

@@ -493,63 +493,110 @@ Run with --update-snapshots to update.`
     function assert(condition, message) {
       const pass = negated ? !condition : condition;
       if (!pass) {
-        throw new Error(message);
+        let hint = "";
+        if (actual === void 0 && !negated) {
+          hint = "\n    Hint: Received is undefined. This usually means the module needs to be mocked with ht.mock().";
+        }
+        throw new Error(message + hint);
       }
     }
     const assertion = {
       toBe(expected) {
         assert(
           actual === expected,
-          negated ? `Expected ${formatValue(actual)} not to be ${formatValue(expected)}` : `Expected ${formatValue(expected)}, got ${formatValue(actual)}`
+          negated ? `expect(received).not.toBe(expected)
+
+    Expected: not ${formatValue(expected)}
+    Received: ${formatValue(actual)}` : `expect(received).toBe(expected)
+
+    Expected: ${formatValue(expected)}
+    Received: ${formatValue(actual)}`
         );
       },
       toEqual(expected) {
         assert(
           deepEqual(actual, expected),
-          negated ? `Expected ${formatValue(actual)} not to deeply equal ${formatValue(expected)}` : `Expected deep equal to ${formatValue(expected)}, got ${formatValue(actual)}`
+          negated ? `expect(received).not.toEqual(expected)
+
+    Expected: not ${formatValue(expected)}
+    Received: ${formatValue(actual)}` : `expect(received).toEqual(expected)
+
+    Expected: ${formatValue(expected)}
+    Received: ${formatValue(actual)}`
         );
       },
       toBeDefined() {
         assert(
           actual !== void 0,
-          negated ? `Expected value to be undefined, got ${formatValue(actual)}` : `Expected value to be defined, got undefined`
+          negated ? `expect(received).not.toBeDefined()
+
+    Received: ${formatValue(actual)}` : `expect(received).toBeDefined()
+
+    Received: undefined`
         );
       },
       toBeUndefined() {
         assert(
           actual === void 0,
-          negated ? `Expected value not to be undefined` : `Expected undefined, got ${formatValue(actual)}`
+          negated ? `expect(received).not.toBeUndefined()
+
+    Received: ${formatValue(actual)}` : `expect(received).toBeUndefined()
+
+    Received: ${formatValue(actual)}`
         );
       },
       toBeNull() {
         assert(
           actual === null,
-          negated ? `Expected value not to be null` : `Expected null, got ${formatValue(actual)}`
+          negated ? `expect(received).not.toBeNull()
+
+    Received: ${formatValue(actual)}` : `expect(received).toBeNull()
+
+    Received: ${formatValue(actual)}`
         );
       },
       toHaveLength(expected) {
         const len = actual?.length;
         assert(
           len === expected,
-          negated ? `Expected length not to be ${expected}, but it was` : `Expected length ${expected}, got ${len}`
+          negated ? `expect(received).not.toHaveLength(expected)
+
+    Expected: not ${expected}
+    Received length: ${len}` : `expect(received).toHaveLength(expected)
+
+    Expected: ${expected}
+    Received length: ${len}`
         );
       },
       toBeInstanceOf(expected) {
         assert(
           actual instanceof expected,
-          negated ? `Expected ${formatValue(actual)} not to be instance of ${expected?.name ?? expected}` : `Expected instance of ${expected?.name ?? expected}, got ${formatValue(actual)}`
+          negated ? `expect(received).not.toBeInstanceOf(expected)
+
+    Expected: not ${expected?.name ?? expected}` : `expect(received).toBeInstanceOf(expected)
+
+    Expected: ${expected?.name ?? expected}
+    Received: ${formatValue(actual)}`
         );
       },
       toBeTruthy() {
         assert(
           !!actual,
-          negated ? `Expected ${formatValue(actual)} to be falsy` : `Expected truthy value, got ${formatValue(actual)}`
+          negated ? `expect(received).not.toBeTruthy()
+
+    Received: ${formatValue(actual)}` : `expect(received).toBeTruthy()
+
+    Received: ${formatValue(actual)}`
         );
       },
       toBeFalsy() {
         assert(
           !actual,
-          negated ? `Expected ${formatValue(actual)} to be truthy` : `Expected falsy value, got ${formatValue(actual)}`
+          negated ? `expect(received).not.toBeFalsy()
+
+    Received: ${formatValue(actual)}` : `expect(received).toBeFalsy()
+
+    Received: ${formatValue(actual)}`
         );
       },
       toBeGreaterThan(n) {
@@ -1932,6 +1979,89 @@ ${pad}</${type}>`;
 `);
     }
   }
+  function formatTestError(e) {
+    const message = e?.message ?? String(e);
+    const stack = e?.stack;
+    if (!stack) return message;
+    const frames = [];
+    for (const raw of stack.split("\n").slice(1)) {
+      const m = raw.match(/at\s+(?:([^\s(]+)\s+\()?([^:)]+):(\d+)/);
+      if (m) frames.push({ fn: m[1] || "", file: m[2], line: m[3] });
+    }
+    const skipFn = /* @__PURE__ */ new Set([
+      "anonymous",
+      "global",
+      "__init",
+      "apply",
+      "map",
+      "react-stack-bottom-frame",
+      "proxy trap"
+    ]);
+    const skipPrefix = [
+      "render",
+      "run",
+      "perform",
+      "work",
+      "flush",
+      "begin",
+      "update",
+      "reconcile",
+      "create",
+      "complete",
+      "commit",
+      "process"
+    ];
+    const appFrames = frames.filter((f) => {
+      if (skipFn.has(f.fn)) return false;
+      if (f.file.includes("harness") || f.file.includes("runner")) return false;
+      if (f.fn === "" && !f.file.includes("/src/") && !f.file.includes("packages/")) return false;
+      for (const p of skipPrefix) {
+        if (f.fn.startsWith(p)) return false;
+      }
+      return true;
+    });
+    let cleanStack = message;
+    if (appFrames.length > 0) {
+      cleanStack += "\n";
+      for (const f of appFrames.slice(0, 8)) {
+        const loc = f.fn.includes("/") ? f.fn : f.fn ? f.fn + " (" + f.file + ":" + f.line + ")" : f.file + ":" + f.line;
+        cleanStack += "\n    at " + loc;
+      }
+    }
+    const importMap = globalThis.__HT_shallow_imports;
+    let hint = "";
+    for (const f of appFrames) {
+      const fnName = f.fn;
+      if (fnName.includes("/") && (fnName.includes(".ts") || fnName.includes(".js"))) {
+        const srcPath = fnName.replace(/^(\.\.\/)*/, "");
+        const nmMatch = srcPath.match(/node_modules\/((?:@[^/]+\/)?[^/]+)/);
+        if (nmMatch) {
+          const pkg = nmMatch[1];
+          hint = '\n\n  "' + pkg + '" crashed during initialization (native dependency).\n  Add to externals in hermes-test.config.json:\n\n    { "externals": ["' + pkg + '"] }\n\n  Or mock the module that imports it with ht.mock().\n';
+        } else {
+          const cleanPath = srcPath.replace(/\/index\.(tsx?|jsx?)$/, "");
+          hint = '\n\n  Module "' + cleanPath + '" crashed during initialization.\n  A dependency uses an API not available in Hermes.\n  Mock it with ht.mock() or add the native dep to externals.\n';
+        }
+        break;
+      }
+      if (fnName && fnName.length > 2 && !fnName.includes("(") && importMap) {
+        const modPath = importMap[fnName];
+        if (modPath) {
+          const siblings = [];
+          for (const k in importMap) {
+            if (importMap[k] === modPath && siblings.indexOf(k) === -1) siblings.push(k);
+          }
+          const mockBody = siblings.map((s) => "    " + s + ": () => {}").join(",\n");
+          hint = '\n\n  "' + fnName + '" from "' + modPath + `" failed.
+  Add this mock to your test file:
+
+    ht.mock('` + modPath + "', () => ({\n" + mockBody + "\n    }));\n";
+          break;
+        }
+      }
+    }
+    return cleanStack + hint;
+  }
   function runTests() {
     const results = [];
     const hasOnly = tests.some((t) => t.options.only);
@@ -2026,11 +2156,12 @@ ${pad}</${type}>`;
         }
         resetMocks();
         _fileFailed++;
-        _fileFailures.push({ name: entry.name, error: e?.message ?? String(e) });
+        const errMsg = e?.stack ?? e?.message ?? String(e);
+        _fileFailures.push({ name: entry.name, error: errMsg });
         results.push({
           name: entry.name,
           status: "fail",
-          error: e?.message ?? String(e),
+          error: errMsg,
           duration: Date.now() - start,
           file: entry.file
         });
@@ -2049,10 +2180,11 @@ ${pad}</${type}>`;
     return results;
   }
   function registerCrash(file, error) {
+    const formatted = formatTestError({ message: error.split("\n")[0], stack: error });
     tests.push({
       name: `[CRASH] ${file}`,
       fn: () => {
-        throw new Error(error);
+        throw new Error(formatted);
       },
       options: {},
       file
@@ -2074,7 +2206,9 @@ ${pad}</${type}>`;
   mock.fetch.overwrite = mockFetchUse;
   mock.fetch.reset = mockFetchReset;
   mock.fetch.clear = mockFetchClear;
-  globalThis.ht = { mock };
+  var shallow = (_componentPath) => {
+  };
+  globalThis.ht = { mock, shallow };
   globalThis.__HT = {
     test,
     expect,

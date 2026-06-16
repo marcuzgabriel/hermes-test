@@ -298,7 +298,18 @@ JSON.stringify({
         let cfg = bundler::read_config(&root);
         let start = Instant::now();
 
-        let all_mocks = bundler::find_mock_modules(&test_files);
+        let alias_names: Vec<String> = cfg.aliases.iter().map(|(a, _)| a.clone()).collect();
+        let all_mocks = bundler::find_mock_modules_with_aliases(&test_files, &alias_names);
+
+        // Scan ht.shallow() for auto-mock generation
+        let mut shallow_auto_mocks: Vec<(String, Vec<String>)> = Vec::new();
+        for file in &test_files {
+            for entry in bundler::scan_shallow_auto_mocks(file, &alias_names) {
+                if !shallow_auto_mocks.iter().any(|(p, _)| p == &entry.0) {
+                    shallow_auto_mocks.push(entry);
+                }
+            }
+        }
 
         // All files in one batch — shadow wrappers handle aliased mock isolation.
         // HT_PER_FILE forces per-file isolation as fallback.
@@ -310,7 +321,7 @@ JSON.stringify({
             if use_split {
                 run_tests_split(&rt, &test_files, &root, &all_mocks, &cfg, start);
             } else {
-                run_tests_single(&rt, &test_files, &root, &all_mocks, &cfg, start, &[], coverage, update_snapshots);
+                run_tests_single(&rt, &test_files, &root, &all_mocks, &cfg, start, &[], coverage, update_snapshots, &shallow_auto_mocks);
             }
         }
     }
@@ -327,6 +338,7 @@ fn run_tests_single(
     transforms: &[(PathBuf, PathBuf)],
     coverage: bool,
     update_snapshots: bool,
+    shallow_auto_mocks: &[(String, Vec<String>)],
 ) {
     // Check single-bundle cache FIRST — skip shadow wrapper/shim setup if cached.
     let cache_key = bundler::compute_single_bundle_cache_key(test_files, root, mock_modules, cfg);
@@ -353,7 +365,7 @@ fn run_tests_single(
         }).cloned().collect();
         let (shim_cfg, shim_dir, remaining_externals) =
             bundler::create_package_shims(root, &non_aliased_mocks, &shadow_cfg);
-        let entry_content = bundler::generate_entry(test_files, None, mock_modules, &shim_cfg, transforms, Some(root));
+        let entry_content = bundler::generate_entry_with_shallow(test_files, None, mock_modules, &shim_cfg, transforms, Some(root), shallow_auto_mocks);
         let entry_path = root.join(".hermes-test-entry.js");
         std::fs::write(&entry_path, &entry_content).unwrap_or_else(|e| {
             eprintln!("Failed to write entry file: {e}");
@@ -878,11 +890,13 @@ fn watch_tests(files: &[PathBuf], root: &PathBuf) {
 
                     // If the changed file IS a test file, include it
                     let name = changed.to_string_lossy();
-                    if (name.ends_with(".test.ts")
+                    let suffix = cfg.test_match.as_deref().unwrap_or(".test.ts");
+                    let is_test = name.ends_with(suffix)
+                        || (suffix.ends_with(".ts") && name.ends_with(&format!("{}x", suffix)))
+                        || name.ends_with(".test.ts")
                         || name.ends_with(".test.tsx")
-                        || name.ends_with(".test.js"))
-                        && !affected.contains(&canonical)
-                    {
+                        || name.ends_with(".test.js");
+                    if is_test && !affected.contains(&canonical) {
                         affected.push(canonical);
                     }
                 }
@@ -924,10 +938,19 @@ fn watch_tests(files: &[PathBuf], root: &PathBuf) {
                 suppress_hermes_stderr(|| {
                     let _ = watch_rt.eval(HARNESS_JS, "hermes-test/harness.js");
                 });
-                let mock_modules = bundler::find_mock_modules(&rerun_files);
+                let alias_names: Vec<String> = cfg.aliases.iter().map(|(a, _)| a.clone()).collect();
+                let mock_modules = bundler::find_mock_modules_with_aliases(&rerun_files, &alias_names);
                 let rerun_start = Instant::now();
 
-                // Build single bundle (same as run_tests_single but without exit)
+                // Scan shallow auto-mocks
+                let mut watch_shallow: Vec<(String, Vec<String>)> = Vec::new();
+                for f in &rerun_files {
+                    for s in bundler::scan_shallow_auto_mocks(f, &alias_names) {
+                        if !watch_shallow.iter().any(|(p, _)| p == &s.0) { watch_shallow.push(s); }
+                    }
+                }
+
+                // Build single bundle
                 let (wrapper_cfg, wrapper_shim_dir) = bundler::create_wrapper_shims(&root, &cfg);
                 let (shadow_cfg, shadow_dirs) = bundler::create_shadow_wrappers(&root, &mock_modules, &wrapper_cfg);
                 let non_aliased: Vec<String> = mock_modules.iter().filter(|m| {
@@ -935,7 +958,7 @@ fn watch_tests(files: &[PathBuf], root: &PathBuf) {
                 }).cloned().collect();
                 let (shim_cfg, shim_dir, remaining) =
                     bundler::create_package_shims(&root, &non_aliased, &shadow_cfg);
-                let entry = bundler::generate_entry(&rerun_files, None, &mock_modules, &shim_cfg, &[], Some(&root));
+                let entry = bundler::generate_entry_with_shallow(&rerun_files, None, &mock_modules, &shim_cfg, &[], Some(&root), &watch_shallow);
                 let entry_path = root.join(".hermes-test-watch-entry.js");
                 let _ = std::fs::write(&entry_path, &entry);
 
@@ -986,11 +1009,20 @@ fn run_persistent_cycle(
 ) -> bundler::DepGraph {
     let start = Instant::now();
 
-    let mock_modules = bundler::find_mock_modules(test_files);
+    let alias_names: Vec<String> = cfg.aliases.iter().map(|(a, _)| a.clone()).collect();
+    let mock_modules = bundler::find_mock_modules_with_aliases(test_files, &alias_names);
+
+    // Scan shallow auto-mocks
+    let mut shallow_mocks: Vec<(String, Vec<String>)> = Vec::new();
+    for f in test_files {
+        for s in bundler::scan_shallow_auto_mocks(f, &alias_names) {
+            if !shallow_mocks.iter().any(|(p, _)| p == &s.0) { shallow_mocks.push(s); }
+        }
+    }
 
     if first_run {
         // First run: use split mode to load vendor into __HT_mocks (persists across reruns)
-        let split = match bundler::bundle_split(test_files, root, &mock_modules, cfg) {
+        let split = match bundler::bundle_split_with_shallow(test_files, root, &mock_modules, cfg, &shallow_mocks) {
             Ok(s) => s,
             Err(e) => {
                 eprintln!("\x1b[31mBundle split failed: {e}\x1b[0m");
@@ -1072,7 +1104,15 @@ globalThis.__HT_results = JSON.stringify({
         }
 
         // Bundle affected test files as a group (--packages=external if vendor loaded)
-        let entry = bundler::generate_group_entry_pub(test_files, &mock_modules, Some(root));
+        // Scan shallow auto-mocks for persistent watch first-run
+        let alias_watch: Vec<String> = cfg.aliases.iter().map(|(a, _)| a.clone()).collect();
+        let mut persist_shallow: Vec<(String, Vec<String>)> = Vec::new();
+        for f in test_files {
+            for s in bundler::scan_shallow_auto_mocks(f, &alias_watch) {
+                if !persist_shallow.iter().any(|(p, _)| p == &s.0) { persist_shallow.push(s); }
+            }
+        }
+        let entry = bundler::generate_group_entry_pub(test_files, &mock_modules, Some(root), &persist_shallow);
         let entry_path = root.join(".hermes-test-rerun.js");
         if std::fs::write(&entry_path, &entry).is_err() {
             eprintln!("Failed to write rerun entry");

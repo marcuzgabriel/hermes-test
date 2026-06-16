@@ -206,6 +206,7 @@ fn bundle_esbuild_with_config_inner(
         .arg("--define:process.env.NODE_ENV=\"test\"")
         .arg("--define:process.env.JEST_WORKER_ID=\"1\"")
         .arg("--define:global=globalThis")
+        .arg("--jsx=automatic")
         .arg("--loader:.js=jsx")
         .arg("--loader:.png=empty")
         .arg("--loader:.jpg=empty")
@@ -662,6 +663,16 @@ pub fn bundle_split(
     mock_modules: &[String],
     cfg: &BundleConfig,
 ) -> Result<SplitBundle, String> {
+    bundle_split_with_shallow(test_files, project_root, mock_modules, cfg, &[])
+}
+
+pub fn bundle_split_with_shallow(
+    test_files: &[PathBuf],
+    project_root: &Path,
+    mock_modules: &[String],
+    cfg: &BundleConfig,
+    shallow_auto_mocks: &[(String, Vec<String>)],
+) -> Result<SplitBundle, String> {
     // Check esbuild output cache first
     let cache_key = compute_bundle_cache_key(test_files, project_root, mock_modules, cfg);
     if let Some(cached) = load_cached_split(project_root, &cache_key) {
@@ -698,6 +709,11 @@ pub fn bundle_split(
     // Create package shims for non-aliased mocks (same Proxy pattern as shadow wrappers)
     let (shim_cfg, shim_dir, remaining_externals) =
         create_package_shims(project_root, &non_aliased_mocks, &shadow_cfg);
+
+    // Set shallow auto-mocks for group entry generation
+    SHALLOW_AUTO_MOCKS.with(|cell| {
+        *cell.borrow_mut() = shallow_auto_mocks.to_vec();
+    });
 
     // Step 1: Bundle each group with --packages=external (fast, local code only)
     for (i, chunk) in test_files.chunks(group_size).enumerate() {
@@ -772,8 +788,17 @@ fn pkg_matches_external(pkg: &str, external: &str) -> bool {
 }
 
 /// Internal version of generate_group_entry used by bundle_split.
+/// shallow_auto_mocks are thread-local — set via SHALLOW_AUTO_MOCKS before calling bundle_split.
 fn generate_group_entry_internal(test_files: &[PathBuf], mock_modules: &[String], project_root: Option<&Path>) -> String {
-    generate_group_entry_pub(test_files, mock_modules, project_root)
+    SHALLOW_AUTO_MOCKS.with(|cell| {
+        let mocks = cell.borrow();
+        generate_group_entry_pub(test_files, mock_modules, project_root, &mocks)
+    })
+}
+
+use std::cell::RefCell;
+thread_local! {
+    static SHALLOW_AUTO_MOCKS: RefCell<Vec<(String, Vec<String>)>> = RefCell::new(Vec::new());
 }
 
 /// Setup code eval'd before vendor: shims, mock placeholders, harness mocks.
