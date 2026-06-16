@@ -1012,9 +1012,17 @@ fn run_persistent_cycle(
     let alias_names: Vec<String> = cfg.aliases.iter().map(|(a, _)| a.clone()).collect();
     let mock_modules = bundler::find_mock_modules_with_aliases(test_files, &alias_names);
 
+    // Scan shallow auto-mocks
+    let mut shallow_mocks: Vec<(String, Vec<String>)> = Vec::new();
+    for f in test_files {
+        for s in bundler::scan_shallow_auto_mocks(f, &alias_names) {
+            if !shallow_mocks.iter().any(|(p, _)| p == &s.0) { shallow_mocks.push(s); }
+        }
+    }
+
     if first_run {
         // First run: use split mode to load vendor into __HT_mocks (persists across reruns)
-        let split = match bundler::bundle_split(test_files, root, &mock_modules, cfg) {
+        let split = match bundler::bundle_split_with_shallow(test_files, root, &mock_modules, cfg, &shallow_mocks) {
             Ok(s) => s,
             Err(e) => {
                 eprintln!("\x1b[31mBundle split failed: {e}\x1b[0m");

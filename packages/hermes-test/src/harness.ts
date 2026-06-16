@@ -180,6 +180,97 @@ function _printFileResult(file: string, passed: number, failed: number, duration
   }
 }
 
+/// Format a test error with a clean stack trace and actionable hints.
+/// Works consistently across single-bundle and split-bundle modes.
+function formatTestError(e: any): string {
+  const message = e?.message ?? String(e);
+  const stack = e?.stack as string | undefined;
+  if (!stack) return message;
+
+  // Parse stack into structured frames
+  const frames: { fn: string; file: string; line: string }[] = [];
+  for (const raw of stack.split('\n').slice(1)) {
+    // Hermes format: "at fnName (file:line:col)" or "at file:line:col"
+    const m = raw.match(/at\s+(?:([^\s(]+)\s+\()?([^:)]+):(\d+)/);
+    if (m) frames.push({ fn: m[1] || '', file: m[2], line: m[3] });
+  }
+
+  // Filter to application frames only (skip react internals, harness, native)
+  const skipFn = new Set([
+    'anonymous', 'global', '__init', 'apply', 'map',
+    'react-stack-bottom-frame', 'proxy trap',
+  ]);
+  const skipPrefix = [
+    'render', 'run', 'perform', 'work', 'flush', 'begin', 'update',
+    'reconcile', 'create', 'complete', 'commit', 'process',
+  ];
+  const appFrames = frames.filter(f => {
+    if (skipFn.has(f.fn)) return false;
+    if (f.file.includes('harness') || f.file.includes('runner')) return false;
+    if (f.fn === '' && !f.file.includes('/src/') && !f.file.includes('packages/')) return false;
+    for (const p of skipPrefix) { if (f.fn.startsWith(p)) return false; }
+    return true;
+  });
+
+  // Build clean stack: show source file paths where possible
+  let cleanStack = message;
+  if (appFrames.length > 0) {
+    cleanStack += '\n';
+    for (const f of appFrames.slice(0, 8)) {
+      // esbuild names __esm blocks with source paths like "src/utils/string.ts"
+      const loc = f.fn.includes('/') ? f.fn : (f.fn ? f.fn + ' (' + f.file + ':' + f.line + ')' : f.file + ':' + f.line);
+      cleanStack += '\n    at ' + loc;
+    }
+  }
+
+  // Build hint: resolve the crashing function/module to an ht.mock() suggestion
+  const importMap = (globalThis as any).__HT_shallow_imports;
+  let hint = '';
+
+  for (const f of appFrames) {
+    const fnName = f.fn;
+
+    // Source file path (module init crash): "packages/ui/src/..." or "../../node_modules/@pkg/..."
+    if (fnName.includes('/') && (fnName.includes('.ts') || fnName.includes('.js'))) {
+      const srcPath = fnName.replace(/^(\.\.\/)*/, '');
+      // Extract npm package name from node_modules path
+      const nmMatch = srcPath.match(/node_modules\/((?:@[^/]+\/)?[^/]+)/);
+      if (nmMatch) {
+        const pkg = nmMatch[1];
+        hint = '\n\n  "' + pkg + '" crashed during initialization (native dependency).'
+          + '\n  Add to externals in hermes-test.config.json:\n\n'
+          + '    { "externals": ["' + pkg + '"] }\n'
+          + '\n  Or mock the module that imports it with ht.mock().\n';
+      } else {
+        const cleanPath = srcPath.replace(/\/index\.(tsx?|jsx?)$/, '');
+        hint = '\n\n  Module "' + cleanPath + '" crashed during initialization.'
+          + '\n  A dependency uses an API not available in Hermes.'
+          + '\n  Mock it with ht.mock() or add the native dep to externals.\n';
+      }
+      break;
+    }
+
+    // Function name: resolve via import map
+    if (fnName && fnName.length > 2 && !fnName.includes('(') && importMap) {
+      const modPath = importMap[fnName];
+      if (modPath) {
+        // Collect all exports from this module for a complete mock
+        const siblings: string[] = [];
+        for (const k in importMap) {
+          if (importMap[k] === modPath && siblings.indexOf(k) === -1) siblings.push(k);
+        }
+        const mockBody = siblings.map(s => '    ' + s + ': () => {}').join(',\n');
+        hint = '\n\n  "' + fnName + '" from "' + modPath + '" failed.'
+          + '\n  Add this mock to your test file:\n\n'
+          + "    ht.mock('" + modPath + "', () => ({\n" + mockBody + '\n    }));\n';
+        break;
+      }
+    }
+  }
+
+  return cleanStack + hint;
+}
+
 function runTests(): TestResult[] {
   const results: TestResult[] = [];
   const hasOnly = tests.some((t) => t.options.only);
@@ -308,54 +399,7 @@ function runTests(): TestResult[] {
       resetMocks();
 
       _fileFailed++;
-      let errMsg = e?.stack ?? e?.message ?? String(e);
-      // Parse stack trace for source file paths and suggest ht.mock() fixes.
-      // esbuild names __esm init functions with the source path (e.g. "src/utils/string.ts").
-      if (e?.stack) {
-        const lines = (e.stack as string).split('\n');
-        // Find first application source file in the stack (not harness, not native, not node_modules)
-        for (const line of lines) {
-          const match = line.match(/at\s+(?:([^\s(]+)\s+\()?(?:bundle\.js|[^)]+):(\d+)/);
-          if (!match) continue;
-          const fnName = match[1] || '';
-          // Skip framework internals
-          if (fnName.includes('harness') || fnName === 'anonymous' || fnName === '__init'
-              || fnName === 'apply' || fnName === 'global' || fnName.startsWith('react')
-              || fnName.startsWith('run') || fnName.startsWith('perform')
-              || fnName.startsWith('work') || fnName.startsWith('flush')
-              || fnName.startsWith('begin') || fnName.startsWith('update')
-              || fnName.startsWith('reconcile') || fnName.startsWith('create')) continue;
-          // If fnName looks like a file path (contains / or .tsx/.ts), suggest mocking it
-          if (fnName.includes('/') && (fnName.includes('.ts') || fnName.includes('.js'))) {
-            // Convert src path to alias path for the hint
-            const srcPath = fnName.replace(/^(\.\.\/)*/, '').replace(/\/index\.(tsx?|jsx?)$/, '');
-            errMsg += '\n\n  Hint: Module "' + srcPath + '" crashed during initialization.'
-              + '\n  Consider adding: ht.mock(\'<alias>/' + srcPath + '\', () => ({ ... }))';
-            break;
-          }
-          // If fnName is a function name (like formatLocalePrice), show it
-          // and resolve module path from the shallow import map if available
-          if (fnName && !fnName.includes('(') && fnName.length > 2) {
-            const importMap = (globalThis as any).__HT_shallow_imports;
-            const modPath = importMap && importMap[fnName];
-            if (modPath) {
-              // Collect all exports from the same module for a complete mock
-              const siblings: string[] = [];
-              for (const k in importMap) {
-                if (importMap[k] === modPath && siblings.indexOf(k) === -1) siblings.push(k);
-              }
-              const mockBody = siblings.map(s => '  ' + s + ': () => {}').join(',\n');
-              errMsg += '\n\n  Hint: "' + fnName + '" from "' + modPath + '" failed.'
-                + '\n  Add this mock to your test file:\n\n'
-                + "  ht.mock('" + modPath + "', () => ({\n" + mockBody + '\n  }));\n';
-            } else {
-              errMsg += '\n\n  Hint: Function "' + fnName + '" is undefined or calls undefined.'
-                + '\n  Find which module exports it and add ht.mock() for that module.';
-            }
-            break;
-          }
-        }
-      }
+      const errMsg = formatTestError(e);
       _fileFailures.push({ name: entry.name, error: errMsg });
       results.push({
         name: entry.name,
@@ -387,9 +431,12 @@ function runTests(): TestResult[] {
 
 // Reset between watch cycles (persistent runtime)
 function registerCrash(file: string, error: string): void {
+  // Error string already has stack from entry.rs (e.stack || e.message).
+  // Parse it through formatTestError for consistent hints.
+  const formatted = formatTestError({ message: error.split('\n')[0], stack: error });
   tests.push({
     name: `[CRASH] ${file}`,
-    fn: () => { throw new Error(error); },
+    fn: () => { throw new Error(formatted); },
     options: {},
     file,
   });
