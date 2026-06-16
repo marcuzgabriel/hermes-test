@@ -336,6 +336,9 @@ function runTests(): TestResult[] {
   for (const entry of tests) {
     // Flush live output when switching to a new file
     if (entry.file !== _currentFile) {
+      // Drain pending microtasks from previous file's async effects
+      // (RTK Query middleware, useEffect cleanups, etc.)
+      if (_currentFile) drain();
       _flushFileResult();
       _currentFile = entry.file;
     }
