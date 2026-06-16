@@ -1199,6 +1199,8 @@ fn print_console_logs(rt: &hermes::Runtime) {
             for entry in &entries {
                 let level = entry["level"].as_str().unwrap_or("log");
                 let msg = entry["message"].as_str().unwrap_or("");
+                // Skip known noise from our custom react-reconciler host config
+                if msg.contains("Expected host context to exist") { continue; }
                 match level {
                     "warn" => eprintln!("\x1b[33m⚠ {msg}\x1b[0m"),
                     "error" => eprintln!("\x1b[31m✗ {msg}\x1b[0m"),

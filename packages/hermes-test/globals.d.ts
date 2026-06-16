@@ -11,6 +11,9 @@ declare global {
     fetch: HtMockFetch
   }
 
-  const ht: { mock: HtMock }
+  /** Shallow render: auto-mock child components so the parent renders without deep dependencies. */
+  function htShallow(componentPath: string): void
+
+  const ht: { mock: HtMock; shallow: typeof htShallow }
 }
 export {}
