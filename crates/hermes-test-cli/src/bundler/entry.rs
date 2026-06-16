@@ -38,10 +38,8 @@ fn walk_dir(dir: &Path, files: &mut Vec<PathBuf>, pattern: Option<&str>) {
             }
             walk_dir(&path, files, pattern);
         } else if let Some(pat) = pattern {
-            // Custom pattern: match suffix (e.g. ".hermes.test.ts") + tsx variant
-            if name_str.ends_with(pat)
-                || (pat.ends_with(".ts") && name_str.ends_with(&format!("{}x", pat)))
-            {
+            // Custom pattern: match suffix (e.g. ".hermes.test.ts")
+            if name_str.ends_with(pat) {
                 files.push(path);
             }
         } else if name_str.ends_with(".test.ts")
@@ -54,138 +52,34 @@ fn walk_dir(dir: &Path, files: &mut Vec<PathBuf>, pattern: Option<&str>) {
     }
 }
 
-/// Scan test files for ht.mock() and ht.shallow() calls and return module paths.
-/// ht.shallow() scans the target component file and adds all its internal imports
-/// so shadow wrappers are created for them.
+/// Scan test files for ht.mock() calls and return the module paths.
+/// These modules will be externalized in esbuild so that useMock can intercept them.
 pub fn find_mock_modules(test_files: &[PathBuf]) -> Vec<String> {
-    find_mock_modules_with_aliases(test_files, &[])
-}
-
-pub fn find_mock_modules_with_aliases(test_files: &[PathBuf], aliases: &[String]) -> Vec<String> {
     let mut mocks = Vec::new();
-    let re_mock = regex::Regex::new(r#"ht\.mock\(\s*['"]([^'"]+)['"]\s*,"#).ok();
-    let re_shallow = regex::Regex::new(r#"ht\.shallow\(\s*['"]([^'"]+)['"]\s*\)"#).ok();
-    let re_import = regex::Regex::new(
-        r#"import\s+(?:(?:\w+\s*,?\s*)?(?:\{[^}]*\})?\s+from\s+)?['"]([^'"]+)['"]"#
-    ).ok();
+    let re_single = regex::Regex::new(r#"ht\.mock\(\s*['"]([^'"]+)['"]\s*,"#).ok();
+    let re_double = regex::Regex::new(r#"ht\.mock\(\s*"([^"]+)"\s*,"#).ok();
 
     for file in test_files {
-        let content = match std::fs::read_to_string(file) { Ok(c) => c, Err(_) => continue };
-
-        // Explicit ht.mock() paths
-        if let Some(ref re) = re_mock {
-            for cap in re.captures_iter(&content) {
-                let path = cap[1].to_string();
-                if !mocks.contains(&path) { mocks.push(path); }
+        if let Ok(content) = std::fs::read_to_string(file) {
+            if let Some(ref re) = re_single {
+                for cap in re.captures_iter(&content) {
+                    let path = cap[1].to_string();
+                    if !mocks.contains(&path) {
+                        mocks.push(path);
+                    }
+                }
             }
-        }
-
-        // ht.shallow() — scan component for JSX-rendered imports only
-        if let Some(ref re) = re_shallow {
-            let auto_mocks = scan_shallow_auto_mocks(file, aliases);
-            for (path, _) in auto_mocks {
-                if !mocks.contains(&path) { mocks.push(path); }
+            if let Some(ref re) = re_double {
+                for cap in re.captures_iter(&content) {
+                    let path = cap[1].to_string();
+                    if !mocks.contains(&path) {
+                        mocks.push(path);
+                    }
+                }
             }
         }
     }
     mocks
-}
-
-/// Scan a test file's ht.shallow() target for components used in JSX.
-/// Only imports that appear as `<ComponentName` in the source get auto-mocked.
-/// Types, hooks, utilities — anything not rendered — is skipped.
-/// Returns (module_path, Vec<component_name>) for auto-mock generation.
-pub fn scan_shallow_auto_mocks(test_file: &Path, aliases: &[String]) -> Vec<(String, Vec<String>)> {
-    let content = match std::fs::read_to_string(test_file) { Ok(c) => c, Err(_) => return vec![] };
-    let re_shallow = match regex::Regex::new(r#"ht\.shallow\(\s*['"]([^'"]+)['"]\s*\)"#) {
-        Ok(r) => r, Err(_) => return vec![],
-    };
-    let shallow_path = match re_shallow.captures(&content) {
-        Some(cap) => cap[1].to_string(), None => return vec![],
-    };
-    let comp_file = match resolve_relative_file(test_file, &shallow_path) {
-        Some(f) => f, None => return vec![],
-    };
-    let comp_source = match std::fs::read_to_string(&comp_file) { Ok(c) => c, Err(_) => return vec![] };
-
-    // Step 1: Find all component names used in JSX: <Name or </Name
-    let re_jsx = regex::Regex::new(r#"<\s*/?\s*([A-Z]\w*)\b"#).unwrap();
-    let mut jsx_idents: std::collections::HashSet<String> = std::collections::HashSet::new();
-    for cap in re_jsx.captures_iter(&comp_source) {
-        jsx_idents.insert(cap[1].to_string());
-    }
-    if jsx_idents.is_empty() { return vec![]; }
-
-    // Step 2: Match JSX idents against imports to find which modules to mock
-    let re_mock = regex::Regex::new(r#"ht\.mock\(\s*['"]([^'"]+)['"]\s*,"#).unwrap();
-    let explicit: Vec<String> = re_mock.captures_iter(&content).map(|c| c[1].to_string()).collect();
-
-    let re_default = regex::Regex::new(r#"import\s+(\w+)\s+from\s+['"]([^'"]+)['"]"#).unwrap();
-    let re_named = regex::Regex::new(r#"import\s+\{([^}]+)\}\s+from\s+['"]([^'"]+)['"]"#).unwrap();
-
-    let mut result: Vec<(String, Vec<String>)> = Vec::new();
-
-    // Default imports: import InsuranceCard from 'path'
-    for cap in re_default.captures_iter(&comp_source) {
-        let name = cap[1].to_string();
-        let path = cap[2].to_string();
-        if !jsx_idents.contains(&name) { continue; }
-        if explicit.contains(&path) { continue; }
-        if path == "react" || path.starts_with("react/") { continue; }
-        let is_internal = path.starts_with('.') || path.starts_with('/')
-            || aliases.iter().any(|a| path == *a || path.starts_with(&format!("{a}/")));
-        if !is_internal { continue; }
-
-        if let Some((_, existing)) = result.iter_mut().find(|(p, _)| p == &path) {
-            if !existing.contains(&name) { existing.push(name); }
-        } else {
-            result.push((path, vec![name]));
-        }
-    }
-
-    // Named imports: import { Text, Wrapper } from 'path'
-    for cap in re_named.captures_iter(&comp_source) {
-        let spec = &cap[1];
-        let path = cap[2].to_string();
-        if explicit.contains(&path) { continue; }
-        if path == "react" || path.starts_with("react/") { continue; }
-        let is_internal = path.starts_with('.') || path.starts_with('/')
-            || aliases.iter().any(|a| path == *a || path.starts_with(&format!("{a}/")));
-        if !is_internal { continue; }
-
-        let mut names: Vec<String> = Vec::new();
-        for item in spec.split(',') {
-            let item = item.trim();
-            if item.is_empty() || item.starts_with("type ") { continue; }
-            let local = item.split(" as ").last().unwrap_or(item).trim();
-            if jsx_idents.contains(local) { names.push(local.to_string()); }
-        }
-        if names.is_empty() { continue; }
-
-        if let Some((_, existing)) = result.iter_mut().find(|(p, _)| p == &path) {
-            for n in names { if !existing.contains(&n) { existing.push(n); } }
-        } else {
-            result.push((path, names));
-        }
-    }
-
-    result
-}
-
-/// Resolve a relative path from a source file to a target file.
-fn resolve_relative_file(from_file: &Path, relative: &str) -> Option<PathBuf> {
-    let dir = from_file.parent()?;
-    let base = dir.join(relative);
-    for ext in &[".tsx", ".ts", ".jsx", ".js"] {
-        let c = base.with_extension(&ext[1..]);
-        if c.exists() { return Some(c); }
-    }
-    for idx in &["index.tsx", "index.ts", "index.jsx", "index.js"] {
-        let c = base.join(idx);
-        if c.exists() { return Some(c); }
-    }
-    if base.exists() { return Some(base); }
-    None
 }
 
 /// Check if any test files (or their imports) need React.
@@ -194,7 +88,6 @@ pub fn needs_react(test_files: &[PathBuf]) -> bool {
     for file in test_files {
         if let Ok(content) = std::fs::read_to_string(file) {
             if content.contains("renderHook")
-                || content.contains("render(")
                 || content.contains("from 'react")
                 || content.contains("from \"react")
                 || content.contains("require('react")
@@ -214,8 +107,6 @@ pub fn needs_react(test_files: &[PathBuf]) -> bool {
 
 /// Generate a synthetic entry file that imports the harness and all test files.
 /// `transforms` maps original test file paths to pre-transformed temp paths.
-/// `shallow_auto_mocks` contains (module_path, export_names) from ht.shallow() scanning.
-/// These are injected as ht.mock() calls that create component stubs.
 pub fn generate_entry(
     test_files: &[PathBuf],
     _harness_path: Option<&Path>,
@@ -223,18 +114,6 @@ pub fn generate_entry(
     cfg: &BundleConfig,
     transforms: &[(PathBuf, PathBuf)],
     project_root: Option<&Path>,
-) -> String {
-    generate_entry_with_shallow(test_files, _harness_path, mock_modules, cfg, transforms, project_root, &[])
-}
-
-pub fn generate_entry_with_shallow(
-    test_files: &[PathBuf],
-    _harness_path: Option<&Path>,
-    mock_modules: &[String],
-    cfg: &BundleConfig,
-    transforms: &[(PathBuf, PathBuf)],
-    project_root: Option<&Path>,
-    shallow_auto_mocks: &[(String, Vec<String>)],
 ) -> String {
     let mut entry = String::new();
 
@@ -376,66 +255,7 @@ try {
                 .unwrap_or_else(|| path.to_string()));
         // __currentTestFilePath has the full require path for snapshot file resolution
         entry.push_str(&format!(
-            "if (globalThis.__HT && globalThis.__HT.resetMockModulePatches) globalThis.__HT.resetMockModulePatches();\nglobalThis.__currentTestFile = '{file_id}';\nglobalThis.__currentTestFilePath = '{require_path}';\n",
-        ));
-
-        // Store ALL component imports on global so error hints can resolve
-        // function names to module paths (e.g. "formatLocalePrice" → "@scope/utils/string").
-        {
-            let has_shallow = std::fs::read_to_string(file).map_or(false, |c| c.contains("ht.shallow("));
-            if has_shallow {
-                if let Some(ref re_sh) = regex::Regex::new(r#"ht\.shallow\(\s*['"]([^'"]+)['"]\s*\)"#).ok() {
-                    if let Some(cap) = re_sh.captures(&std::fs::read_to_string(file).unwrap_or_default()) {
-                        if let Some(comp_file) = resolve_relative_file(file, &cap[1]) {
-                            if let Ok(comp_src) = std::fs::read_to_string(&comp_file) {
-                                let re_def = regex::Regex::new(r#"import\s+(\w+)\s+from\s+['"]([^'"]+)['"]"#).unwrap();
-                                let re_named = regex::Regex::new(r#"import\s+\{([^}]+)\}\s+from\s+['"]([^'"]+)['"]"#).unwrap();
-                                entry.push_str("globalThis.__HT_shallow_imports = globalThis.__HT_shallow_imports || {};\n");
-                                for cap in re_def.captures_iter(&comp_src) {
-                                    entry.push_str(&format!(
-                                        "globalThis.__HT_shallow_imports['{}'] = '{}';\n", &cap[1], &cap[2],
-                                    ));
-                                }
-                                for cap in re_named.captures_iter(&comp_src) {
-                                    let path = &cap[2];
-                                    for item in cap[1].split(',') {
-                                        let item = item.trim();
-                                        if item.is_empty() || item.starts_with("type ") { continue; }
-                                        let local = item.split(" as ").last().unwrap_or(item).trim();
-                                        entry.push_str(&format!(
-                                            "globalThis.__HT_shallow_imports['{local}'] = '{path}';\n",
-                                        ));
-                                    }
-                                }
-                            }
-                        }
-                    }
-                }
-            }
-        }
-
-        // Inject auto-mock ht.mock() calls for ht.shallow() discovered imports.
-        // Each creates a component stub: (props) => React.createElement('Name', props).
-        // Mock hoisting moves these before require() calls, so shadow wrappers intercept.
-        for (mod_path, names) in shallow_auto_mocks {
-            // Build named exports: each is a component stub rendering a host element
-            let mut exports = String::new();
-            for name in names {
-                exports.push_str(&format!(
-                    "r['{name}'] = function(p) {{ return R.createElement('{name}', p); }}; ",
-                ));
-            }
-            // Default export = first name (for default imports)
-            if let Some(first) = names.first() {
-                exports.push_str(&format!("r['default'] = r['{}']; ", first));
-            }
-            entry.push_str(&format!(
-                "ht.mock('{mod_path}', function() {{ var R = globalThis.__HT_React; var r = {{}}; {exports}return r; }});\n",
-            ));
-        }
-
-        entry.push_str(&format!(
-            "try {{ require('{require_path}'); }} catch(e) {{ if (globalThis.__HT) globalThis.__HT.registerCrash('{file_id}', String(e && e.stack || e && e.message || e)); }}\n",
+            "if (globalThis.__HT && globalThis.__HT.resetMockModulePatches) globalThis.__HT.resetMockModulePatches();\nglobalThis.__currentTestFile = '{file_id}';\nglobalThis.__currentTestFilePath = '{require_path}';\ntry {{ require('{require_path}'); }} catch(e) {{ if (globalThis.__HT) globalThis.__HT.registerCrash('{file_id}', String(e && e.message || e)); }}\n",
         ));
     }
 
@@ -457,7 +277,7 @@ globalThis.__HT_results = JSON.stringify({
 }
 
 /// Minimal entry for a group: just test file requires (no setup, no runner).
-fn generate_group_entry(test_files: &[PathBuf], mock_modules: &[String], project_root: Option<&Path>, shallow_auto_mocks: &[(String, Vec<String>)]) -> String {
+fn generate_group_entry(test_files: &[PathBuf], mock_modules: &[String], project_root: Option<&Path>) -> String {
     let mut entry = String::new();
 
     // Re-register mock placeholders as live Proxies (same as generate_entry)
@@ -488,46 +308,25 @@ fn generate_group_entry(test_files: &[PathBuf], mock_modules: &[String], project
         } else {
             format!("./{path}")
         };
+        // Use relative path from project root as unique file ID to avoid basename collisions
         let file_id = project_root
             .and_then(|root| file.strip_prefix(root).ok())
             .map(|p| p.to_string_lossy().to_string())
             .unwrap_or_else(|| file.file_name()
                 .map(|n| n.to_string_lossy().to_string())
                 .unwrap_or_else(|| path.to_string()));
-
         entry.push_str(&format!(
-            "if (globalThis.__HT && globalThis.__HT.resetMockModulePatches) globalThis.__HT.resetMockModulePatches();\nglobalThis.__currentTestFile = '{}';\n",
-            file_id
-        ));
-
-        // Inject auto-mock ht.mock() calls for ht.shallow() discovered component imports
-        for (mod_path, names) in shallow_auto_mocks {
-            let mut exports = String::new();
-            for name in names {
-                exports.push_str(&format!(
-                    "r['{name}'] = function(p) {{ return R.createElement('{name}', p); }}; ",
-                ));
-            }
-            if let Some(first) = names.first() {
-                exports.push_str(&format!("r['default'] = r['{}']; ", first));
-            }
-            entry.push_str(&format!(
-                "ht.mock('{mod_path}', function() {{ var R = globalThis.__HT_React; var r = {{}}; {exports}return r; }});\n",
-            ));
-        }
-
-        entry.push_str(&format!(
-            "try {{ require('{}'); }} catch(e) {{ if (globalThis.__HT) globalThis.__HT.registerCrash('{}', String(e && e.stack || e && e.message || e)); }}\n",
-            require_path, file_id
+            "if (globalThis.__HT && globalThis.__HT.resetMockModulePatches) globalThis.__HT.resetMockModulePatches();\nglobalThis.__currentTestFile = '{}';\ntry {{ require('{}'); }} catch(e) {{ if (globalThis.__HT) globalThis.__HT.registerCrash('{}', String(e && e.message || e)); }}\n",
+            file_id, require_path, file_id
         ));
     }
 
     entry
 }
 
-/// Public wrapper for generate_group_entry (used by watch mode and split mode).
-pub fn generate_group_entry_pub(test_files: &[PathBuf], mock_modules: &[String], project_root: Option<&Path>, shallow_auto_mocks: &[(String, Vec<String>)]) -> String {
-    generate_group_entry(test_files, mock_modules, project_root, shallow_auto_mocks)
+/// Public wrapper for generate_group_entry (used by watch mode in main.rs).
+pub fn generate_group_entry_pub(test_files: &[PathBuf], mock_modules: &[String], project_root: Option<&Path>) -> String {
+    generate_group_entry(test_files, mock_modules, project_root)
 }
 
 /// Compute a cache key from source file mtimes + config + test file list.
