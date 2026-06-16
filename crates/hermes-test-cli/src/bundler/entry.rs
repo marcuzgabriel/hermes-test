@@ -344,7 +344,7 @@ pub fn generate_entry_with_shallow(
         entry.push_str(
             r#"try {
   globalThis.__HT_React = require('react');
-  globalThis.IS_REACT_ACT_ENVIRONMENT = true;
+  // IS_REACT_ACT_ENVIRONMENT managed by act() in hooks.ts
 } catch(e) {}
 try {
   var __htRec = require('react-reconciler');

@@ -860,7 +860,7 @@ fn generate_vendor_entry(packages: &[String], setup_code: &str) -> String {
 
     // React bootstrap — vendor bundles the real React
     entry.push_str(
-        "try { var __htReact = require('react'); globalThis.__HT_React = __htReact; globalThis.__HT_mocks['react'] = __htReact; globalThis.IS_REACT_ACT_ENVIRONMENT = true; } catch(e) {}\n"
+        "try { var __htReact = require('react'); globalThis.__HT_React = __htReact; globalThis.__HT_mocks['react'] = __htReact; } catch(e) {}\n"
     );
     entry.push_str(
         "try { globalThis.__HT_JsxRuntime = require('react/jsx-runtime'); } catch(e) {}\n"

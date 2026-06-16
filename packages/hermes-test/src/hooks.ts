@@ -109,10 +109,10 @@ function flush() {
   drain();
 }
 
-// React act() support — IS_REACT_ACT_ENVIRONMENT must be true for act() to work.
-// We keep it true globally. To suppress warnings from async effects that resolve
-// after act() returns, we temporarily set it false during drain/flush cycles.
-(globalThis as any).IS_REACT_ACT_ENVIRONMENT = true;
+// React act() environment — same pattern as React Testing Library.
+// true inside act() → React processes updates and can warn about missing act.
+// false outside act() → React doesn't warn about async state updates.
+(globalThis as any).IS_REACT_ACT_ENVIRONMENT = false;
 
 export function act(fn: () => void | Promise<void>): void {
   const React = getReact();
@@ -123,22 +123,33 @@ export function act(fn: () => void | Promise<void>): void {
     return;
   }
 
-  reactAct(() => {
-    const result = fn();
-    if (result && typeof (result as any).then === 'function') {
-      let settled = false;
-      let error: any;
-      (result as Promise<void>).then(
-        () => { settled = true; },
-        (e: any) => { settled = true; error = e; }
-      );
-      for (let i = 0; i < 50 && !settled; i++) {
-        drain();
+  const prev = (globalThis as any).IS_REACT_ACT_ENVIRONMENT;
+  (globalThis as any).IS_REACT_ACT_ENVIRONMENT = true;
+
+  try {
+    reactAct(() => {
+      const result = fn();
+      if (result && typeof (result as any).then === 'function') {
+        let settled = false;
+        let error: any;
+        (result as Promise<void>).then(
+          () => { settled = true; },
+          (e: any) => { settled = true; error = e; }
+        );
+        for (let i = 0; i < 50 && !settled; i++) {
+          drain();
+        }
+        if (error) throw error;
       }
-      if (error) throw error;
-    }
-  });
-  flush();
+    });
+    // Restore env BEFORE flush so async effects resolved by flush
+    // don't trigger "not wrapped in act" warnings
+    (globalThis as any).IS_REACT_ACT_ENVIRONMENT = prev;
+    flush();
+  } catch (error) {
+    (globalThis as any).IS_REACT_ACT_ENVIRONMENT = prev;
+    throw error;
+  }
 }
 
 export function renderHook<T>(

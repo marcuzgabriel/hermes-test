@@ -1171,7 +1171,7 @@ Run with --update-snapshots to update.`
   function flush() {
     drain();
   }
-  globalThis.IS_REACT_ACT_ENVIRONMENT = true;
+  globalThis.IS_REACT_ACT_ENVIRONMENT = false;
   function act(fn) {
     const React = getReact();
     const reactAct = React.act || React.unstable_act;
@@ -1180,27 +1180,35 @@ Run with --update-snapshots to update.`
       flush();
       return;
     }
-    reactAct(() => {
-      const result = fn();
-      if (result && typeof result.then === "function") {
-        let settled = false;
-        let error;
-        result.then(
-          () => {
-            settled = true;
-          },
-          (e) => {
-            settled = true;
-            error = e;
+    const prev = globalThis.IS_REACT_ACT_ENVIRONMENT;
+    globalThis.IS_REACT_ACT_ENVIRONMENT = true;
+    try {
+      reactAct(() => {
+        const result = fn();
+        if (result && typeof result.then === "function") {
+          let settled = false;
+          let error;
+          result.then(
+            () => {
+              settled = true;
+            },
+            (e) => {
+              settled = true;
+              error = e;
+            }
+          );
+          for (let i = 0; i < 50 && !settled; i++) {
+            drain();
           }
-        );
-        for (let i = 0; i < 50 && !settled; i++) {
-          drain();
+          if (error) throw error;
         }
-        if (error) throw error;
-      }
-    });
-    flush();
+      });
+      globalThis.IS_REACT_ACT_ENVIRONMENT = prev;
+      flush();
+    } catch (error) {
+      globalThis.IS_REACT_ACT_ENVIRONMENT = prev;
+      throw error;
+    }
   }
   function renderHook(hookFn, options) {
     const history = [];
