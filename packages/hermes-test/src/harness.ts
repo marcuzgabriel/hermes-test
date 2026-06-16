@@ -1,6 +1,30 @@
 // Polyfills (process, setImmediate) are injected via esbuild banner in bundle.mjs
 // to ensure they run before any bundled dependency (React checks process.env.NODE_ENV at load time)
 
+// Console interceptor — replace console with print()-based output.
+// Hermes's native print() writes to stdout and is always available.
+// This works in all bundle modes (single, split, watch).
+(function() {
+  const p = (globalThis as any).print || (() => {});
+  function fmt(...args: any[]) {
+    return args.map((a: any) => {
+      try { return typeof a === 'string' ? a : JSON.stringify(a); }
+      catch { return String(a); }
+    }).join(' ');
+  }
+  (globalThis as any).console = {
+    log: (...args: any[]) => p(fmt(...args)),
+    info: (...args: any[]) => p(fmt(...args)),
+    debug: (...args: any[]) => p(fmt(...args)),
+    warn: (...args: any[]) => p('\x1b[33m⚠ ' + fmt(...args) + '\x1b[0m'),
+    error: (...args: any[]) => {
+      const msg = fmt(...args);
+      if (msg.includes('Expected host context to exist')) return;
+      p('\x1b[31m✗ ' + msg + '\x1b[0m');
+    },
+  };
+})();
+
 import { expect, _setSnapshotContext } from './expect';
 import { spy, spyOn, clearAllMocks } from './spy';
 import { renderHook, act, waitFor } from './hooks';

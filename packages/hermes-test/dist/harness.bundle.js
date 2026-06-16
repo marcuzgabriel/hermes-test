@@ -1868,6 +1868,30 @@ ${pad}</${type}>`;
   }
 
   // src/harness.ts
+  (function() {
+    const p = globalThis.print || (() => {
+    });
+    function fmt(...args) {
+      return args.map((a) => {
+        try {
+          return typeof a === "string" ? a : JSON.stringify(a);
+        } catch {
+          return String(a);
+        }
+      }).join(" ");
+    }
+    globalThis.console = {
+      log: (...args) => p(fmt(...args)),
+      info: (...args) => p(fmt(...args)),
+      debug: (...args) => p(fmt(...args)),
+      warn: (...args) => p("\x1B[33m\u26A0 " + fmt(...args) + "\x1B[0m"),
+      error: (...args) => {
+        const msg = fmt(...args);
+        if (msg.includes("Expected host context to exist")) return;
+        p("\x1B[31m\u2717 " + msg + "\x1B[0m");
+      }
+    };
+  })();
   var tests = [];
   var beforeEachHooks = [];
   var afterEachHooks = [];

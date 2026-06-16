@@ -212,7 +212,7 @@ fn bundle_esbuild_with_config_inner(
         .arg("--loader:.jpg=empty")
         .arg("--loader:.gif=empty")
         .arg("--loader:.svg=empty")
-        .arg("--external:console");
+        ; // console is a global in Hermes, not externalized
 
     if sourcemap_inline {
         cmd.arg("--sourcemap=inline");
@@ -854,22 +854,9 @@ fn generate_vendor_entry(packages: &[String], setup_code: &str) -> String {
     entry.push_str(setup_code);
     entry.push('\n');
 
-    // Console interceptor — collect logs for CLI output
-    entry.push_str(r#"(function() {
-  var logs = globalThis.__HT_logs = [];
-  function capture(level) {
-    return function() {
-      var parts = [];
-      for (var i = 0; i < arguments.length; i++) {
-        try { parts.push(typeof arguments[i] === 'string' ? arguments[i] : JSON.stringify(arguments[i])); }
-        catch(e) { parts.push(String(arguments[i])); }
-      }
-      logs.push({ level: level, message: parts.join(' ') });
-    };
-  }
-  globalThis.console = { log: capture('log'), warn: capture('warn'), error: capture('error'), info: capture('info'), debug: capture('debug') };
-})();
-"#);
+    // Register console as a mock so --packages=external group bundles can resolve __require("console").
+    // The harness already replaced globalThis.console with print()-based output.
+    entry.push_str("globalThis.__HT_mocks['console'] = globalThis.console;\n");
 
     // React bootstrap — vendor bundles the real React
     entry.push_str(

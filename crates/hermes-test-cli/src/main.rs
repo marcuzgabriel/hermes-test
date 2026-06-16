@@ -1072,6 +1072,7 @@ globalThis.__HT_results = JSON.stringify({
         }
 
         let elapsed = start.elapsed();
+        print_console_logs(rt);
         match rt.eval("globalThis.__HT_results", "results") {
             Ok(json) => {
                 print_summary(&json);

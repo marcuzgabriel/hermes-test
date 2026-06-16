@@ -241,24 +241,7 @@ pub fn generate_entry_with_shallow(
     // Common globals expected by RN libraries
     entry.push_str("if (typeof globalThis.__DEV__ === 'undefined') globalThis.__DEV__ = false;\n");
 
-    // Intercept console.log/warn/error so output is collected and printed by the CLI.
-    // Hermes's native console writes to stderr which we suppress during test execution.
-    entry.push_str(r#"(function() {
-  var logs = globalThis.__HT_logs = [];
-  var orig = globalThis.console || {};
-  function capture(level) {
-    return function() {
-      var parts = [];
-      for (var i = 0; i < arguments.length; i++) {
-        try { parts.push(typeof arguments[i] === 'string' ? arguments[i] : JSON.stringify(arguments[i])); }
-        catch(e) { parts.push(String(arguments[i])); }
-      }
-      logs.push({ level: level, message: parts.join(' ') });
-    };
-  }
-  globalThis.console = { log: capture('log'), warn: capture('warn'), error: capture('error'), info: capture('info'), debug: capture('debug') };
-})();
-"#);
+    // Console is handled by the harness (print()-based). No duplicate interceptor needed.
 
     // Patch URLSearchParams: (1) constructor to accept plain objects, (2) add iterator.
     // Hermes's native URLSearchParams doesn't support object constructor or [Symbol.iterator],
