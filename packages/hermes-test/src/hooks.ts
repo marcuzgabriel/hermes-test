@@ -136,9 +136,7 @@ export function act(fn: () => void | Promise<void>): void {
           () => { settled = true; },
           (e: any) => { settled = true; error = e; }
         );
-        for (let i = 0; i < 50 && !settled; i++) {
-          drain();
-        }
+        drain();
         if (error) throw error;
       }
     });

@@ -1197,9 +1197,7 @@ Run with --update-snapshots to update.`
               error = e;
             }
           );
-          for (let i = 0; i < 50 && !settled; i++) {
-            drain();
-          }
+          drain();
           if (error) throw error;
         }
       });
@@ -1974,9 +1972,12 @@ ${pad}</${type}>`;
         settled = true;
       }
     );
-    for (let i = 0; i < 100 && !settled; i++) {
-      drain2();
-      checkDeadline();
+    drain2();
+    if (!settled) {
+      for (let i = 0; i < 100 && !settled; i++) {
+        drain2();
+        checkDeadline();
+      }
     }
     if (!settled) {
       throw new Error("flushAsync: promise did not resolve after 100 drain cycles");
@@ -2169,6 +2170,7 @@ ${pad}</${type}>`;
           }
         }
         resetMocks();
+        drain2();
         __testMaxDrains = 0;
         _filePassed++;
         results.push({
@@ -2188,6 +2190,7 @@ ${pad}</${type}>`;
           }
         }
         resetMocks();
+        drain2();
         _fileFailed++;
         const errMsg = e?.stack ?? e?.message ?? String(e);
         _fileFailures.push({ name: entry.name, error: errMsg });

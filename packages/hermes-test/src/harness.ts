@@ -158,13 +158,14 @@ function flushAsync<T = any>(promise: Promise<T> | T): T {
     (v) => { result = v; settled = true; },
     (e) => { error = e; settled = true; }
   );
-  // Each drain() flushes all current microtasks. We loop because resolved work
-  // may schedule new async work (promise chains, effects, timers). The loop
-  // exits as soon as our promise settles. The cap prevents infinite loops.
-  for (let i = 0; i < 100 && !settled; i++) {
-    drain();
-    // Check timeout during drain loop to catch deadlocked async work
-    checkDeadline();
+  // drainMicrotasks() flushes all pending microtasks. One call should settle
+  // most promises. Loop only as safety net for edge cases (macrotask scheduling).
+  drain();
+  if (!settled) {
+    for (let i = 0; i < 100 && !settled; i++) {
+      drain();
+      checkDeadline();
+    }
   }
   if (!settled) {
     throw new Error('flushAsync: promise did not resolve after 100 drain cycles');
@@ -398,6 +399,10 @@ function runTests(): TestResult[] {
       // Reset mocks between tests
       resetMocks();
 
+      // Drain all pending microtasks so async effects from this test
+      // don't leak into the next test (RTK Query dispatches, promises, etc.)
+      drain();
+
       // Clear deadline
       __testMaxDrains = 0;
 
@@ -423,6 +428,9 @@ function runTests(): TestResult[] {
 
       // Reset mocks between tests
       resetMocks();
+
+      // Drain pending microtasks to prevent cross-test contamination
+      drain();
 
       _fileFailed++;
       const errMsg = e?.stack ?? e?.message ?? String(e);
