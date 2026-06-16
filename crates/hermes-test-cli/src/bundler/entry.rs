@@ -62,12 +62,13 @@ pub fn find_mock_modules(test_files: &[PathBuf]) -> Vec<String> {
 }
 
 pub fn find_mock_modules_with_aliases(test_files: &[PathBuf], aliases: &[String]) -> Vec<String> {
+    find_mock_modules_with_alias_pairs(test_files, aliases, &[])
+}
+
+pub fn find_mock_modules_with_alias_pairs(test_files: &[PathBuf], aliases: &[String], alias_pairs: &[(String, String)]) -> Vec<String> {
     let mut mocks = Vec::new();
     let re_mock = regex::Regex::new(r#"ht\.mock\(\s*['"]([^'"]+)['"]\s*,"#).ok();
     let re_shallow = regex::Regex::new(r#"ht\.shallow\(\s*['"]([^'"]+)['"]\s*\)"#).ok();
-    let re_import = regex::Regex::new(
-        r#"import\s+(?:(?:\w+\s*,?\s*)?(?:\{[^}]*\})?\s+from\s+)?['"]([^'"]+)['"]"#
-    ).ok();
 
     for file in test_files {
         let content = match std::fs::read_to_string(file) { Ok(c) => c, Err(_) => continue };
@@ -80,10 +81,10 @@ pub fn find_mock_modules_with_aliases(test_files: &[PathBuf], aliases: &[String]
             }
         }
 
-        // ht.shallow() — scan component for JSX-rendered imports only
-        if let Some(ref re) = re_shallow {
-            let auto_mocks = scan_shallow_auto_mocks(file, aliases);
-            for (path, _) in auto_mocks {
+        // ht.shallow() — scan component for JSX-rendered imports
+        if let Some(ref _re) = re_shallow {
+            let auto_mocks = scan_shallow_auto_mocks_with_pairs(file, aliases, alias_pairs);
+            for (path, _, _) in auto_mocks {
                 if !mocks.contains(&path) { mocks.push(path); }
             }
         }
@@ -92,10 +93,15 @@ pub fn find_mock_modules_with_aliases(test_files: &[PathBuf], aliases: &[String]
 }
 
 /// Scan a test file's ht.shallow() target for components used in JSX.
-/// Only imports that appear as `<ComponentName` in the source get auto-mocked.
-/// Types, hooks, utilities — anything not rendered — is skipped.
-/// Returns (module_path, Vec<component_name>) for auto-mock generation.
-pub fn scan_shallow_auto_mocks(test_file: &Path, aliases: &[String]) -> Vec<(String, Vec<String>)> {
+/// For modules that contain at least one JSX component, ALL named imports are collected.
+/// JSX components get createElement stubs; non-JSX exports (hooks, utilities) get
+/// generic function stubs. This prevents barrel-file crashes from breaking fallthrough.
+/// Returns (module_path, jsx_names, other_names) for auto-mock generation.
+pub fn scan_shallow_auto_mocks(test_file: &Path, aliases: &[String]) -> Vec<(String, Vec<String>, Vec<String>)> {
+    scan_shallow_auto_mocks_with_pairs(test_file, aliases, &[])
+}
+
+pub fn scan_shallow_auto_mocks_with_pairs(test_file: &Path, aliases: &[String], alias_pairs: &[(String, String)]) -> Vec<(String, Vec<String>, Vec<String>)> {
     let content = match std::fs::read_to_string(test_file) { Ok(c) => c, Err(_) => return vec![] };
     let re_shallow = match regex::Regex::new(r#"ht\.shallow\(\s*['"]([^'"]+)['"]\s*\)"#) {
         Ok(r) => r, Err(_) => return vec![],
@@ -103,8 +109,33 @@ pub fn scan_shallow_auto_mocks(test_file: &Path, aliases: &[String]) -> Vec<(Str
     let shallow_path = match re_shallow.captures(&content) {
         Some(cap) => cap[1].to_string(), None => return vec![],
     };
+    // Try relative resolution first, then alias resolution
     let comp_file = match resolve_relative_file(test_file, &shallow_path) {
-        Some(f) => f, None => return vec![],
+        Some(f) => f,
+        None => {
+            // Try alias resolution: find matching alias and resolve to target path
+            let mut resolved = None;
+            for (alias, target) in alias_pairs {
+                if shallow_path.starts_with(alias.as_str()) {
+                    let remainder = &shallow_path[alias.len()..];
+                    let remainder = remainder.trim_start_matches('/');
+                    let target_path = Path::new(target).join(remainder);
+                    // Try with extensions
+                    for ext in &[".tsx", ".ts", ".jsx", ".js"] {
+                        let c = target_path.with_extension(&ext[1..]);
+                        if c.exists() { resolved = Some(c); break; }
+                    }
+                    if resolved.is_none() {
+                        for idx in &["index.tsx", "index.ts", "index.jsx", "index.js"] {
+                            let c = target_path.join(idx);
+                            if c.exists() { resolved = Some(c); break; }
+                        }
+                    }
+                    if resolved.is_some() { break; }
+                }
+            }
+            match resolved { Some(f) => f, None => return vec![] }
+        },
     };
     let comp_source = match std::fs::read_to_string(&comp_file) { Ok(c) => c, Err(_) => return vec![] };
 
@@ -116,56 +147,126 @@ pub fn scan_shallow_auto_mocks(test_file: &Path, aliases: &[String]) -> Vec<(Str
     }
     if jsx_idents.is_empty() { return vec![]; }
 
-    // Step 2: Match JSX idents against imports to find which modules to mock
+    // Step 2: Collect imports — modules with at least one JSX ident get ALL imports
     let re_mock = regex::Regex::new(r#"ht\.mock\(\s*['"]([^'"]+)['"]\s*,"#).unwrap();
     let explicit: Vec<String> = re_mock.captures_iter(&content).map(|c| c[1].to_string()).collect();
 
     let re_default = regex::Regex::new(r#"import\s+(\w+)\s+from\s+['"]([^'"]+)['"]"#).unwrap();
     let re_named = regex::Regex::new(r#"import\s+\{([^}]+)\}\s+from\s+['"]([^'"]+)['"]"#).unwrap();
+    // Combined: import Default, { Named1, Named2 } from 'path'
+    let re_combined = regex::Regex::new(r#"import\s+(\w+)\s*,\s*\{([^}]+)\}\s+from\s+['"]([^'"]+)['"]"#).unwrap();
 
-    let mut result: Vec<(String, Vec<String>)> = Vec::new();
+    // First pass: find which modules have JSX components
+    let mut modules_with_jsx: std::collections::HashSet<String> = std::collections::HashSet::new();
 
-    // Default imports: import InsuranceCard from 'path'
     for cap in re_default.captures_iter(&comp_source) {
         let name = cap[1].to_string();
         let path = cap[2].to_string();
-        if !jsx_idents.contains(&name) { continue; }
-        if explicit.contains(&path) { continue; }
-        if path == "react" || path.starts_with("react/") { continue; }
-        let is_internal = path.starts_with('.') || path.starts_with('/')
-            || aliases.iter().any(|a| path == *a || path.starts_with(&format!("{a}/")));
-        if !is_internal { continue; }
-
-        if let Some((_, existing)) = result.iter_mut().find(|(p, _)| p == &path) {
-            if !existing.contains(&name) { existing.push(name); }
-        } else {
-            result.push((path, vec![name]));
-        }
+        if jsx_idents.contains(&name) { modules_with_jsx.insert(path); }
     }
-
-    // Named imports: import { Text, Wrapper } from 'path'
     for cap in re_named.captures_iter(&comp_source) {
         let spec = &cap[1];
         let path = cap[2].to_string();
-        if explicit.contains(&path) { continue; }
-        if path == "react" || path.starts_with("react/") { continue; }
-        let is_internal = path.starts_with('.') || path.starts_with('/')
-            || aliases.iter().any(|a| path == *a || path.starts_with(&format!("{a}/")));
-        if !is_internal { continue; }
-
-        let mut names: Vec<String> = Vec::new();
         for item in spec.split(',') {
             let item = item.trim();
             if item.is_empty() || item.starts_with("type ") { continue; }
             let local = item.split(" as ").last().unwrap_or(item).trim();
-            if jsx_idents.contains(local) { names.push(local.to_string()); }
+            if jsx_idents.contains(local) { modules_with_jsx.insert(path.clone()); break; }
         }
-        if names.is_empty() { continue; }
+    }
+    // Combined: import Default, { Named } from 'path'
+    for cap in re_combined.captures_iter(&comp_source) {
+        let default_name = cap[1].to_string();
+        let spec = &cap[2];
+        let path = cap[3].to_string();
+        if jsx_idents.contains(&default_name) { modules_with_jsx.insert(path.clone()); }
+        for item in spec.split(',') {
+            let item = item.trim();
+            if item.is_empty() || item.starts_with("type ") { continue; }
+            let local = item.split(" as ").last().unwrap_or(item).trim();
+            if jsx_idents.contains(local) { modules_with_jsx.insert(path.clone()); break; }
+        }
+    }
 
-        if let Some((_, existing)) = result.iter_mut().find(|(p, _)| p == &path) {
-            for n in names { if !existing.contains(&n) { existing.push(n); } }
+    // Second pass: for modules with JSX, collect ALL imports (jsx + other)
+    let mut result: Vec<(String, Vec<String>, Vec<String>)> = Vec::new();
+
+    for cap in re_default.captures_iter(&comp_source) {
+        let name = cap[1].to_string();
+        let path = cap[2].to_string();
+        if !modules_with_jsx.contains(&path) { continue; }
+        if explicit.contains(&path) { continue; }
+        if path == "react" || path.starts_with("react/") { continue; }
+        if path == "react-native" || path.starts_with("react-native/") { continue; }
+
+        let is_jsx = jsx_idents.contains(&name);
+        if let Some((_, jsx, other)) = result.iter_mut().find(|(p, _, _)| p == &path) {
+            if is_jsx { if !jsx.contains(&name) { jsx.push(name); } }
+            else { if !other.contains(&name) { other.push(name); } }
         } else {
-            result.push((path, names));
+            if is_jsx { result.push((path, vec![name], vec![])); }
+            else { result.push((path, vec![], vec![name])); }
+        }
+    }
+
+    for cap in re_named.captures_iter(&comp_source) {
+        let spec = &cap[1];
+        let path = cap[2].to_string();
+        if !modules_with_jsx.contains(&path) { continue; }
+        if explicit.contains(&path) { continue; }
+        if path == "react" || path.starts_with("react/") { continue; }
+        if path == "react-native" || path.starts_with("react-native/") { continue; }
+
+        let mut jsx_names: Vec<String> = Vec::new();
+        let mut other_names: Vec<String> = Vec::new();
+        for item in spec.split(',') {
+            let item = item.trim();
+            if item.is_empty() || item.starts_with("type ") { continue; }
+            let local = item.split(" as ").last().unwrap_or(item).trim();
+            if jsx_idents.contains(local) { jsx_names.push(local.to_string()); }
+            else { other_names.push(local.to_string()); }
+        }
+        if jsx_names.is_empty() && other_names.is_empty() { continue; }
+
+        if let Some((_, existing_jsx, existing_other)) = result.iter_mut().find(|(p, _, _)| p == &path) {
+            for n in jsx_names { if !existing_jsx.contains(&n) { existing_jsx.push(n); } }
+            for n in other_names { if !existing_other.contains(&n) { existing_other.push(n); } }
+        } else {
+            result.push((path, jsx_names, other_names));
+        }
+    }
+
+    // Combined: import Default, { Named1, Named2 } from 'path'
+    for cap in re_combined.captures_iter(&comp_source) {
+        let default_name = cap[1].to_string();
+        let spec = &cap[2];
+        let path = cap[3].to_string();
+        if !modules_with_jsx.contains(&path) { continue; }
+        if explicit.contains(&path) { continue; }
+        if path == "react" || path.starts_with("react/") { continue; }
+        if path == "react-native" || path.starts_with("react-native/") { continue; }
+
+        let mut jsx_names: Vec<String> = Vec::new();
+        let mut other_names: Vec<String> = Vec::new();
+
+        // Default import
+        if jsx_idents.contains(&default_name) { jsx_names.push(default_name); }
+        else { other_names.push(default_name); }
+
+        // Named imports
+        for item in spec.split(',') {
+            let item = item.trim();
+            if item.is_empty() || item.starts_with("type ") { continue; }
+            let local = item.split(" as ").last().unwrap_or(item).trim();
+            if jsx_idents.contains(local) { jsx_names.push(local.to_string()); }
+            else { other_names.push(local.to_string()); }
+        }
+
+        if let Some((_, existing_jsx, existing_other)) = result.iter_mut().find(|(p, _, _)| p == &path) {
+            for n in jsx_names { if !existing_jsx.contains(&n) { existing_jsx.push(n); } }
+            for n in other_names { if !existing_other.contains(&n) { existing_other.push(n); } }
+        } else {
+            result.push((path, jsx_names, other_names));
         }
     }
 
@@ -214,7 +315,7 @@ pub fn needs_react(test_files: &[PathBuf]) -> bool {
 
 /// Generate a synthetic entry file that imports the harness and all test files.
 /// `transforms` maps original test file paths to pre-transformed temp paths.
-/// `shallow_auto_mocks` contains (module_path, export_names) from ht.shallow() scanning.
+/// `shallow_auto_mocks` contains (module_path, jsx_names, other_names) from ht.shallow() scanning.
 /// These are injected as ht.mock() calls that create component stubs.
 pub fn generate_entry(
     test_files: &[PathBuf],
@@ -234,7 +335,7 @@ pub fn generate_entry_with_shallow(
     cfg: &BundleConfig,
     transforms: &[(PathBuf, PathBuf)],
     project_root: Option<&Path>,
-    shallow_auto_mocks: &[(String, Vec<String>)],
+    shallow_auto_mocks: &[(String, Vec<String>, Vec<String>)],
 ) -> String {
     let mut entry = String::new();
 
@@ -417,18 +518,25 @@ try {
         }
 
         // Inject auto-mock ht.mock() calls for ht.shallow() discovered imports.
-        // Each creates a component stub: (props) => React.createElement('Name', props).
-        // Mock hoisting moves these before require() calls, so shadow wrappers intercept.
-        for (mod_path, names) in shallow_auto_mocks {
-            // Build named exports: each is a component stub rendering a host element
+        // JSX components get Proxy stubs that support dot-notation (e.g. Animated.View).
+        // Non-JSX exports get generic function stubs to prevent barrel-file crash fallthrough.
+        for (mod_path, jsx_names, other_names) in shallow_auto_mocks {
             let mut exports = String::new();
-            for name in names {
+            // JSX component stubs: Proxy that returns sub-component stubs for dot access
+            for name in jsx_names {
                 exports.push_str(&format!(
-                    "r['{name}'] = function(p) {{ return R.createElement('{name}', p); }}; ",
+                    "r['{name}'] = typeof Proxy !== 'undefined' ? new Proxy(function(p) {{ return R.createElement('{name}', p); }}, {{ get: function(t, k) {{ if (typeof k === 'symbol') return t[k]; if (k === 'prototype' || k === 'name' || k === 'length' || k === 'caller' || k === 'arguments' || k === 'displayName' || k === 'contextTypes' || k === 'childContextTypes' || k === 'getDerivedStateFromProps' || k === 'getDerivedStateFromError' || k === 'contextType' || k === 'defaultProps' || k === 'propTypes' || k === '$$typeof' || k === '__emotion_real' || k === '__docgenInfo' || k === 'render') return k === 'displayName' ? '{name}' : t[k]; return function(p) {{ return R.createElement('{name}.' + k, p); }}; }} }}) : function(p) {{ return R.createElement('{name}', p); }};",
                 ));
             }
-            // Default export = first name (for default imports)
-            if let Some(first) = names.first() {
+            // Non-JSX stubs: hooks/utilities get chainable Proxy stubs
+            // (supports patterns like FadeIn.duration(700).delay(100))
+            for name in other_names {
+                exports.push_str(&format!(
+                    "r['{name}'] = typeof Proxy !== 'undefined' ? new Proxy(function() {{ return {{}}; }}, {{ get: function(t, k) {{ if (typeof k === 'symbol') return t[k]; var self = r['{name}']; return function() {{ return self; }}; }} }}) : function() {{ return {{}}; }}; ",
+                ));
+            }
+            // Default export = first JSX name (for default imports)
+            if let Some(first) = jsx_names.first() {
                 exports.push_str(&format!("r['default'] = r['{}']; ", first));
             }
             entry.push_str(&format!(
@@ -459,7 +567,7 @@ globalThis.__HT_results = JSON.stringify({
 }
 
 /// Minimal entry for a group: just test file requires (no setup, no runner).
-fn generate_group_entry(test_files: &[PathBuf], mock_modules: &[String], project_root: Option<&Path>, shallow_auto_mocks: &[(String, Vec<String>)]) -> String {
+fn generate_group_entry(test_files: &[PathBuf], mock_modules: &[String], project_root: Option<&Path>, shallow_auto_mocks: &[(String, Vec<String>, Vec<String>)]) -> String {
     let mut entry = String::new();
 
     // Reset console log collector for this group
@@ -505,15 +613,20 @@ fn generate_group_entry(test_files: &[PathBuf], mock_modules: &[String], project
             file_id
         ));
 
-        // Inject auto-mock ht.mock() calls for ht.shallow() discovered component imports
-        for (mod_path, names) in shallow_auto_mocks {
+        // Inject auto-mock ht.mock() calls for ht.shallow() discovered imports
+        for (mod_path, jsx_names, other_names) in shallow_auto_mocks {
             let mut exports = String::new();
-            for name in names {
+            for name in jsx_names {
                 exports.push_str(&format!(
-                    "r['{name}'] = function(p) {{ return R.createElement('{name}', p); }}; ",
+                    "r['{name}'] = typeof Proxy !== 'undefined' ? new Proxy(function(p) {{ return R.createElement('{name}', p); }}, {{ get: function(t, k) {{ if (typeof k === 'symbol') return t[k]; if (k === 'prototype' || k === 'name' || k === 'length' || k === 'caller' || k === 'arguments' || k === 'displayName' || k === 'contextTypes' || k === 'childContextTypes' || k === 'getDerivedStateFromProps' || k === 'getDerivedStateFromError' || k === 'contextType' || k === 'defaultProps' || k === 'propTypes' || k === '$$typeof' || k === '__emotion_real' || k === '__docgenInfo' || k === 'render') return k === 'displayName' ? '{name}' : t[k]; return function(p) {{ return R.createElement('{name}.' + k, p); }}; }} }}) : function(p) {{ return R.createElement('{name}', p); }};",
                 ));
             }
-            if let Some(first) = names.first() {
+            for name in other_names {
+                exports.push_str(&format!(
+                    "r['{name}'] = typeof Proxy !== 'undefined' ? new Proxy(function() {{ return {{}}; }}, {{ get: function(t, k) {{ if (typeof k === 'symbol') return t[k]; var self = r['{name}']; return function() {{ return self; }}; }} }}) : function() {{ return {{}}; }}; ",
+                ));
+            }
+            if let Some(first) = jsx_names.first() {
                 exports.push_str(&format!("r['default'] = r['{}']; ", first));
             }
             entry.push_str(&format!(
@@ -531,7 +644,7 @@ fn generate_group_entry(test_files: &[PathBuf], mock_modules: &[String], project
 }
 
 /// Public wrapper for generate_group_entry (used by watch mode and split mode).
-pub fn generate_group_entry_pub(test_files: &[PathBuf], mock_modules: &[String], project_root: Option<&Path>, shallow_auto_mocks: &[(String, Vec<String>)]) -> String {
+pub fn generate_group_entry_pub(test_files: &[PathBuf], mock_modules: &[String], project_root: Option<&Path>, shallow_auto_mocks: &[(String, Vec<String>, Vec<String>)]) -> String {
     generate_group_entry(test_files, mock_modules, project_root, shallow_auto_mocks)
 }
 

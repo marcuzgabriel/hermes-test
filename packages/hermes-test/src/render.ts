@@ -158,8 +158,14 @@ export const fireEvent = Object.assign(
   },
   {
     press(node: HTNode, event?: any) {
-      const handler = node.props?.onPress;
+      // Walk up ancestors to find nearest pressable (like RN event bubbling)
+      let target: HTNode | undefined = node;
+      while (target && !target.props?.onPress) {
+        target = (target as any)._parent;
+      }
+      const handler = target?.props?.onPress || node.props?.onPress;
       if (!handler) throw new Error(`No "onPress" handler on <${node.type}>`);
+      if ((target || node).props?.disabled) return; // Disabled elements don't fire press
       act(() => { handler(event); });
     },
     changeText(node: HTNode, text: string) {

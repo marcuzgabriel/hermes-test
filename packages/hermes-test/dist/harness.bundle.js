@@ -1030,12 +1030,15 @@ Run with --update-snapshots to update.`
     },
     appendInitialChild(p, c) {
       p.children.push(c);
+      c._parent = p;
     },
     appendChild(p, c) {
       p.children.push(c);
+      c._parent = p;
     },
     appendChildToContainer(p, c) {
       p.children.push(c);
+      c._parent = p;
     },
     removeChild(p, c) {
       const i = p.children.indexOf(c);
@@ -1048,10 +1051,12 @@ Run with --update-snapshots to update.`
     insertBefore(p, c, b) {
       const i = p.children.indexOf(b);
       p.children.splice(i, 0, c);
+      c._parent = p;
     },
     insertInContainerBefore(p, c, b) {
       const i = p.children.indexOf(b);
       p.children.splice(i, 0, c);
+      c._parent = p;
     },
     commitUpdate(inst, _type, _oldProps, newProps) {
       const { children: _c, ...rest } = newProps;
@@ -1430,8 +1435,13 @@ ${pad}</${type}>`;
     },
     {
       press(node, event) {
-        const handler = node.props?.onPress;
+        let target = node;
+        while (target && !target.props?.onPress) {
+          target = target._parent;
+        }
+        const handler = target?.props?.onPress || node.props?.onPress;
         if (!handler) throw new Error(`No "onPress" handler on <${node.type}>`);
+        if ((target || node).props?.disabled) return;
         act(() => {
           handler(event);
         });

@@ -299,16 +299,29 @@ JSON.stringify({
         let start = Instant::now();
 
         let alias_names: Vec<String> = cfg.aliases.iter().map(|(a, _)| a.clone()).collect();
-        let all_mocks = bundler::find_mock_modules_with_aliases(&test_files, &alias_names);
+        let alias_pairs: Vec<(String, String)> = cfg.aliases.clone();
+        let all_mocks = bundler::find_mock_modules_with_alias_pairs(&test_files, &alias_names, &alias_pairs);
 
         // Scan ht.shallow() for auto-mock generation
-        let mut shallow_auto_mocks: Vec<(String, Vec<String>)> = Vec::new();
+        let mut shallow_auto_mocks: Vec<(String, Vec<String>, Vec<String>)> = Vec::new();
         for file in &test_files {
-            for entry in bundler::scan_shallow_auto_mocks(file, &alias_names) {
-                if !shallow_auto_mocks.iter().any(|(p, _)| p == &entry.0) {
+            for entry in bundler::scan_shallow_auto_mocks_with_pairs(file, &alias_names, &alias_pairs) {
+                if let Some((_, existing_jsx, existing_other)) = shallow_auto_mocks.iter_mut().find(|(p, _, _)| p == &entry.0) {
+                    for name in entry.1 { if !existing_jsx.contains(&name) { existing_jsx.push(name); } }
+                    for name in entry.2 { if !existing_other.contains(&name) { existing_other.push(name); } }
+                } else {
                     shallow_auto_mocks.push(entry);
                 }
             }
+        }
+
+        // Debug: print shallow auto-mocks (HT_DEBUG=1)
+        if !shallow_auto_mocks.is_empty() && std::env::var("HT_DEBUG").is_ok() {
+            let mut dbg = format!("[DEBUG] Shallow auto-mocks ({}):\n", shallow_auto_mocks.len());
+            for (path, jsx_names, other_names) in &shallow_auto_mocks {
+                dbg.push_str(&format!("  {} -> jsx: {:?}, other: {:?}\n", path, jsx_names, other_names));
+            }
+            eprint!("{}", dbg);
         }
 
         // All files in one batch — shadow wrappers handle aliased mock isolation.
@@ -338,7 +351,7 @@ fn run_tests_single(
     transforms: &[(PathBuf, PathBuf)],
     coverage: bool,
     update_snapshots: bool,
-    shallow_auto_mocks: &[(String, Vec<String>)],
+    shallow_auto_mocks: &[(String, Vec<String>, Vec<String>)],
 ) {
     // Check single-bundle cache FIRST — skip shadow wrapper/shim setup if cached.
     let cache_key = bundler::compute_single_bundle_cache_key(test_files, root, mock_modules, cfg);
@@ -943,10 +956,13 @@ fn watch_tests(files: &[PathBuf], root: &PathBuf) {
                 let rerun_start = Instant::now();
 
                 // Scan shallow auto-mocks
-                let mut watch_shallow: Vec<(String, Vec<String>)> = Vec::new();
+                let mut watch_shallow: Vec<(String, Vec<String>, Vec<String>)> = Vec::new();
                 for f in &rerun_files {
                     for s in bundler::scan_shallow_auto_mocks(f, &alias_names) {
-                        if !watch_shallow.iter().any(|(p, _)| p == &s.0) { watch_shallow.push(s); }
+                        if let Some((_, ej, eo)) = watch_shallow.iter_mut().find(|(p, _, _)| p == &s.0) {
+                            for name in s.1 { if !ej.contains(&name) { ej.push(name); } }
+                            for name in s.2 { if !eo.contains(&name) { eo.push(name); } }
+                        } else { watch_shallow.push(s); }
                     }
                 }
 
@@ -1013,10 +1029,13 @@ fn run_persistent_cycle(
     let mock_modules = bundler::find_mock_modules_with_aliases(test_files, &alias_names);
 
     // Scan shallow auto-mocks
-    let mut shallow_mocks: Vec<(String, Vec<String>)> = Vec::new();
+    let mut shallow_mocks: Vec<(String, Vec<String>, Vec<String>)> = Vec::new();
     for f in test_files {
         for s in bundler::scan_shallow_auto_mocks(f, &alias_names) {
-            if !shallow_mocks.iter().any(|(p, _)| p == &s.0) { shallow_mocks.push(s); }
+            if let Some((_, ej, eo)) = shallow_mocks.iter_mut().find(|(p, _, _)| p == &s.0) {
+                for name in s.1 { if !ej.contains(&name) { ej.push(name); } }
+                for name in s.2 { if !eo.contains(&name) { eo.push(name); } }
+            } else { shallow_mocks.push(s); }
         }
     }
 
@@ -1107,10 +1126,13 @@ globalThis.__HT_results = JSON.stringify({
         // Bundle affected test files as a group (--packages=external if vendor loaded)
         // Scan shallow auto-mocks for persistent watch first-run
         let alias_watch: Vec<String> = cfg.aliases.iter().map(|(a, _)| a.clone()).collect();
-        let mut persist_shallow: Vec<(String, Vec<String>)> = Vec::new();
+        let mut persist_shallow: Vec<(String, Vec<String>, Vec<String>)> = Vec::new();
         for f in test_files {
             for s in bundler::scan_shallow_auto_mocks(f, &alias_watch) {
-                if !persist_shallow.iter().any(|(p, _)| p == &s.0) { persist_shallow.push(s); }
+                if let Some((_, ej, eo)) = persist_shallow.iter_mut().find(|(p, _, _)| p == &s.0) {
+                    for name in s.1 { if !ej.contains(&name) { ej.push(name); } }
+                    for name in s.2 { if !eo.contains(&name) { eo.push(name); } }
+                } else { persist_shallow.push(s); }
             }
         }
         let entry = bundler::generate_group_entry_pub(test_files, &mock_modules, Some(root), &persist_shallow);

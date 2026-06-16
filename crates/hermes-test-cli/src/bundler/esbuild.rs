@@ -671,7 +671,7 @@ pub fn bundle_split_with_shallow(
     project_root: &Path,
     mock_modules: &[String],
     cfg: &BundleConfig,
-    shallow_auto_mocks: &[(String, Vec<String>)],
+    shallow_auto_mocks: &[(String, Vec<String>, Vec<String>)],
 ) -> Result<SplitBundle, String> {
     // Check esbuild output cache first
     let cache_key = compute_bundle_cache_key(test_files, project_root, mock_modules, cfg);
@@ -798,7 +798,7 @@ fn generate_group_entry_internal(test_files: &[PathBuf], mock_modules: &[String]
 
 use std::cell::RefCell;
 thread_local! {
-    static SHALLOW_AUTO_MOCKS: RefCell<Vec<(String, Vec<String>)>> = RefCell::new(Vec::new());
+    static SHALLOW_AUTO_MOCKS: RefCell<Vec<(String, Vec<String>, Vec<String>)>> = RefCell::new(Vec::new());
 }
 
 /// Setup code eval'd before vendor: shims, mock placeholders, harness mocks.
