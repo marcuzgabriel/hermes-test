@@ -1,4 +1,4 @@
-# Component Rendering — Status & Next Steps
+# Component Rendering — Status
 
 ## What's Built (feat/component-rendering branch)
 
@@ -22,54 +22,105 @@
 ### Version-agnostic react-reconciler
 - Reconciler removed from harness bundle (400K → 66K)
 - CLI auto-resolves from user's node_modules via `find_react_reconciler()` + esbuild `--alias`
-- Walks up from test file directory, checks hermes-test/node_modules, workspace paths
 - react-reconciler moved to hermes-test dependencies (installed with package)
 
-## Current Blocker: Deep Component Imports
-
-When importing real components (e.g. `import BasketDetails from '../index'`), esbuild follows
-the entire import chain: UI library → react-native internals → native modules → crash.
-
-This is the same problem as Jest's `transformIgnorePatterns` but in esbuild's context.
-Pure `render(<div>Hello</div>)` works fine. Real component imports crash.
-
-## Next Step: Shallow Rendering
-
-**The key insight:** The existing Jest tests already mock all child components manually.
-Shallow rendering automates this — same result, zero boilerplate.
+## ht.shallow() — Auto-Mock Child Components
 
 ### How it works
-```ts
-render(<BasketDetails {...props} />, { shallow: true })
+`ht.shallow('../index')` scans the component file for `<ComponentName>` in JSX, matches
+against imports, and auto-generates `ht.mock()` calls. Child components become stubs:
+`(props) => React.createElement('Name', props)`.
+
+```tsx
+ht.shallow('../index');  // auto-mocks all JSX child components
+
+// Only override what needs specific values:
+ht.mock('@scope/hooks', () => ({ useTheme: () => ({...}) }));
+ht.mock('@scope/helpers/popup', () => ({ default: { presentInfoPopup: spy() } }));
 ```
 
-1. React renders BasketDetails — runs its hooks, returns JSX
-2. JSX contains `<InsuranceCard>`, `<GiftCard>`, etc.
-3. Reconciler sees `InsuranceCard` but does NOT call its function body
-4. Records it as `{ type: 'InsuranceCard', props: { ... }, children: [] }`
-5. No child imports are triggered — no crash
-
-### Implementation plan
-1. **Host config change**: In `createInstance`, check if the component type is a user
-   component (function/class) vs a host component (string like 'View', 'Text').
-   In shallow mode, don't recurse into user components — just record type + props.
-2. **Reconciler wrapper**: Create a shallow reconciler that wraps component types
-   with a stub before rendering. When the reconciler encounters a non-host component
-   in shallow mode, replace it with a pass-through that just records its props.
-3. **API**: `render(element, { shallow: true })` — add option to render.ts
-
-### What shallow gives you
+### What it gives you
 - `getByType('InsuranceCard')` — find by component name
 - `toHaveProp('insurance', ...)` — assert props passed to children
-- `toMatchSnapshot()` — captures structure without child internals
-- No `mock()` needed for child components
-- No UI library shims needed
+- `fireEvent.press(getByType('CTAButton'))` — fire events on child nodes
+- No manual child component mocking needed (4 mocks vs 13 in Jest)
 
-### What still needs full render
-- Integration tests between parent and child
-- Tests that assert on deeply nested text content
-- Tests that need `fireEvent` on child component elements
+### Implementation
+- `scan_shallow_auto_mocks()` in entry.rs — scans `<Name>` in JSX, matches against imports
+- Auto-generates `ht.mock()` with Proxy stubs in entry, before test file loads
+- Mock hoisting moves them before `require()` → shadow wrappers return stubs
+- Works in single-bundle, split, and watch mode
 
-### Both modes should coexist
-- Default `render()` = full rendering (needs shims/mocks for native deps)
-- `render(el, { shallow: true })` = stop at first level (works without dependency setup)
+## act() — RTL Pattern for IS_REACT_ACT_ENVIRONMENT
+
+### The problem
+React warns "not wrapped in act()" when setState is called while
+`IS_REACT_ACT_ENVIRONMENT === true` but outside an active `act()` scope.
+Hooks with `useEffect → dispatch → promise → setState` trigger this because
+the promise resolves via `drain()` after `reactAct()` returns.
+
+### The solution (from React Testing Library's act-compat.js)
+```
+Default:  IS_REACT_ACT_ENVIRONMENT = false
+
+act(() => {
+  IS_REACT_ACT_ENVIRONMENT = true     // set before reactAct()
+  reactAct(() => { callback() })      // React processes render + effects
+  IS_REACT_ACT_ENVIRONMENT = false    // restored BEFORE flush()
+  flush()                              // drains microtasks (no warning)
+})
+
+After:    IS_REACT_ACT_ENVIRONMENT = false
+```
+
+Key: restore to `false` BEFORE `flush()`. Async effects resolved by flush()
+see `false` → React doesn't warn. Result: 82 act() warnings → 0.
+
+### Files
+- `hooks.ts` — act() with RTL-pattern IS_REACT_ACT_ENVIRONMENT toggle
+- `entry.rs` — removed IS_REACT_ACT_ENVIRONMENT=true (harness manages it)
+- `esbuild.rs` — removed from vendor entry too
+
+## Console.log Support
+
+### How it works
+- Harness replaces `console` methods with `print()`-based output (Hermes native stdout)
+- Output appears immediately in all modes (single, split, watch)
+- `__HT_mocks['console'] = globalThis.console` in vendor entry for split mode
+- Pretty-printed JSON: `JSON.stringify(obj, null, 2)`
+- Filters "Expected host context" noise from react-reconciler
+
+### Why print() not console
+- Hermes's native `console.log` writes to stderr (suppressed during test execution)
+- `--external:console` caused esbuild to treat console as a module (`__require("console")`)
+- `print()` writes directly to stdout, bypasses all bundler/runtime issues
+
+## Error DX
+
+### Jest-style assertion messages
+```
+expect(received).toBe(expected)
+
+    Expected: 1
+    Received: undefined
+    Hint: Received is undefined. This usually means the module needs to be mocked with ht.mock().
+```
+
+### Stack traces
+- Full Hermes stack traces via `e.stack`
+- `__HT_shallow_imports` global maps function names → module paths for error hints
+
+## Hermes Runtime Config
+- `withMicrotaskQueue(true)` — enables queueMicrotask/drainJobs support
+- `__HT_drain` calls `rt.drainMicrotasks()` — flushes Hermes job queue
+- No event loop — drain() is called explicitly by act()/flush()
+
+## TypeScript
+- `globals.d.ts` uses vitest pattern: `declare global { const ht }` + `export {}`
+- Users add `"hermes-test/globals"` to tsconfig `types` array
+- `ht.shallow` typed with JSDoc: "Shallow render: auto-mock child components"
+
+## Externals Needed (Topdanmark)
+- `react-native-quick-crypto`
+- `rive-react-native`
+- `@gorhom/bottom-sheet`
