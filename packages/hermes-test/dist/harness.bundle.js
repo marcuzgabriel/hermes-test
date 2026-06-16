@@ -2126,7 +2126,12 @@ ${pad}</${type}>`;
     const beforeAllRan = /* @__PURE__ */ new Set();
     for (const entry of tests) {
       if (entry.file !== _currentFile) {
-        if (_currentFile) drain2();
+        if (_currentFile) {
+          drain2();
+          const resetStores = globalThis.__HT_resetApiStores;
+          if (resetStores) resetStores();
+          drain2();
+        }
         _flushFileResult();
         _currentFile = entry.file;
       }

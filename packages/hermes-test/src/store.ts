@@ -9,6 +9,19 @@ import React from 'react';
 import { Provider } from 'react-redux';
 import { configureStore } from '@reduxjs/toolkit';
 
+// Track all API stores for cleanup between files.
+// The harness calls __HT_resetApiStores() on file switch to prevent
+// cross-test contamination from RTK Query middleware effects.
+const _apiStores: { store: any; apis: any[] }[] = [];
+(globalThis as any).__HT_resetApiStores = function() {
+  for (const { store, apis } of _apiStores) {
+    for (const api of apis) {
+      try { store.dispatch(api.util.resetApiState()); } catch {}
+    }
+  }
+  _apiStores.length = 0;
+};
+
 type StoreContext = {
   store: any;
   wrapper: any;
@@ -111,5 +124,6 @@ export function setupApiStore(
     },
   });
 
+  _apiStores.push({ store, apis });
   return { ...makeCtx(store), apis };
 }
