@@ -120,7 +120,3 @@ expect(received).toBe(expected)
 - Users add `"hermes-test/globals"` to tsconfig `types` array
 - `ht.shallow` typed with JSDoc: "Shallow render: auto-mock child components"
 
-## Externals Needed (Topdanmark)
-- `react-native-quick-crypto`
-- `rive-react-native`
-- `@gorhom/bottom-sheet`
