@@ -479,6 +479,9 @@ globalThis.__HT_results = JSON.stringify({
 fn generate_group_entry(test_files: &[PathBuf], mock_modules: &[String], project_root: Option<&Path>, shallow_auto_mocks: &[(String, Vec<String>)]) -> String {
     let mut entry = String::new();
 
+    // Reset console log collector for this group
+    entry.push_str("globalThis.__HT_logs = [];\n");
+
     // Re-register mock placeholders as live Proxies (same as generate_entry)
     if !mock_modules.is_empty() {
         for path in mock_modules {

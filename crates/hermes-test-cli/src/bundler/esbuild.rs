@@ -854,9 +854,29 @@ fn generate_vendor_entry(packages: &[String], setup_code: &str) -> String {
     entry.push_str(setup_code);
     entry.push('\n');
 
+    // Console interceptor — collect logs for CLI output
+    entry.push_str(r#"(function() {
+  var logs = globalThis.__HT_logs = [];
+  function capture(level) {
+    return function() {
+      var parts = [];
+      for (var i = 0; i < arguments.length; i++) {
+        try { parts.push(typeof arguments[i] === 'string' ? arguments[i] : JSON.stringify(arguments[i])); }
+        catch(e) { parts.push(String(arguments[i])); }
+      }
+      logs.push({ level: level, message: parts.join(' ') });
+    };
+  }
+  globalThis.console = { log: capture('log'), warn: capture('warn'), error: capture('error'), info: capture('info'), debug: capture('debug') };
+})();
+"#);
+
     // React bootstrap — vendor bundles the real React
     entry.push_str(
         "try { var __htReact = require('react'); globalThis.__HT_React = __htReact; globalThis.__HT_mocks['react'] = __htReact; globalThis.IS_REACT_ACT_ENVIRONMENT = true; } catch(e) {}\n"
+    );
+    entry.push_str(
+        "try { globalThis.__HT_JsxRuntime = require('react/jsx-runtime'); } catch(e) {}\n"
     );
     entry.push_str(
         "try { var __htRec = require('react-reconciler'); globalThis.__HT_Reconciler = typeof __htRec === 'function' ? __htRec : (__htRec.default || __htRec); var __htRecC = require('react-reconciler/constants'); globalThis.__HT_ReconcilerConstants = __htRecC.__esModule ? __htRecC : (__htRecC.default || __htRecC); } catch(e) {}\n"
