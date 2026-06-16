@@ -182,6 +182,7 @@ HermesRuntime* hermes_create_runtime(void) {
     auto config = ::hermes::vm::RuntimeConfig::Builder()
         .withES6Class(true)
         .withEnableBlockScoping(true)
+        .withMicrotaskQueue(true)
         .withMaxNumRegisters(1024 * 1024)
         .withGCConfig(gcConfig)
         .build();
