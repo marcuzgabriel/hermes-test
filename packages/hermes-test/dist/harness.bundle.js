@@ -2128,9 +2128,6 @@ ${pad}</${type}>`;
       if (entry.file !== _currentFile) {
         if (_currentFile) {
           drain2();
-          const resetStores = globalThis.__HT_resetApiStores;
-          if (resetStores) resetStores();
-          drain2();
         }
         _flushFileResult();
         _currentFile = entry.file;

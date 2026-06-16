@@ -339,10 +339,6 @@ function runTests(): TestResult[] {
       // Reset RTK Query API state and drain pending microtasks from
       // previous file to prevent cross-test contamination.
       if (_currentFile) {
-        // Drain first to resolve pending async effects, then reset API state
-        drain();
-        const resetStores = (globalThis as any).__HT_resetApiStores;
-        if (resetStores) resetStores();
         drain();
       }
       _flushFileResult();
