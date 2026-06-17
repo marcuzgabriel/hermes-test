@@ -332,7 +332,9 @@ JSON.stringify({
         } else {
             let use_split = (force_split || cfg.split) && !coverage;
             if use_split {
-                run_tests_split(&rt, &test_files, &root, &all_mocks, &cfg, start);
+                eprintln!("\x1b[31mError:\x1b[0m split mode is deprecated and incompatible with ht.shallow() component rendering.");
+                eprintln!("       Remove \"split\": true from hermes-test.config.json or --split from the command line.");
+                std::process::exit(1);
             } else {
                 run_tests_single(&rt, &test_files, &root, &all_mocks, &cfg, start, &[], coverage, update_snapshots, &shallow_auto_mocks);
             }
