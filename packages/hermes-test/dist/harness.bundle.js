@@ -1768,6 +1768,20 @@ ${pad}</${type}>`;
     return { method, url, handler, once };
   }
   function mockFetch(...newHandlers) {
+    for (const nh of newHandlers) {
+      for (let i = handlers.length - 1; i >= 0; i--) {
+        const h = handlers[i];
+        if (h.method === nh.method && String(h.url) === String(nh.url)) {
+          handlers.splice(i, 1);
+        }
+      }
+      for (let i = overrideHandlers.length - 1; i >= 0; i--) {
+        const h = overrideHandlers[i];
+        if (h.method === nh.method && String(h.url) === String(nh.url)) {
+          overrideHandlers.splice(i, 1);
+        }
+      }
+    }
     handlers.push(...newHandlers);
     globalThis.fetch = fakeFetch;
   }
@@ -1800,10 +1814,7 @@ ${pad}</${type}>`;
     }
   };
   function mockFetchUse(...newHandlers) {
-    overrideHandlers.push(...newHandlers);
-    if (globalThis.fetch !== fakeFetch) {
-      globalThis.fetch = fakeFetch;
-    }
+    mockFetch(...newHandlers);
   }
   function mockFetchReset() {
     overrideHandlers.length = 0;
