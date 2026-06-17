@@ -368,6 +368,7 @@ var __metroTestHarness = (() => {
     beforeAll: () => beforeAll,
     beforeEach: () => beforeEach,
     clearAllMocks: () => clearAllMocks,
+    describe: () => describe,
     expect: () => expect,
     fireEvent: () => fireEvent,
     flushAsync: () => flushAsync,
@@ -1976,6 +1977,7 @@ ${pad}</${type}>`;
     fn();
     currentGroup = prev;
   }
+  var describe = group;
   function beforeEach(fn) {
     beforeEachHooks.push({ fn, group: currentGroup });
   }
@@ -2307,6 +2309,7 @@ ${pad}</${type}>`;
     spyOn,
     clearAllMocks,
     group,
+    describe,
     beforeEach,
     afterEach,
     beforeAll,

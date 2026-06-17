@@ -97,6 +97,7 @@ function group(name: string, fn: () => void): void {
   fn();
   currentGroup = prev;
 }
+const describe = group;
 
 function beforeEach(fn: LifecycleHook): void {
   beforeEachHooks.push({ fn, group: currentGroup });
@@ -524,6 +525,7 @@ const unmock = (_modulePath: string) => {}; // Bundler directive — no runtime 
   spyOn,
   clearAllMocks,
   group,
+  describe,
   beforeEach,
   afterEach,
   beforeAll,
@@ -551,4 +553,4 @@ const unmock = (_modulePath: string) => {}; // Bundler directive — no runtime 
   advanceTimersToNextTimer,
 };
 
-export { test, expect, spy, spyOn, clearAllMocks, group, beforeEach, afterEach, beforeAll, afterAll, renderHook, act, waitFor, render, fireEvent, useMock, http, HttpResponse, flushAsync, useFakeTimers, useRealTimers, advanceTimersByTime, runAllTimers, getTimerCount, advanceTimersToNextTimer };
+export { test, expect, spy, spyOn, clearAllMocks, group, describe, beforeEach, afterEach, beforeAll, afterAll, renderHook, act, waitFor, render, fireEvent, useMock, http, HttpResponse, flushAsync, useFakeTimers, useRealTimers, advanceTimersByTime, runAllTimers, getTimerCount, advanceTimersToNextTimer };

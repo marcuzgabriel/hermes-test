@@ -101,6 +101,7 @@ export function setupApiStore(
 
 export const test = ht.test;
 export const group = ht.group;
+export const describe = ht.describe;
 export const expect = ht.expect;
 export const spy = ht.spy;
 export const spyOn = ht.spyOn;
