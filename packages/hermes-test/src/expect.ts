@@ -160,6 +160,27 @@ function createAssertion(actual: any, negated: boolean): any {
       );
     },
 
+    toMatchObject(expected: any) {
+      function matchesObject(a: any, b: any): boolean {
+        if (b != null && typeof b === 'object' && (b as any).__htMatcher && typeof (b as any).matches === 'function') return (b as any).matches(a);
+        if (typeof b !== 'object' || b === null) return a === b;
+        if (Array.isArray(b)) {
+          if (!Array.isArray(a) || a.length < b.length) return false;
+          return b.every((v: any, i: number) => matchesObject(a[i], v));
+        }
+        for (const key of Object.keys(b)) {
+          if (!(key in a) || !matchesObject(a[key], b[key])) return false;
+        }
+        return true;
+      }
+      assert(
+        matchesObject(actual, expected),
+        negated
+          ? `expect(received).not.toMatchObject(expected)\n\n    Expected: not ${formatValue(expected)}\n    Received: ${formatValue(actual)}`
+          : `expect(received).toMatchObject(expected)\n\n    Expected: ${formatValue(expected)}\n    Received: ${formatValue(actual)}`
+      );
+    },
+
     toBeDefined() {
       assert(
         actual !== undefined,
