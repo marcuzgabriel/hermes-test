@@ -129,9 +129,12 @@ jobs:
           done
 
       - name: Commit version bump
+        env:
+          GH_PAT: ${{ secrets.GH_PAT }}
         run: |
-          git config user.name "github-actions[bot]"
-          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git config user.name "marcuzgabriel"
+          git config user.email "marcuzgabriel@users.noreply.github.com"
+          git remote set-url origin https://x-access-token:${GH_PAT}@github.com/marcuzgabriel/hermes-test.git
           sed -i "s/^version = \".*\"/version = \"${{ inputs.version }}\"/" crates/hermes-test-cli/Cargo.toml
           git add packages/*/package.json crates/hermes-test-cli/Cargo.toml
           git diff --cached --quiet || git commit -m "v${{ inputs.version }}"
