@@ -268,11 +268,11 @@ useRealTimers();
        │                  │                 │
   mockModule()      <100ms bundle     native execution
   spy/expect        path aliases      drainMicrotasks
-  renderHook        Hermes patches     real React tree
+  renderHook        mock hoisting      real React tree
 ```
 
 1. **esbuild** bundles your test + source into a single IIFE (~100ms)
-2. Rust CLI applies **Hermes patches** (class-extends, for-let-of)
+2. Rust CLI applies **mock hoisting** and injects the require shim for native modules
 3. **Bytecode compilation** — cached .hbc for instant loading on subsequent runs
 4. **Hermes VM** evaluates the bytecode — same engine as your app
 5. Results printed to terminal — single process, no workers, no IPC

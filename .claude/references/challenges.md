@@ -7,10 +7,9 @@
 - Hermes stderr suppression for clean test output
 
 ### Challenge: esbuild output incompatible with Hermes
-- Hermes doesn't support `for (let key of arr)` with arrow closure captures (bug)
-- Hermes configurable property descriptors differ from V8
-- Hermes `__toESM` early return behavior differs
-- **Solution**: `patch_esbuild_for_hermes()` — 4 regex-based post-bundle patches
+- Hermes previously had bugs with for-let-of closures, class-extends, etc.
+- **Update**: All esbuild patches removed — modern Hermes (RN 0.85+) handles these correctly
+- `patch_esbuild_for_hermes()` is now a no-op; mock hoisting and require shim remain
 
 ## Day 4-6: Hooks, Mocks, React Integration
 ### Challenge: renderHook without React Testing Library
@@ -34,12 +33,10 @@
 - Followed "extends" chain to resolve parent tsconfig paths
 - Alias-vs-external conflict: mocked paths must stay external
 
-### Challenge: Zod v4 class-extends crash
-- Hermes TDZ bug: `class X extends Variable` crashes when Variable is local
-- esbuild `--target=hermes0.12.0` can't downlevel classes yet
-- SWC Rust crates evaluated but rejected (thread-locals, require('@swc/helpers'))
-- **Solution**: `fix_all_class_extends()` — regex-based Reflect.construct transform
-  Handles 3 patterns, $-prefixed identifiers, paren-matching for super() args
+### Challenge: Zod v4 class-extends crash (RESOLVED)
+- Hermes TDZ bug: `class X extends Variable` crashed when Variable was local
+- Was worked around with `fix_all_class_extends()` regex transform
+- **Update**: Modern Hermes (RN 0.85+) has fixed these bugs natively — all patches removed
 
 ### Challenge: Scoped lifecycle hooks
 - beforeEach from nested group contaminating sibling groups
@@ -220,12 +217,9 @@ afterEach(() => {
 - Zustand: library ships own `__mocks__/zustand.ts` with auto-reset
 - hermes-test's `withStore`/`withApiStore` already follows standard patterns
 
-### TanStack Query: blocked by class-extends edge case
-- TanStack Query v5 uses private class fields → esbuild downlevels to WeakMap + comma expr
-- `_a = class extends X {...}, _focused = new WeakMap(), _a` pattern
-- `fix_all_class_extends` adds `;` after IIFE → breaks comma expression syntax
-- Also `(class X extends Y {...})` wrapped in parens creates extra `)` after transform
-- Deferred — needs fix to `fix_all_class_extends` for comma-expression and paren-wrapped classes
+### TanStack Query: class-extends edge case (RESOLVED)
+- Was blocked by `fix_all_class_extends` breaking comma-expression patterns
+- **Update**: `fix_all_class_extends` removed entirely — modern Hermes handles class-extends natively
 
 ## Patterns & Principles Learned
 
@@ -236,7 +230,7 @@ afterEach(() => {
 5. **Proxy + lazy loading = mock isolation** — one module appears different to different consumers
 6. **Filesystem-level interception > AST transforms** — simpler, no codegen, no edge cases
 7. **Circular deps need lazy wrappers** — eager require in wrapper deadlocks module init
-8. **Hermes compat needs post-bundle patches** — can't rely on esbuild/SWC class transforms
+8. **Hermes compat** — modern Hermes (RN 0.85+) handles ES6 classes and let-bindings natively; legacy patches removed
 9. **Per-file isolation is the fallback** — parallel esbuild makes it acceptable (~60ms/file)
 10. **Shared singletons + mutation = silent contamination** — RTK's `endpoint.initiate` is a
     mutable property on a singleton. Any test that overwrites it without restoring poisons all

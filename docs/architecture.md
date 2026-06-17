@@ -20,7 +20,7 @@ flowchart TB
             EB_RESOLVE["Resolve full import graph\n(source + node_modules)"]
             EB_TRANSFORM["Transform TS/JSX → JS"]
             EB_BUNDLE["Bundle into single IIFE"]
-            EB_PATCH["Patch for Hermes\n• fix for-let-of closure bug\n• add configurable:true\n• downlevel async/await"]
+            EB_PATCH["Post-bundle transforms\n• hoist ht.mock() calls\n• inject native module require shim"]
         end
         subgraph METRO["Metro (--bundler metro)"]
             M_CONFIG["Load metro.config.js"]
