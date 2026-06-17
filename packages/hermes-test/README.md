@@ -3,16 +3,14 @@
 **26–64x faster than Jest.** A test runner built for React Native and Expo. One esbuild pass, one process, zero Babel — results in under a second.
 
 ```
-1472 tests — 0.84s (cached)  |  5s with coverage
+1766 tests, 7 snapshots — 5s  (Jest: 116s → 23x faster)
 ```
 
 <p align="center">
-  <img src="docs/demo.gif" alt="hermes-test demo — 1472 tests with coverage in 5s" width="800">
+  <img src="docs/demo.gif" alt="hermes-test demo" width="800">
 </p>
 
-> **⚠️ Early release (v0).** hermes-test is battle-tested on a production Expo app (1472 tests, 100% pass rate) but the API may still change.
->
-> **Recommended approach:** Use `.hermes.test.ts` as your test file suffix. This lets you run hermes-test alongside Jest without overwriting your existing tests. Migrate one file at a time, verify it passes in both runners, then expand. Don't delete your Jest tests until you're confident.
+> Battle-tested as the sole test runner for a production Expo app (284 suites, 1766 tests, 7 snapshots). Zero Jest dependency.
 
 ---
 
@@ -30,13 +28,14 @@ Your tests run in Hermes — the same JavaScript engine your app ships with — 
 
 ### Benchmarks
 
-Production Expo app (Topdanmark, Danish insurance — 259 files, 1472 tests):
+Production Expo app (284 suites, 1766 tests, 7 snapshots):
 
 | | Jest | hermes-test | Speedup |
 |---|---|---|---|
-| Full suite (no coverage) | 54s | **0.84s** cached / 2.5s cold | **64x** / **22x** |
-| Full suite (with coverage) | 128s | **5s** | **26x** |
-| Watch rerun | ~3s | **~300ms** | **10x** |
+| Full suite | 116s | **5s** | **23x** |
+| Cached run | 54s | **0.84s** | **64x** |
+| With coverage | 128s | **5s** | **26x** |
+| Watch rerun | ~3s | **~350ms** | **9x** |
 
 Micro benchmarks (Apple Silicon, no coverage):
 
@@ -75,9 +74,9 @@ hermes-test --watch      # watch mode
 ### Test structure
 
 ```ts
-import { test, expect, group, beforeEach, afterEach } from 'hermes-test';
+import { test, describe, expect, beforeEach, afterEach } from 'hermes-test';
 
-group('myFeature', () => {
+describe('myFeature', () => {
   beforeEach(() => { /* reset */ });
 
   test('does the thing', () => {
@@ -86,10 +85,6 @@ group('myFeature', () => {
     expect(str).toContain('hello');
     expect(fn).toThrow('error message');
   });
-
-  test.skip('not yet', () => {});
-  test.only('focus this', () => {});
-  test('slow test', () => { /* ... */ }, { timeout: 10000 });
 });
 ```
 
@@ -97,6 +92,7 @@ group('myFeature', () => {
 
 ```ts
 expect(val).toBe(exact)            expect(val).toEqual(deep)
+expect(val).toMatchObject(sub)     expect(val).toMatchSnapshot()
 expect(val).toBeTruthy()           expect(val).toBeFalsy()
 expect(val).toBeDefined()          expect(val).toBeUndefined()
 expect(val).toBeNull()             expect(val).toBeGreaterThan(n)
@@ -142,15 +138,19 @@ clearAllMocks();
 ### Module mocking
 
 ```ts
-import { mockModule } from 'hermes-test';
-import { useMyHook } from './useMyHook';  // import order doesn't matter
-
-mockModule('./useRedux', () => ({
+// ht.mock() — works like jest.mock()
+ht.mock('./useRedux', () => ({
   useAppSelector: (selector) => mockState,
 }));
+
+// ht.unmock() — opt out of the shim system, bundle the real module
+ht.unmock('moment');
+
+// ht.shallow() — auto-mock all JSX child components
+ht.shallow('../MyComponent');
 ```
 
-Shadow wrappers check mocks at call time — `mockModule` can appear before or after imports.
+Shadow wrappers check mocks at call time — `ht.mock` can appear before or after imports.
 
 ### Hook testing
 
@@ -163,21 +163,75 @@ expect(result.current.count).toBe(1);
 expect(renderCount).toBe(2);
 ```
 
+### Component rendering
+
+```ts
+import { render, fireEvent, expect } from 'hermes-test';
+
+const { getByText, getByTestId, toJSON } = render(<MyComponent />);
+
+// Queries (all have get/getAll/query/queryAll variants)
+getByText('Hello');                  getByText(/hello/i);
+getByTestId('submit-btn');           getByProps({ disabled: true });
+getByType('View');
+
+// Fire events
+fireEvent.press(getByTestId('btn'));
+fireEvent.changeText(getByTestId('input'), 'new value');
+fireEvent.scroll(getByTestId('list'), { nativeEvent: { contentOffset: { y: 100 } } });
+fireEvent(node, 'focus');            // generic
+
+// Serialization
+toJSON();                            // plain object tree
+toTree();                            // pretty-printed JSX string
+
+// Lifecycle
+rerender(<MyComponent updated />);
+unmount();
+```
+
+### Element matchers
+
+```ts
+expect(element).toBeRendered();
+expect(element).toHaveTextContent('Hello');
+expect(element).toHaveTextContent(/hello/i);
+expect(element).toContainElement(child);
+expect(element).toBeEmpty();
+expect(input).toHaveDisplayValue('current value');
+expect(element).toHaveProp('testID', 'my-id');
+expect(element).toHaveStyle({ backgroundColor: 'red' });
+expect(button).toBeEnabled();       expect(button).toBeDisabled();
+expect(element).toBeVisible();      // checks display + opacity
+```
+
+### Snapshot testing
+
+```ts
+// First run: creates __snapshots__/myComponent.test.tsx.snap
+expect(toJSON()).toMatchSnapshot();
+
+// Subsequent runs: compares against stored snapshot, fails on mismatch
+// Update snapshots:
+// hermes-test --update-snapshots
+```
+
 ### Fetch mocking (MSW-style)
 
 ```ts
-import { mockFetch, mockFetchUse, mockFetchReset, http, HttpResponse } from 'hermes-test';
+import { http, HttpResponse } from 'hermes-test';
 
-mockFetch(
+// Register handlers — auto-overwrites matching method+url
+ht.mock.fetch(
   http.get('https://api.example.com/data', () => HttpResponse.json({ ok: true })),
   http.post('https://api.example.com/login', () => HttpResponse.json({ token: '...' })),
 );
 
-// Per-test override
-mockFetchUse(http.get('https://api.example.com/data', () => HttpResponse.error()));
+// Override in a specific test — same API, auto-replaces
+ht.mock.fetch(http.get('https://api.example.com/data', () => HttpResponse.error()));
 
-// Cleanup
-mockFetchReset();
+// Reset all handlers
+ht.mock.fetch.reset();
 ```
 
 ### Redux store
@@ -411,7 +465,7 @@ If total statement coverage is below the threshold, hermes-test exits with code 
 
 - [x] **Coverage reporting** — source map-based instrumentation, lcov + HTML report, threshold enforcement
 - [ ] **macOS Intel (x64)** — cross-compile or dedicated CI runner
-- [ ] **Component rendering** — `render(<Component />)` with query API (`getByText`, `getByTestId`, `fireEvent`)
+- [x] **Component rendering** — `render(<Component />)` with query API (`getByText`, `getByTestId`, `fireEvent`)
 - [ ] **Jest compatibility shim** — `jest.fn()` → `spy()`, `jest.mock()` → `mockModule()`, enables reuse of library `__mocks__/` files
 - [ ] **Library mock support** — auto-load mocks from expo-router, react-native-reanimated, zustand, etc.
 - [ ] **`setupFiles` config** — load setup files before tests (like Jest's `setupFilesAfterFramework`)

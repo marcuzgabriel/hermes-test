@@ -67,29 +67,21 @@ npx hermes-test watch
 
 ```ts
 mock(path, factory)          // mock a module
-mock.fetch(handler...)       // register fetch handlers
-mock.fetch.overwrite(handler...) // per-test overrides (like MSW server.use)
-mock.fetch.reset()           // clear per-test overrides
+mock.fetch(handler...)       // register fetch handlers (auto-overwrites matching)
+mock.fetch.reset()           // clear all handlers
 mock.fetch.clear()           // clear all handlers
 ```
 
 ## Status
 
-v0 complete. Published on npm as `hermes-test@0.2.1`. Topdanmark: 259 files, 1472 tests, 100% passing, 100% unit test coverage.
+v1.0. Sole test runner for Topdanmark (Jest fully removed). 284 suites, 1766 tests, 7 snapshots, 0 failures.
 
-| Week | Deliverable | Status |
-|------|-------------|--------|
-| 1 | Hermes embed + Rust CLI skeleton | Done |
-| 2 | esbuild integration + harness | Done |
-| 3 | Hooks, mocks, state history | Done |
-| 4 | Watch mode, reporter, codemod, ship 0.1 | Done |
-
-Measured performance (Topdanmark, 1472 tests, 259 files):
+Measured performance (Topdanmark, 284 suites, 1766 tests):
 
 | Scenario | hermes-test | Jest | Speedup |
 |----------|-------------|------|---------|
+| Full suite | 5s | 116s | **23x** |
 | Cached run | 0.84s | 54s | **64x** |
-| Cold run | 2.5s | 54s | **22x** |
 | With coverage | 5s | 128s | **26x** |
 | Watch rerun | ~350ms | — | — |
 
