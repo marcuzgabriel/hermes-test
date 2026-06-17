@@ -48,8 +48,12 @@ function _saveSnapshots(path: string, data: Record<string, string>) {
   _writeFile(path, JSON.stringify(data, null, 2) + '\n');
 }
 
+let _totalSnapshotCount = 0;
+export function getSnapshotCount(): number { return _totalSnapshotCount; }
+
 function _matchSnapshot(actual: any): void {
   _snapshotCounter++;
+  _totalSnapshotCount++;
   const key = _snapshotTestName + (_snapshotCounter > 1 ? ` ${_snapshotCounter}` : '');
   const serialized = _serializeSnapshot(actual);
 

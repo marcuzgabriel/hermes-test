@@ -571,7 +571,8 @@ globalThis.__HT_results = JSON.stringify({
   passed: __results.filter(function(t) { return t.status === 'pass'; }).length,
   failed: __results.filter(function(t) { return t.status === 'fail'; }).length,
   skipped: __results.filter(function(t) { return t.status === 'skip'; }).length,
-  total: __results.length
+  total: __results.length,
+  snapshots: globalThis.__HT.getSnapshotCount ? globalThis.__HT.getSnapshotCount() : 0
 });
 "#,
     );

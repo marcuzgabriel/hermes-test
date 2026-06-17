@@ -627,6 +627,8 @@ fn run_tests_per_file(
     let mut _total_skipped = 0usize;
     let mut total_count = 0usize;
     let mut any_failed = false;
+    let mut suites_passed = 0usize;
+    let mut suites_failed = 0usize;
 
     for (file, bundle_result) in &bundles {
         let name = file.file_name().map(|n| n.to_string_lossy().to_string())
@@ -681,8 +683,10 @@ fn run_tests_per_file(
 
                     if f > 0 {
                         any_failed = true;
+                        suites_failed += 1;
                         print_results(&raw);
                     } else {
+                        suites_passed += 1;
                         println!("\x1b[32mPASS\x1b[0m  {name} \x1b[2m({t} tests)\x1b[0m");
                     }
                 }
@@ -696,15 +700,19 @@ fn run_tests_per_file(
 
     // Print summary
     let elapsed = start.elapsed();
+    let total_suites = suites_passed + suites_failed;
     println!();
-    if total_failed > 0 {
-        print!(" \x1b[31mTests:\x1b[0m  \x1b[32m{total_passed} passed\x1b[0m, \x1b[31m{total_failed} failed\x1b[0m");
+    if suites_failed > 0 {
+        println!(" \x1b[1mTest Suites:\x1b[0m  \x1b[32m{suites_passed} passed\x1b[0m, \x1b[31m{suites_failed} failed\x1b[0m, {total_suites} total");
     } else {
-        print!(" \x1b[32mTests:\x1b[0m  {total_passed} passed");
+        println!(" \x1b[1mTest Suites:\x1b[0m  \x1b[32m{suites_passed} passed\x1b[0m, {total_suites} total");
     }
-    println!(", {total_count} total");
-    println!(" \x1b[2mFiles:\x1b[0m  {}", test_files.len());
-    println!(" \x1b[2mTime:\x1b[0m   {:.2}s", elapsed.as_secs_f64());
+    if total_failed > 0 {
+        println!(" \x1b[1mTests:\x1b[0m        \x1b[32m{total_passed} passed\x1b[0m, \x1b[31m{total_failed} failed\x1b[0m, {total_count} total");
+    } else {
+        println!(" \x1b[1mTests:\x1b[0m        \x1b[32m{total_passed} passed\x1b[0m, {total_count} total");
+    }
+    println!(" \x1b[2mTime:\x1b[0m         {:.2}s", elapsed.as_secs_f64());
 
     if any_failed {
         std::process::exit(1);
@@ -1236,8 +1244,14 @@ fn print_console_logs(rt: &hermes::Runtime) {
 
 fn print_results_with_time(json: &str, elapsed_ms: u128, file_count: usize) -> bool {
     let ok = print_results(json);
-    eprintln!(" \x1b[2mFiles:\x1b[0m  {file_count}");
-    eprintln!(" \x1b[2mTime:\x1b[0m   {:.2}s", elapsed_ms as f64 / 1000.0);
+    // Parse for summary stats
+    let inner: String = serde_json::from_str(json).unwrap_or(json.to_string());
+    let results: serde_json::Value = serde_json::from_str(&inner).unwrap_or_default();
+    let passed = results["passed"].as_u64().unwrap_or(0);
+    let failed = results["failed"].as_u64().unwrap_or(0);
+    let total = results["total"].as_u64().unwrap_or(0);
+    let snapshots = results["snapshots"].as_u64().unwrap_or(0);
+    print_jest_summary(file_count, passed, failed, total, snapshots, elapsed_ms as f64 / 1000.0);
     ok
 }
 
@@ -1251,15 +1265,9 @@ fn print_summary_with_time(json: &str, elapsed_ms: u128, file_count: usize) -> b
     let passed = results["passed"].as_u64().unwrap_or(0);
     let failed = results["failed"].as_u64().unwrap_or(0);
     let total = results["total"].as_u64().unwrap_or(0);
+    let snapshots = results["snapshots"].as_u64().unwrap_or(0);
     let secs = elapsed_ms as f64 / 1000.0;
-    eprintln!();
-    if failed == 0 {
-        eprintln!(" \x1b[32mTests:\x1b[0m  {passed} passed, {total} total");
-    } else {
-        eprintln!(" \x1b[31mTests:\x1b[0m  \x1b[32m{passed} passed\x1b[0m, \x1b[31m{failed} failed\x1b[0m, {total} total");
-    }
-    eprintln!(" \x1b[2mFiles:\x1b[0m  {file_count}");
-    eprintln!(" \x1b[2mTime:\x1b[0m   {secs:.2}s");
+    print_jest_summary(file_count, passed, failed, total, snapshots, secs);
     failed == 0
 }
 
@@ -1280,6 +1288,21 @@ fn print_summary(json: &str) -> bool {
         eprintln!(" \x1b[31mTests:\x1b[0m  \x1b[32m{passed} passed\x1b[0m, \x1b[31m{failed} failed\x1b[0m, {total} total");
     }
     failed == 0
+}
+
+fn print_jest_summary(file_count: usize, passed: u64, failed: u64, total: u64, snapshots: u64, secs: f64) {
+    eprintln!();
+    if failed > 0 {
+        eprintln!(" \x1b[1mTest Suites:\x1b[0m  \x1b[32m{file_count} passed\x1b[0m, {file_count} total");
+        eprintln!(" \x1b[1mTests:\x1b[0m        \x1b[32m{passed} passed\x1b[0m, \x1b[31m{failed} failed\x1b[0m, {total} total");
+    } else {
+        eprintln!(" \x1b[1mTest Suites:\x1b[0m  \x1b[32m{file_count} passed\x1b[0m, {file_count} total");
+        eprintln!(" \x1b[1mTests:\x1b[0m        \x1b[32m{passed} passed\x1b[0m, {total} total");
+    }
+    if snapshots > 0 {
+        eprintln!(" \x1b[1mSnapshots:\x1b[0m    \x1b[32m{snapshots} passed\x1b[0m, {snapshots} total");
+    }
+    eprintln!(" \x1b[1mTime:\x1b[0m         {secs:.2}s");
 }
 
 fn print_results(json: &str) -> bool {

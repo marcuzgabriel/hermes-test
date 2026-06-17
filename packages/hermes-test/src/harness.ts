@@ -27,7 +27,7 @@
   };
 })();
 
-import { expect, _setSnapshotContext } from './expect';
+import { expect, _setSnapshotContext, getSnapshotCount } from './expect';
 import { spy, spyOn, clearAllMocks } from './spy';
 import { renderHook, act, waitFor } from './hooks';
 import { render, fireEvent } from './render';
@@ -541,6 +541,7 @@ const unmock = (_modulePath: string) => {}; // Bundler directive — no runtime 
   registerCrash,
   resetRegistry,
   resetMockModulePatches,
+  getSnapshotCount,
   // Timer control
   useFakeTimers,
   useRealTimers,
