@@ -424,8 +424,13 @@ var __metroTestHarness = (() => {
     _snapshotCache[path] = data;
     _writeFile(path, JSON.stringify(data, null, 2) + "\n");
   }
+  var _totalSnapshotCount = 0;
+  function getSnapshotCount() {
+    return _totalSnapshotCount;
+  }
   function _matchSnapshot(actual) {
     _snapshotCounter++;
+    _totalSnapshotCount++;
     const key = _snapshotTestName + (_snapshotCounter > 1 ? ` ${_snapshotCounter}` : "");
     const serialized = _serializeSnapshot(actual);
     if (!_snapshotFile) {
@@ -520,6 +525,30 @@ Run with --update-snapshots to update.`
 
     Expected: not ${formatValue(expected)}
     Received: ${formatValue(actual)}` : `expect(received).toEqual(expected)
+
+    Expected: ${formatValue(expected)}
+    Received: ${formatValue(actual)}`
+        );
+      },
+      toMatchObject(expected) {
+        function matchesObject(a, b) {
+          if (b != null && typeof b === "object" && b.__htMatcher && typeof b.matches === "function") return b.matches(a);
+          if (typeof b !== "object" || b === null) return a === b;
+          if (Array.isArray(b)) {
+            if (!Array.isArray(a) || a.length < b.length) return false;
+            return b.every((v, i) => matchesObject(a[i], v));
+          }
+          for (const key of Object.keys(b)) {
+            if (!(key in a) || !matchesObject(a[key], b[key])) return false;
+          }
+          return true;
+        }
+        assert(
+          matchesObject(actual, expected),
+          negated ? `expect(received).not.toMatchObject(expected)
+
+    Expected: not ${formatValue(expected)}
+    Received: ${formatValue(actual)}` : `expect(received).toMatchObject(expected)
 
     Expected: ${formatValue(expected)}
     Received: ${formatValue(actual)}`
@@ -2257,7 +2286,9 @@ ${pad}</${type}>`;
   mock.fetch.clear = mockFetchClear;
   var shallow = (_componentPath) => {
   };
-  globalThis.ht = { mock, shallow };
+  var unmock = (_modulePath) => {
+  };
+  globalThis.ht = { mock, shallow, unmock };
   globalThis.__HT = {
     test,
     expect,
@@ -2282,6 +2313,7 @@ ${pad}</${type}>`;
     registerCrash,
     resetRegistry,
     resetMockModulePatches,
+    getSnapshotCount,
     // Timer control
     useFakeTimers,
     useRealTimers,
