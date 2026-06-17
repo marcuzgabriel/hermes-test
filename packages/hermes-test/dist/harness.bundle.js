@@ -950,6 +950,9 @@ Run with --update-snapshots to update.`
       returnValues.push(ret);
       return ret;
     };
+    if (impl && impl.prototype) {
+      fn.prototype = impl.prototype;
+    }
     Object.defineProperties(fn, {
       calls: { get: () => calls },
       callCount: { get: () => calls.length },

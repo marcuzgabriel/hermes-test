@@ -58,6 +58,12 @@ export function spy<F extends (...args: any[]) => any = () => void>(
     return ret;
   } as unknown as Spy<F>;
 
+  // Preserve prototype chain so `new spy(...)` creates instances with the
+  // original class's prototype methods (e.g. class methods like write()).
+  if (impl && impl.prototype) {
+    fn.prototype = impl.prototype;
+  }
+
   Object.defineProperties(fn, {
     calls: { get: () => calls },
     callCount: { get: () => calls.length },
