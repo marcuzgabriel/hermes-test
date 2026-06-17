@@ -185,7 +185,7 @@ pub fn read_config(project_root: &Path) -> BundleConfig {
 
     // Validate config keys — reject unknown keys with a clear error
     let known_keys = ["root", "tsconfig", "externals", "external", "shims",
-                       "split", "testMatch", "coverageThreshold"];
+                       "testMatch", "coverageThreshold"];
     if let Some(obj) = json.as_object() {
         let unknown: Vec<&String> = obj.keys()
             .filter(|k| !known_keys.contains(&k.as_str()))
@@ -198,12 +198,6 @@ pub fn read_config(project_root: &Path) -> BundleConfig {
         }
     }
 
-    // Block deprecated split mode
-    if config.split {
-        eprintln!("\x1b[31mError:\x1b[0m \"split\" is deprecated and incompatible with ht.shallow() component rendering.");
-        eprintln!("       Remove \"split\": true from hermes-test.config.json.");
-        std::process::exit(1);
-    }
 
     // Auto-detect native modules by scanning for ios/android dirs.
     let alias_prefixes: Vec<String> = config.aliases.iter().map(|(a, _)| a.clone()).collect();
