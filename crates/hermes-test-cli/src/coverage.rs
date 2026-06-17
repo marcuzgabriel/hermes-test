@@ -151,8 +151,12 @@ fn instrument_bundle_inner(source: &str, filename: &str, sm_info: Option<&Source
     let fi = build_zero_map(fns.len());
     let bi = build_branch_zero_map(&br);
 
+    // Use typed arrays for counters to avoid Hermes 196607 property limit.
+    // Int32Array is compact — no object properties, just indexed access.
     let preamble = format!(
-        "function __cov(){{var c=__cov.__c;if(c)return c;var g=globalThis;if(!g.__coverage__)g.__coverage__={{}};if(!g.__coverage__[\"{fid}\"])g.__coverage__[\"{fid}\"]={{path:\"{fid}\",s:{si},f:{fi},b:{bi}}};__cov.__c=g.__coverage__[\"{fid}\"];return __cov.__c}}\n"
+        "function __cov(){{var c=__cov.__c;if(c)return c;var g=globalThis;if(!g.__coverage__)g.__coverage__={{}};if(!g.__coverage__[\"{fid}\"])g.__coverage__[\"{fid}\"]={{path:\"{fid}\",s:new Int32Array({s_len}),f:new Int32Array({f_len}),b:{bi}}};__cov.__c=g.__coverage__[\"{fid}\"];return __cov.__c}}\n",
+        s_len = stmts.len(),
+        f_len = fns.len(),
     );
 
     let iife = source.find("(() => {").map(|p| p + 8)
