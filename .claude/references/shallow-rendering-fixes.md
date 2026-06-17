@@ -271,39 +271,76 @@ text that's rendered as actual children (`<Text>{value}</Text>`).
 
 ---
 
-## Result after Phase 2
+## Phase 3: ht.unmock() and remaining fixes
+
+### Bug 14: `ht.unmock()` — new API for opting out of the shim system
+
+**Root cause:** esbuild inlines ESM imports as direct variable references. Modules like
+`moment` and `moment-timezone` can't have their `.now` property patched via test code
+because the Proxy shim intercepts property access and returns the original.
+
+**Fix:** Added `ht.unmock('module')` — a build-time directive that removes the module from
+the mock/shim list. The real module is bundled directly, so `require('moment').now = () => Date.now()`
+patches the same object the hook uses.
+
+**Files:** `entry.rs` (scanner), `harness.ts` (no-op runtime)
+
+### Bug 15: Config shims not externalized
+
+Config shims (e.g. `react-native-launch-arguments` in `hermes-test.config.json`) are loaded
+into `__HT_mocks` in the entry but the package is NOT externalized by esbuild. Result: esbuild
+bundles the real native module inline, and `import { LaunchArguments }` resolves to the
+bundled (broken) code instead of the shim.
+
+**Workaround:** Add `ht.mock('react-native-launch-arguments', ...)` in test files that
+need it. A proper fix (externalizing shim packages in esbuild) regressed other tests.
+
+### Bug 16: ActionFormBottomSheet ref not connecting
+
+Selector tests press options that call `bottomSheetRef.current?.show()`. The auto-mock
+stub doesn't use `forwardRef`, so `ref.current` stays `null` and the bottom sheet never opens.
+
+**Fix:** Explicit `ht.mock` for ActionFormBottomSheet with `React.forwardRef` + `useImperativeHandle`
+providing `show()`/`hide()`. Also render `footer` prop alongside children.
+
+### Bug 17: renderField utility not auto-mocked
+
+`renderField` creates `<TextField>` components but it's a utility function in a separate file,
+not an import of the shallow target component. So `TextField` falls through to the real barrel
+file which crashes.
+
+**Fix:** Explicit `ht.mock` for `renderField` returning `<TextInput>` with testID/onChangeText.
+
+### Bug 18: Danish character encoding in test expectations
+
+Test assertions used ASCII (`pakoerte`, `koeretoej`, `behover`) but mock data used proper
+Danish (`påkørte`, `køretøj`, `behøver`).
+
+**Fix:** Updated test expectations to match actual Unicode characters.
+
+### Bug 19: Missing mock properties
+
+- `useTheme` missing `COLORS.BACKGROUND`, `COLORS.CTA`, `COLORS.UI_ELEMENT` in various tests
+- `validateFields` mock missing `{ isValid: true }` return value
+- `Analytics` mock missing `trackExternalLink`
+- `LINKS` mock missing `MILEAGE_REDIRECT_GW`
+- `useGetDigitalHealthcare` not set for elite/mileage test
+- `fireEvent(el, 'onChange', ...)` should be `'change'` (hermes-test prepends `on`)
+
+---
+
+## Final result
 
 ```
 Before: Tests: 1486 passed, 87 failed, 1573 total
-After:  Tests: 1533 passed, 40 failed, 1573 total
+After:  Tests: 1572 passed, 1 failed,  1573 total
 ```
 
-47 tests fixed total. Remaining 40 failures:
+86 tests fixed. The remaining 1 failure:
 
-### Still failing — complex interactive tests (31 failures across 9 tsx files)
-
-These tests do multi-step interactions (press option → expect bottom sheet → fill form → save).
-The shallow stubs render the tree but internal state transitions and hook logic crash.
-
-| File | Pass/Total | Root cause |
-|------|-----------|------------|
-| ActionForm | 0/9 | Complex state machine with async operations |
-| SelectorIncidentAuto | 0/6 | Hook ordering error from conditional renders |
-| SelectorDynamicList | 1/5 | `undefined is not a function` on press handler |
-| DatePickerTimeFreeTextInput | 0/4 | testIDs not found (component renders differently with fixed theme) |
-| SelectorDriver | 2/5 | Same undefined function on interactive tests |
-| ActionFormPage | 5/6 | 1 text query on stubbed component |
-| useProductTiles | 8/10 | Hook returns wrong shape for 2 tests |
-| IncludedPriceModal | 1/2 | `getByText` can't find tax text |
-| InsuranceCard | 1/2 | `getByText` can't find date pill text |
-
-### Still failing — hook tests (9 failures across 4 ts files)
-
-Unrelated to rendering:
-- `useCampaigns` — hardcoded 2025 campaign dates, now 2026
-- `useCarousel` — depends on useCampaigns
-- `useGetClaims` — carglass claim expiry timing
-- `useContactInfo` — `useFakeTimers` scope issue
+| File | Test | Root cause |
+|------|------|------------|
+| DatePickerTimeFreeTextInput | location input test | ActionFormBottomSheet `footer` prop not rendering after `show()` via ref — `useState` update inside forwardRef mock doesn't propagate to parent tree in single act pass |
 
 ---
 
@@ -311,21 +348,19 @@ Unrelated to rendering:
 
 ```
 hermes-test (infrastructure):
-  crates/hermes-test-cli/src/bundler/entry.rs   — scan_shallow_auto_mocks rewrite, entry generators
+  crates/hermes-test-cli/src/bundler/entry.rs   — scan_shallow_auto_mocks rewrite, ht.unmock scanner
   crates/hermes-test-cli/src/bundler/esbuild.rs — thread-local type update
   crates/hermes-test-cli/src/main.rs            — merge logic, alias pairs, HT_DEBUG
   packages/hermes-test/src/render.ts            — fireEvent.press disabled check + bubbling
   packages/hermes-test/src/hooks.ts             — _parent tracking in reconciler
+  packages/hermes-test/src/harness.ts           — ht.unmock runtime no-op
 
-topdanmark tests:
-  SelectableCard.hermes.test.tsx                — (no changes needed, fixed by disabled check)
-  SelectorDriver.hermes.test.tsx                — _MENU removal, props.children fix
-  SelectorNoContent.hermes.test.tsx             — _MENU_CARD→base testID, props.children, style→prop check
-  SelectorDynamicList.hermes.test.tsx           — _MENU removal, theme colors, props.children
-  SelectorIncidentAuto.hermes.test.tsx          — _MENU removal
-  DamageZones.hermes.test.tsx                   — _MENU removal
-  DatePickerTimeFreeTextInput.hermes.test.tsx    — theme colors, props.children
-  BenefitsCard.hermes.test.tsx                  — text query adjustment, press bubbling
-  InsuranceCard.hermes.test.tsx                 — removed prop-text queries
-  PackageAdditionalMessage.hermes.test.tsx      — real createContext for FormContext mock
+topdanmark tests (23 files modified):
+  All Claims/ActionForm/* tests                 — ActionFormBottomSheet mock, renderField mock,
+                                                  _MENU testIDs, theme colors, Danish encoding,
+                                                  validateFields.isValid, DrillDownPill mock,
+                                                  DateTimePickerBottomSheet mock, TextField mock
+  InsurancePurchase/* tests                     — text-as-prop queries, FormContext, RegExp matching
+  Hook tests                                    — ht.unmock('moment'), moment.now patching,
+                                                  LaunchArguments mock, useCampaigns mock
 ```
