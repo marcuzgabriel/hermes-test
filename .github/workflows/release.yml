@@ -101,8 +101,10 @@ jobs:
           path: ${{ matrix.asset }}
 
   release:
+    if: github.actor == 'marcuzgabriel'
     needs: build
     runs-on: ubuntu-latest
+    environment: npm-publish
     permissions:
       contents: write
       packages: write
