@@ -1,23 +1,26 @@
 # Mock Strategy — Lessons Learned
 
-## Current State: 1367/1458 passed (93.8%), split mode, one strategy: shadow wrappers everywhere
+## Current State: 1472/1472 passed (100%), split mode, one strategy: shadow wrappers everywhere
 
 ## What Works (and why)
 
 ### Shadow Wrappers — handles barrel imports (90% of tests)
 - Proxy wrappers replace mocked files in a shadow directory tree
 - esbuild alias points to shadow dir instead of real source
-- __toESM + __copyProps creates LIVE getters: every property access goes through Proxy
-- Proxy checks __HT_file_mocks[__currentTestFile] dynamically
+- Wrappers are deliberately CJS (`module.exports = new Proxy(...)`) because:
+  - **ESM** imports are hoisted and statically resolved — esbuild turns `import { X } from 'pkg'` into a direct variable binding at build time. By runtime the import is gone, no interception possible.
+  - **CJS** stays as a runtime operation — esbuild wraps it with `__toESM` + `__copyProps`, creating live getters. Every property access goes through `Proxy.get()` at runtime, which is the interception point.
+- Proxy checks __HT_file_mocks[__currentTestFile] dynamically at access time
 - Per-file mock isolation is automatic for barrel-path imports
+- Relative imports (`../redux/useRedux`) can't be mocked this way — esbuild resolves them as ESM top-level vars
 
 ### Per-file mock scoping (__HT_file_mocks)
-- mockModule writes to __HT_file_mocks[filename][path], not global
+- mock() writes to __HT_file_mocks[filename][path], not global
 - __require Proxy checks per-file mocks first, then global
 - Prevents cross-file mock pollution for externalized modules
 
 ### Mock hoisting (Rust post-processing)
-- Moves init_*() calls after mockModule() calls in test file bodies
+- Moves init_*() calls after mock() calls in test file bodies
 - Ensures mocks are registered before modules capture values
 
 ### Mini-vendor for non-aliased mocked packages (Day 19)
@@ -30,8 +33,8 @@
 ### FileContext — per-file harness state isolation (Day 19)
 - Each file gets its own test entries, lifecycle hooks (beforeEach/afterEach/beforeAll/afterAll)
 - File boundary cleanup: restores real timers, resets mock descriptors
-- Architecturally correct but had ZERO impact on the 143 remaining failures
-- The contamination is NOT from lifecycle hooks, timers, or fetch handlers
+- Architecturally correct but had zero impact on the failures at the time
+- Combined with later fixes (function Proxy apply traps, withApiStore rewrites, RTK contamination fix) to reach 100%
 
 ### Split mode fix — shadow wrappers + vendor alias fix (Day 19)
 - Split mode was broken (233/1115) because:
@@ -126,33 +129,17 @@
 - Key finding: esbuild symlink behavior was NOT the cause of contamination
 - The shadow tree copies vs symlinks makes no difference to the test results
 
-## The Remaining Problem (143 failures)
+## How the Remaining Failures Were Solved (Days 20-21)
 
-### What we know for certain:
-- 19 files (103 tests) pass alone, fail in suite
-- 9 files (39 tests) fail even alone (standalone bugs)
-- "Pass alone, fail in suite" tests show "undefined is not a function"
-- NOT caused by: lifecycle hooks, timer leakage, fetch handler accumulation,
-  module init caching, esbuild symlink behavior, shadow tree symlinks vs copies
-- IS caused by: something that changes when MORE files are in the suite
-- When run alone: fewer mock_modules found → fewer externalized packages → fewer Proxy wrappers
-- When run in suite: ALL test files' mockModule calls found → more externalization → more Proxy wrappers
+The 143 failures from Day 19 were resolved through a combination of strategies:
 
-### Most likely remaining cause:
-When the full suite runs, `find_mock_modules` scans ALL test files. Every `mockModule('X')`
-call causes `X` to be externalized. More externalized modules = more modules go through
-`__require` Proxy = more opportunities for `__HT_noop` fallback when per-file mock isn't set
-AND the real module isn't available.
+1. **Function Proxy apply traps (Day 20)** — wrap function exports in `new Proxy(fn, { apply })` so mock checks happen at call time, not import time. Fixed module-scope captures like useDispatch, useSelector.
+2. **Ecosystem wrapper shims (Day 20)** — config-driven shims for RTK Query, react-redux, etc. with singleton cache management.
+3. **RTK contamination fix** — afterEach restore for mutated shared singletons (+18 tests)
+4. **withApiStore + mock.fetch rewrites (Day 20-21)** — real Redux store + mock network layer instead of mocking hooks (+21 tests)
+5. **setupApiStore pattern (Day 21)** — final push to 1472/1472 (100%)
 
-The mini-vendor fixes this for non-aliased packages (jwt-decode, uuid). But aliased packages
-go through shadow wrappers, not __require. The shadow wrapper Proxy falls through to
-`_getReal()` which loads from `@__ht_real/...`. This SHOULD provide the real module.
-
-### What needs investigation:
-- Does `_getReal()` actually work for all shadow-wrapped modules?
-- Are some `@__ht_real` paths failing to resolve?
-- Is there a difference in which sub-paths get mocked between single-file and full-suite?
-- Does the shadow tree structure change when different sets of mock_modules are found?
+See `challenges.md` for the full day-by-day journey.
 
 ## Key Technical Insights
 

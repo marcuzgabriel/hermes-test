@@ -32,7 +32,7 @@ pub fn pre_transform_test_files(
 
         // Check if this file uses any aliased mocks
         let file_aliased_mocks: Vec<&&String> = aliased_mocks.iter()
-            .filter(|m| source.contains(&format!("mockModule('{m}'")))
+            .filter(|m| source.contains(&format!("ht.mock('{m}'")))
             .collect();
 
         if file_aliased_mocks.is_empty() {

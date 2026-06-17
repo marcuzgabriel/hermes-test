@@ -59,11 +59,38 @@ Real module alias: `@__ht_real_pkg/jwt-decode` → real `jwt-decode` package
 
 **This replaces externalization.** The real module stays in the bundle. No `__HT_noop` fallback.
 
-### Why It Works
+### Why It Works — ESM vs CJS and esbuild's handling
 
-1. **CJS `module.exports = Proxy`** — esbuild treats as CommonJS
+**ESM imports are hoisted and statically resolved.** esbuild turns them into direct variable bindings at build time — by runtime, the import is gone. There's no function call or object access to intercept:
+
+```js
+// What you write (ESM):
+import { useSelector } from 'react-redux';
+
+// What esbuild outputs in the bundle:
+var useSelector = /* direct reference to the function */;
+// → No interception point. The import is baked in.
+```
+
+**CJS stays as a runtime operation.** It's an object with properties, accessed dynamically. esbuild wraps it with `__toESM`, which creates property getters that execute at access time:
+
+```js
+// What you write (CJS):
+const { useSelector } = require('react-redux');
+
+// What esbuild outputs (with __toESM wrapper):
+var react_redux = __toESM(require_react_redux());
+// access: react_redux.useSelector → goes through getter → hits our Proxy
+```
+
+Shadow wrappers and package shims are deliberately written as CJS (`module.exports = new Proxy(...)`) to force esbuild into the `__toESM` path. This preserves runtime property access, which is where the Proxy intercepts and checks per-file mocks.
+
+This is why relative imports (`../redux/useRedux`) can't be mocked — esbuild resolves them as ESM top-level vars at build time, so there's nothing to intercept at runtime.
+
+In detail:
+1. **CJS `module.exports = Proxy`** — esbuild sees CJS syntax, triggers `__toESM` wrapping
 2. **`__toESM` patch** — returns Proxy directly when `__esModule` is true
-3. **Live getters** — `import { X } from 'pkg'` goes through Proxy.get on every access
+3. **Live getters** — every `import { X }` access goes through `Proxy.get` at runtime
 4. **Lazy `_getReal()`** — avoids circular dependency crashes at init time
 5. **Per-file scoping** — `__currentTestFile` set before each file's require, Proxy reads it at access time
 
@@ -73,7 +100,11 @@ Real module alias: `@__ht_real_pkg/jwt-decode` → real `jwt-decode` package
 variables at bundle time. No filesystem-level or Proxy interception point exists.
 Fix: use `withStore` pattern (real Redux store, no mocking needed).
 
-## Split Mode
+## Split Mode (DEPRECATED)
+
+> **Split mode is incompatible with `ht.shallow()` and component rendering tests.**
+> The shallow auto-mock Proxy stubs can't intercept modules loaded from the vendor bundle.
+> Use single-bundle mode (default) instead.
 
 - **Vendor bundle**: all npm packages + aliased source (aliases resolved, real code bundled)
 - **Group bundles**: 10 test files each with `--packages=external`, shadow wrappers + package shims applied
@@ -81,11 +112,13 @@ Fix: use `withStore` pattern (real Redux store, no mocking needed).
 
 ## Results
 
-| Metric | Before package shims | After package shims |
-|---|---|---|
-| Topdanmark | 1315/1458 (90.2%) | 1367/1458 (93.8%) |
-| Split mode | Working | Working, 3.3s |
-| expo-app | 1411/1411 | 1411/1411 |
+| Metric | Before package shims | After package shims | Final (Day 21) |
+|---|---|---|---|
+| Topdanmark | 1315/1458 (90.2%) | 1367/1458 (93.8%) | **1472/1472 (100%)** |
+| Split mode | Working | Working, 3.3s | Working, ~2s |
+| expo-app | 1411/1411 | 1411/1411 | 1411/1411 |
+
+The remaining failures after package shims were solved by function Proxy apply traps, ecosystem wrapper shims, RTK contamination fixes, and withApiStore+mock.fetch rewrites (see `mock-strategies.md` and `challenges.md`).
 
 ## Implementation
 

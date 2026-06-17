@@ -31,6 +31,47 @@ pub struct BundleResult {
     pub pre_patch_line_count: u32,
 }
 
+/// Find react-reconciler by walking up from the test files' directory.
+/// Prefers the location closest to where the user's React is installed,
+/// so the reconciler version matches the user's React version.
+fn find_react_reconciler(project_dir: &Path, config_root: Option<&Path>, test_files: &[PathBuf]) -> Option<PathBuf> {
+    let target = "react-reconciler";
+
+    // 1. Find from test files' directory (closest to user's React)
+    if let Some(first_test) = test_files.first() {
+        let mut dir = first_test.parent();
+        while let Some(d) = dir {
+            let candidate = d.join("node_modules").join(target);
+            if candidate.is_dir() {
+                return Some(candidate);
+            }
+            dir = d.parent();
+        }
+    }
+
+    // 2. Walk up from project dir (entry file location)
+    let mut dir = Some(project_dir);
+    while let Some(d) = dir {
+        let candidate = d.join("node_modules").join(target);
+        if candidate.is_dir() {
+            return Some(candidate);
+        }
+        dir = d.parent();
+    }
+
+    // 3. Check hermes-test's own node_modules
+    if let Some(root) = config_root {
+        for sub in &["packages/hermes-test/node_modules", "node_modules/hermes-test/node_modules"] {
+            let candidate = root.join(sub).join(target);
+            if candidate.is_dir() {
+                return Some(candidate);
+            }
+        }
+    }
+
+    None
+}
+
 pub fn find_esbuild(project_root: &Path) -> Result<PathBuf, ()> {
     let local = project_root.join("node_modules/.bin/esbuild");
     if local.exists() {
@@ -165,12 +206,13 @@ fn bundle_esbuild_with_config_inner(
         .arg("--define:process.env.NODE_ENV=\"test\"")
         .arg("--define:process.env.JEST_WORKER_ID=\"1\"")
         .arg("--define:global=globalThis")
+        .arg("--jsx=automatic")
         .arg("--loader:.js=jsx")
         .arg("--loader:.png=empty")
         .arg("--loader:.jpg=empty")
         .arg("--loader:.gif=empty")
         .arg("--loader:.svg=empty")
-        .arg("--external:console");
+        ; // console is a global in Hermes, not externalized
 
     if sourcemap_inline {
         cmd.arg("--sourcemap=inline");
@@ -201,7 +243,7 @@ fn bundle_esbuild_with_config_inner(
     // Path aliases from tsconfig (resolved by config).
     // Skip aliases when:
     // 1. The package is in the externals list (native modules)
-    // 2. Any mockModule path is a sub-path of this alias — esbuild aliases run BEFORE
+    // 2. Any mock() path is a sub-path of this alias — esbuild aliases run BEFORE
     //    external checks, so mocked imports would get inlined instead of intercepted.
     //    Skipping the alias means ALL sub-paths go through __require → mock shim.
     for (alias, target) in &cfg.aliases {
@@ -239,6 +281,42 @@ fn bundle_esbuild_with_config_inner(
             }
         }
     }
+    // Alias react-reconciler to its resolved path so esbuild can find it
+    // regardless of package manager layout (bun, pnpm, yarn workspaces).
+    // The reconciler is bundled into the test bundle alongside the user's React,
+    // ensuring version compatibility.
+    // We read test file paths from the entry to find the closest react-reconciler.
+    {
+        // Extract test file paths from the entry content to locate the closest react-reconciler
+        let entry_content = std::fs::read_to_string(entry_file).unwrap_or_default();
+        let test_files: Vec<PathBuf> = entry_content.lines()
+            .filter_map(|l| {
+                // Match: require('./path/to/file.test.tsx')
+                if let Some(start) = l.find("require('") {
+                    let rest = &l[start + 9..];
+                    if let Some(end) = rest.find("')") {
+                        let path = &rest[..end];
+                        if path.contains(".test.") {
+                            return Some(PathBuf::from(path));
+                        }
+                    }
+                }
+                None
+            })
+            .collect();
+        if let Some(rec_path) = find_react_reconciler(
+            entry_file.parent().unwrap_or(Path::new(".")),
+            cfg.root.as_deref(),
+            &test_files,
+        ) {
+            cmd.arg(format!("--alias:react-reconciler={}", rec_path.to_string_lossy()));
+            let constants = rec_path.join("constants.js");
+            if constants.exists() {
+                cmd.arg(format!("--alias:react-reconciler/constants={}", constants.to_string_lossy()));
+            }
+        }
+    }
+
     // react-native uses Flow syntax that esbuild can't parse — always external.
     // All other native packages are auto-detected or user-configured.
     for ext in &["react-native", "react-native/*"] {
@@ -319,7 +397,7 @@ fn bundle_esbuild_with_config_inner(
         code = inject_mock_require_shim(&code);
     }
 
-    // Hoist mockModule() calls before require() calls so aliased shadow-wrapper mocks
+    // Hoist mock() calls before require() calls so aliased shadow-wrapper mocks
     // are registered before the module initializers run (captures dispatch, getState, etc.)
     let hoisted = hoist_mock_modules(&code);
     if std::env::var("HT_DEBUG_BUNDLE").is_ok() {
@@ -449,7 +527,7 @@ pub fn bundle_with_depgraph(
         code = inject_mock_require_shim(&code);
     }
 
-    // Hoist mockModule() calls before require() calls so aliased shadow-wrapper mocks
+    // Hoist mock() calls before require() calls so aliased shadow-wrapper mocks
     // are registered before the module initializers run
     code = hoist_mock_modules(&code);
 
@@ -585,6 +663,16 @@ pub fn bundle_split(
     mock_modules: &[String],
     cfg: &BundleConfig,
 ) -> Result<SplitBundle, String> {
+    bundle_split_with_shallow(test_files, project_root, mock_modules, cfg, &[])
+}
+
+pub fn bundle_split_with_shallow(
+    test_files: &[PathBuf],
+    project_root: &Path,
+    mock_modules: &[String],
+    cfg: &BundleConfig,
+    shallow_auto_mocks: &[(String, Vec<String>, Vec<String>)],
+) -> Result<SplitBundle, String> {
     // Check esbuild output cache first
     let cache_key = compute_bundle_cache_key(test_files, project_root, mock_modules, cfg);
     if let Some(cached) = load_cached_split(project_root, &cache_key) {
@@ -621,6 +709,11 @@ pub fn bundle_split(
     // Create package shims for non-aliased mocks (same Proxy pattern as shadow wrappers)
     let (shim_cfg, shim_dir, remaining_externals) =
         create_package_shims(project_root, &non_aliased_mocks, &shadow_cfg);
+
+    // Set shallow auto-mocks for group entry generation
+    SHALLOW_AUTO_MOCKS.with(|cell| {
+        *cell.borrow_mut() = shallow_auto_mocks.to_vec();
+    });
 
     // Step 1: Bundle each group with --packages=external (fast, local code only)
     for (i, chunk) in test_files.chunks(group_size).enumerate() {
@@ -695,8 +788,17 @@ fn pkg_matches_external(pkg: &str, external: &str) -> bool {
 }
 
 /// Internal version of generate_group_entry used by bundle_split.
+/// shallow_auto_mocks are thread-local — set via SHALLOW_AUTO_MOCKS before calling bundle_split.
 fn generate_group_entry_internal(test_files: &[PathBuf], mock_modules: &[String], project_root: Option<&Path>) -> String {
-    generate_group_entry_pub(test_files, mock_modules, project_root)
+    SHALLOW_AUTO_MOCKS.with(|cell| {
+        let mocks = cell.borrow();
+        generate_group_entry_pub(test_files, mock_modules, project_root, &mocks)
+    })
+}
+
+use std::cell::RefCell;
+thread_local! {
+    static SHALLOW_AUTO_MOCKS: RefCell<Vec<(String, Vec<String>, Vec<String>)>> = RefCell::new(Vec::new());
 }
 
 /// Setup code eval'd before vendor: shims, mock placeholders, harness mocks.
@@ -752,9 +854,19 @@ fn generate_vendor_entry(packages: &[String], setup_code: &str) -> String {
     entry.push_str(setup_code);
     entry.push('\n');
 
+    // Register console as a mock so --packages=external group bundles can resolve __require("console").
+    // The harness already replaced globalThis.console with print()-based output.
+    entry.push_str("globalThis.__HT_mocks['console'] = globalThis.console;\n");
+
     // React bootstrap — vendor bundles the real React
     entry.push_str(
-        "try { var __htReact = require('react'); globalThis.__HT_React = __htReact; globalThis.__HT_mocks['react'] = __htReact; globalThis.IS_REACT_ACT_ENVIRONMENT = true; } catch(e) {}\n"
+        "try { var __htReact = require('react'); globalThis.__HT_React = __htReact; globalThis.__HT_mocks['react'] = __htReact; } catch(e) {}\n"
+    );
+    entry.push_str(
+        "try { globalThis.__HT_JsxRuntime = require('react/jsx-runtime'); } catch(e) {}\n"
+    );
+    entry.push_str(
+        "try { var __htRec = require('react-reconciler'); globalThis.__HT_Reconciler = typeof __htRec === 'function' ? __htRec : (__htRec.default || __htRec); var __htRecC = require('react-reconciler/constants'); globalThis.__HT_ReconcilerConstants = __htRecC.__esModule ? __htRecC : (__htRecC.default || __htRecC); } catch(e) {}\n"
     );
 
     // Require each discovered package and register on __HT_mocks

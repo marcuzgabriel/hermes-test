@@ -1,4 +1,4 @@
-// mockFetch — lightweight fetch mock for Hermes
+// mock.fetch — lightweight fetch mock for Hermes
 // Replaces globalThis.fetch with a handler-based mock (like MSW but pure JS)
 
 type Method = 'GET' | 'POST' | 'PUT' | 'DELETE' | 'PATCH' | 'HEAD' | 'OPTIONS';
@@ -91,7 +91,7 @@ function fakeFetch(input: any, init?: any): any {
 
   if (!handler) {
     // Unhandled request — return a rejected-style response
-    const msg = `[mockFetch] Unhandled ${method} ${url}`;
+    const msg = `[mock.fetch] Unhandled ${method} ${url}`;
     // Return a promise that resolves to a 500 response
     return Promise.resolve({
       ok: false,
@@ -134,8 +134,24 @@ function createHandler(method: Method, url: string | RegExp, response: MockRespo
   return { method, url, handler, once };
 }
 
-// Register base handlers (persist across tests)
+// Register handlers — automatically replaces any existing handler with same method+url
 export function mockFetch(...newHandlers: MockHandler[]): void {
+  for (const nh of newHandlers) {
+    // Remove existing handler with same method+url (auto-overwrite)
+    for (let i = handlers.length - 1; i >= 0; i--) {
+      const h = handlers[i];
+      if (h.method === nh.method && String(h.url) === String(nh.url)) {
+        handlers.splice(i, 1);
+      }
+    }
+    // Also remove from overrides
+    for (let i = overrideHandlers.length - 1; i >= 0; i--) {
+      const h = overrideHandlers[i];
+      if (h.method === nh.method && String(h.url) === String(nh.url)) {
+        overrideHandlers.splice(i, 1);
+      }
+    }
+  }
   handlers.push(...newHandlers);
   // Install fetch on globalThis
   (globalThis as any).fetch = fakeFetch;
@@ -173,14 +189,10 @@ export const HttpResponse = {
   },
 };
 
-// Per-test overrides (like MSW server.use())
-// Also installs fakeFetch on globalThis if not already done (handlers-only path).
+// Per-test overrides — now just delegates to mockFetch (auto-overwrite handles dedup)
+// Kept for backwards compatibility with existing tests using mock.fetch.overwrite()
 export function mockFetchUse(...newHandlers: MockHandler[]): void {
-  overrideHandlers.push(...newHandlers);
-  // Ensure fakeFetch is installed — mockFetchUse may be called without a prior mockFetch call
-  if ((globalThis as any).fetch !== fakeFetch) {
-    (globalThis as any).fetch = fakeFetch;
-  }
+  mockFetch(...newHandlers);
 }
 
 // Reset per-test overrides (like MSW server.resetHandlers())

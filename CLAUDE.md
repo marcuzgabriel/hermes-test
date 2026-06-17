@@ -15,6 +15,7 @@ When Claude Code opens this repo, before doing anything else:
 5. Read `.claude/references/mock-strategies.md` for current mock strategy and what's been tried
 6. Read `.claude/references/mock-strategy.md` for detailed strategy history with all 11+ approaches
 7. Read `.claude/references/shadow-wrappers.md` for how shadow wrappers and package shims work
+9. Read `.claude/references/shallow-rendering-fixes.md` for shallow rendering bugs, fixes, and remaining work
 8. Read `.claude/references/challenges.md` for the full journey of challenges and solutions
 
 The references are the source of truth. If something in this README disagrees with them, trust the references and ask the user.
@@ -29,7 +30,7 @@ Today's RN testing stack is structurally wrong:
 
 hermes-test fixes all four by running tests in Hermes (your app's engine), via Metro (your app's bundler), with a typed API that's explicit and AI-friendly.
 
-## Quickstart (target API, not yet implemented)
+## Quickstart
 
 ```bash
 npm install -D hermes-test
@@ -37,17 +38,23 @@ npm install -D hermes-test
 
 ```ts
 // useCounter.test.ts
-import { test, renderHook, act } from 'hermes-test';
+import { test, mock, renderHook, act, spy, http, HttpResponse } from 'hermes-test';
 
-test('useCounter tracks state history', async ({ expect }) => {
-  const { result, history, renderCount } = renderHook(() => useCounter(0));
-  
+// Mock a module (barrel paths + node_modules)
+mock('./analytics', () => ({ track: spy() }));
+
+// Mock fetch (MSW-like API)
+mock.fetch(
+  http.get('/api/count', () => HttpResponse.json({ count: 42 })),
+);
+
+test('useCounter tracks state', async ({ expect }) => {
+  const { result } = renderHook(() => useCounter(0));
+
   await act(() => result.current.increment());
   await act(() => result.current.increment());
-  
+
   expect(result.current.count).toBe(2);
-  expect(history.map(h => h.count)).toEqual([0, 1, 2]);
-  expect(renderCount).toBe(3);
 });
 ```
 
@@ -56,25 +63,27 @@ npx hermes-test watch
 # sub-200ms reruns on file save
 ```
 
+### Mock API
+
+```ts
+mock(path, factory)          // mock a module
+mock.fetch(handler...)       // register fetch handlers (auto-overwrites matching)
+mock.fetch.reset()           // clear all handlers
+mock.fetch.clear()           // clear all handlers
+```
+
 ## Status
 
-v0 in progress. Roadmap in `.claude/references/roadmap.md`.
+v1.0. Sole test runner for Topdanmark (Jest fully removed). 284 suites, 1766 tests, 7 snapshots, 0 failures.
 
-| Week | Deliverable | Status |
-|------|-------------|--------|
-| 1 | Hermes embed + Rust CLI skeleton | Not started |
-| 2 | esbuild integration + harness | Not started |
-| 3 | Hooks, mocks, state history | Not started |
-| 4 | Watch mode, reporter, codemod, ship 0.1 | Not started |
+Measured performance (Topdanmark, 284 suites, 1766 tests):
 
-Speed targets (predictions until measured — see `BENCHMARKS.md` for real data):
-
-| Scenario | Target |
-|----------|--------|
-| 50 hook tests cold | < 350ms |
-| Watch rerun (1 file) | < 200ms |
-| 1000 mixed tests cold | < 4s |
-| vs Jest+@swc/jest+jest-expo | 5-10x faster |
+| Scenario | hermes-test | Jest | Speedup |
+|----------|-------------|------|---------|
+| Full suite | 5s | 116s | **23x** |
+| Cached run | 0.84s | 54s | **64x** |
+| With coverage | 5s | 128s | **26x** |
+| Watch rerun | ~350ms | — | — |
 
 ## Structure
 

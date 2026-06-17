@@ -101,6 +101,7 @@ export function setupApiStore(
 
 export const test = ht.test;
 export const group = ht.group;
+export const describe = ht.describe;
 export const expect = ht.expect;
 export const spy = ht.spy;
 export const spyOn = ht.spyOn;
@@ -112,14 +113,11 @@ export const afterAll = ht.afterAll;
 export const renderHook = ht.renderHook;
 export const act = ht.act;
 export const waitFor = ht.waitFor;
-export const mockModule = ht.mockModule;
 export const useMock = ht.useMock;
-export const mockFetch = ht.mockFetch;
-export const mockFetchUse = ht.mockFetchUse;
-export const mockFetchReset = ht.mockFetchReset;
-export const mockFetchClear = ht.mockFetchClear;
 export const http = ht.http;
 export const HttpResponse = ht.HttpResponse;
+export const render = ht.render;
+export const fireEvent = ht.fireEvent;
 export const flushAsync = ht.flushAsync;
 export const useFakeTimers = ht.useFakeTimers;
 export const useRealTimers = ht.useRealTimers;

@@ -23,30 +23,31 @@
         "scheduler": "^0.27.0",
       },
       "devDependencies": {
-        "@marcuzgabriel/hermes-test": "workspace:*",
         "@types/react": "19",
         "esbuild": "^0.28.0",
+        "hermes-test": "workspace:*",
         "react-reconciler": "0.33.0",
       },
     },
     "packages/hermes-test": {
-      "name": "@marcuzgabriel/hermes-test",
-      "version": "0.1.0",
+      "name": "hermes-test",
+      "version": "0.2.4",
       "bin": {
-        "hermes-test": "bin/hermes-test",
+        "hermes-test": "bin/hermes-test.js",
       },
       "dependencies": {
         "@react-native/js-polyfills": "^0.85.3",
+        "react-reconciler": "^0.33.0",
       },
       "devDependencies": {
         "esbuild": "^0.25.0",
         "react": "^19.2.0",
-        "react-reconciler": "^0.33.0",
         "typescript": "^5.4.0",
       },
       "optionalDependencies": {
-        "@marcuzgabriel/hermes-test-darwin-arm64": "0.1.0",
-        "@marcuzgabriel/hermes-test-linux-x64": "0.1.0",
+        "@hermes-test/darwin-arm64": "0.2.4",
+        "@hermes-test/darwin-x64": "0.2.4",
+        "@hermes-test/linux-x64": "0.2.4",
       },
       "peerDependencies": {
         "react": ">=18",
@@ -142,6 +143,10 @@
 
     "@esbuild/win32-x64": ["@esbuild/win32-x64@0.25.12", "", { "os": "win32", "cpu": "x64" }, "sha512-alJC0uCZpTFrSL0CCDjcgleBXPnCrEAhTBILpeAp7M/OFgoqtAetfBzX0xM00MUsVVPpVjlPuMbREqnZCXaTnA=="],
 
+    "@hermes-test/darwin-arm64": ["@hermes-test/darwin-arm64@0.2.4", "", { "os": "darwin", "cpu": "arm64" }, "sha512-bgNjENMon3m6xlpBpsbMb/bJQWKjumSTudWs+dnq4qoXKcQ0hrI01lLeWdgoHMl0vBwn4od2mmEggG+Blpvxiw=="],
+
+    "@hermes-test/linux-x64": ["@hermes-test/linux-x64@0.2.4", "", { "os": "linux", "cpu": "x64" }, "sha512-T31ETdSwKJTctH+I6ECJXa2WwWTueh+/qeUqdOKblbYm/l8z47+/b1TBDUXzoaEtI8qXm9pW6usC+aVnxKcmKg=="],
+
     "@jest/schemas": ["@jest/schemas@29.6.3", "", { "dependencies": { "@sinclair/typebox": "^0.27.8" } }, "sha512-mo5j5X+jIZmJQveBKeS/clAueipV7KgiX1vMgCxam1RNYiqE1w62n0/tJJnHtjW8ZHcQco5gY85jA3mi0L+nSA=="],
 
     "@jest/types": ["@jest/types@29.6.3", "", { "dependencies": { "@jest/schemas": "^29.6.3", "@types/istanbul-lib-coverage": "^2.0.0", "@types/istanbul-reports": "^3.0.0", "@types/node": "*", "@types/yargs": "^17.0.8", "chalk": "^4.0.0" } }, "sha512-u3UPsIilWKOM3F9CXtrG8LEJmNxwoCQC/XVj4IKYXvvpx7QIi/Kg1LI5uDmDpKlac62NUtX7eLjRh+jVZcLOzw=="],
@@ -157,8 +162,6 @@
     "@jridgewell/sourcemap-codec": ["@jridgewell/sourcemap-codec@1.5.5", "", {}, "sha512-cYQ9310grqxueWbl+WuIUIaiUaDcj7WOq5fVhEljNVgRfOUhY9fy2zTvfoqWsnebh8Sl70VScFbICvJnLKB0Og=="],
 
     "@jridgewell/trace-mapping": ["@jridgewell/trace-mapping@0.3.31", "", { "dependencies": { "@jridgewell/resolve-uri": "^3.1.0", "@jridgewell/sourcemap-codec": "^1.4.14" } }, "sha512-zzNR+SdQSDJzc8joaeP8QQoCQr8NuYx2dIIytl1QeBEZHJ9uW6hebsrYgbz8hJwUQao3TWCMtmfV8Nu1twOLAw=="],
-
-    "@marcuzgabriel/hermes-test": ["@marcuzgabriel/hermes-test@workspace:packages/hermes-test"],
 
     "@react-native/js-polyfills": ["@react-native/js-polyfills@0.85.3", "", {}, "sha512-U2+aMshIXf1uFn77tpBb/xhHWB9vkVrMpt7kkucAugF8hJKYTDGB587X7WwelHduK2KBfhl4giSv0rzZGoef9A=="],
 
@@ -286,6 +289,8 @@
 
     "hermes-parser": ["hermes-parser@0.29.1", "", { "dependencies": { "hermes-estree": "0.29.1" } }, "sha512-xBHWmUtRC5e/UL0tI7Ivt2riA/YBq9+SiYFU7C1oBa/j2jYGlIF9043oak1F47ihuDIxQ5nbsKueYJDRY02UgA=="],
 
+    "hermes-test": ["hermes-test@workspace:packages/hermes-test"],
+
     "hermes-test-example": ["hermes-test-example@workspace:examples/expo-app"],
 
     "https-proxy-agent": ["https-proxy-agent@7.0.6", "", { "dependencies": { "agent-base": "^7.1.2", "debug": "4" } }, "sha512-vK9P5/iUfdl95AI+JVyUuIcVtd4ofvtrOr3HNtM2yxC9bnMbEdp3x01OhQNnjb8IJYi38VlTE3mBXwcfvywuSw=="],
@@ -404,7 +409,7 @@
 
     "queue": ["queue@6.0.2", "", { "dependencies": { "inherits": "~2.0.3" } }, "sha512-iHZWu+q3IdFZFX36ro/lKBkSvfkztY5Y7HMiPlOUjhupPcG2JMfst2KKEpu5XndviX/3UhFbRngUPNKtgvtZiA=="],
 
-    "react": ["react@19.2.6", "", {}, "sha512-sfWGGfavi0xr8Pg0sVsyHMAOziVYKgPLNrS7ig+ivMNb3wbCBw3KxtflsGBAwD3gYQlE/AEZsTLgToRrSCjb0Q=="],
+    "react": ["react@19.2.7", "", {}, "sha512-HNe9WslTbXmFK8o8cmwgAeJFSBvt1bPdHCVKtaaV+WlAN36mpT4hcRpwbf3fY56ar2oIXzsBpOAiIRHAdY0OlQ=="],
 
     "react-is": ["react-is@18.3.1", "", {}, "sha512-/LLMVyas0ljjAtoYiPqYiL8VWXzUUdThrmU5+n20DZv+a+ClRoevUzw5JxU+Ieh5/c87ytoTBV9G1FiKfNJdmg=="],
 

@@ -1,0 +1,5 @@
+{
+  "snapshot > toMatchSnapshot creates and compares": "{\n  \"type\": \"View\",\n  \"props\": {\n    \"testID\": \"greeting\"\n  },\n  \"children\": [\n    {\n      \"type\": \"Text\",\n      \"children\": [\n        \"Hello, \",\n        \"world\",\n        \"!\"\n      ]\n    }\n  ]\n}",
+  "snapshot > multiple snapshots in one test": "{\n  \"type\": \"View\",\n  \"props\": {\n    \"testID\": \"greeting\"\n  },\n  \"children\": [\n    {\n      \"type\": \"Text\",\n      \"children\": [\n        \"Hello, \",\n        \"Alice\",\n        \"!\"\n      ]\n    }\n  ]\n}",
+  "snapshot > multiple snapshots in one test 2": "{\n  \"type\": \"View\",\n  \"props\": {\n    \"testID\": \"greeting\"\n  },\n  \"children\": [\n    {\n      \"type\": \"Text\",\n      \"children\": [\n        \"Hello, \",\n        \"Bob\",\n        \"!\"\n      ]\n    }\n  ]\n}"
+}

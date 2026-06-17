@@ -11,13 +11,14 @@ await build({
   globalName: '__metroTestHarness',
   outfile: 'dist/harness.bundle.js',
   target: 'es2020',
-  minify: true,
+  minify: false,
   platform: 'neutral',
   banner: { js: polyfills },
   external: ['react'],
-  // react-reconciler is bundled INTO the harness. Its internal require('react')
-  // is aliased to our shim that reads from globalThis.__HT_React,
-  // ensuring it uses the same React instance as the user's code.
+  // react is externalized — resolved at runtime from globalThis.__HT_React.
+  // react-reconciler is NOT imported by the harness — it's loaded at runtime
+  // via globalThis.__HT_Reconciler (set by the CLI entry from the user's node_modules).
+  // This ensures the reconciler always matches the user's React version.
   alias: {
     'react': './src/shims/react.js',
   },

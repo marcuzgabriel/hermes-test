@@ -2,8 +2,9 @@
 // Uses react-reconciler to run hooks in a minimal React tree.
 // No dependency on react-test-renderer (deprecated in React 19).
 //
-// React and ReactReconciler are NOT bundled with the harness — they come from
-// the user's project via esbuild. The harness expects them on globalThis.
+// react-reconciler is NOT bundled with the harness — it's loaded at runtime
+// from the user's node_modules via globalThis.__HT_Reconciler. This ensures
+// the reconciler always matches the user's React version.
 
 function getReact(): typeof import('react') {
   const R = (globalThis as any).__HT_React;
@@ -11,12 +12,19 @@ function getReact(): typeof import('react') {
   return R;
 }
 
-import Reconciler from 'react-reconciler';
-import { DefaultEventPriority, NoEventPriority } from 'react-reconciler/constants';
+function getReconcilerModule(): any {
+  const R = (globalThis as any).__HT_Reconciler;
+  if (!R) throw new Error('react-reconciler not available. Make sure it is installed (it ships with hermes-test).');
+  return R;
+}
+
+function getReconcilerConstants(): any {
+  return (globalThis as any).__HT_ReconcilerConstants || {};
+}
 
 // Based on mdjastrzebski/test-renderer — the universal-test-renderer for React 19
 // https://github.com/mdjastrzebski/test-renderer
-let currentUpdatePriority: number = NoEventPriority;
+let currentUpdatePriority: number = 0;
 
 const hostConfig = {
   supportsMutation: true,
@@ -25,17 +33,17 @@ const hostConfig = {
   supportsMicrotasks: true,
   isPrimaryRenderer: true,
   warnsIfNotActing: true,
-  createInstance() { return { children: [] }; },
-  createTextInstance() { return {}; },
-  appendInitialChild(p: any, c: any) { p.children.push(c); },
-  appendChild(p: any, c: any) { p.children.push(c); },
-  appendChildToContainer(p: any, c: any) { p.children.push(c); },
+  createInstance(type: string, props: any) { const { children: _c, ...rest } = props; return { type, props: rest, children: [] }; },
+  createTextInstance(text: string) { return { type: '__TEXT__', props: {}, text, children: [] }; },
+  appendInitialChild(p: any, c: any) { p.children.push(c); c._parent = p; },
+  appendChild(p: any, c: any) { p.children.push(c); c._parent = p; },
+  appendChildToContainer(p: any, c: any) { p.children.push(c); c._parent = p; },
   removeChild(p: any, c: any) { const i = p.children.indexOf(c); if (i !== -1) p.children.splice(i, 1); },
   removeChildFromContainer(p: any, c: any) { const i = p.children.indexOf(c); if (i !== -1) p.children.splice(i, 1); },
-  insertBefore(p: any, c: any, b: any) { const i = p.children.indexOf(b); p.children.splice(i, 0, c); },
-  insertInContainerBefore(p: any, c: any, b: any) { const i = p.children.indexOf(b); p.children.splice(i, 0, c); },
-  commitUpdate() {},
-  commitTextUpdate() {},
+  insertBefore(p: any, c: any, b: any) { const i = p.children.indexOf(b); p.children.splice(i, 0, c); c._parent = p; },
+  insertInContainerBefore(p: any, c: any, b: any) { const i = p.children.indexOf(b); p.children.splice(i, 0, c); c._parent = p; },
+  commitUpdate(inst: any, _type: any, _oldProps: any, newProps: any) { const { children: _c, ...rest } = newProps; inst.props = rest; },
+  commitTextUpdate(inst: any, _oldText: string, newText: string) { inst.text = newText; },
   commitMount() {},
   prepareForCommit() { return null; },
   resetAfterCommit() {},
@@ -51,10 +59,10 @@ const hostConfig = {
   cancelTimeout: (globalThis as any).clearTimeout || (() => {}),
   noTimeout: -1,
   scheduleMicrotask: typeof queueMicrotask === 'function' ? queueMicrotask : (fn: any) => Promise.resolve().then(fn),
-  getCurrentEventPriority() { return DefaultEventPriority; },
+  getCurrentEventPriority() { return getReconcilerConstants().DefaultEventPriority ?? 0; },
   setCurrentUpdatePriority(priority: number) { currentUpdatePriority = priority; },
   getCurrentUpdatePriority() { return currentUpdatePriority; },
-  resolveUpdatePriority() { return currentUpdatePriority || DefaultEventPriority; },
+  resolveUpdatePriority() { return currentUpdatePriority || (getReconcilerConstants().DefaultEventPriority ?? 0); },
   shouldAttemptEagerTransition() { return false; },
   trackSchedulerEvent() {},
   resolveEventType() { return ''; },
@@ -80,8 +88,9 @@ const hostConfig = {
   preparePortalMount() {},
 };
 
-function createReconciler() {
-  const create = typeof Reconciler === 'function' ? Reconciler : (Reconciler as any).default;
+export function createReconciler() {
+  const Reconciler = getReconcilerModule();
+  const create = typeof Reconciler === 'function' ? Reconciler : Reconciler.default;
   return create(hostConfig);
 }
 
@@ -100,8 +109,10 @@ function flush() {
   drain();
 }
 
-// Enable React.act() support
-(globalThis as any).IS_REACT_ACT_ENVIRONMENT = true;
+// React act() environment — same pattern as React Testing Library.
+// true inside act() → React processes updates and can warn about missing act.
+// false outside act() → React doesn't warn about async state updates.
+(globalThis as any).IS_REACT_ACT_ENVIRONMENT = false;
 
 export function act(fn: () => void | Promise<void>): void {
   const React = getReact();
@@ -112,22 +123,31 @@ export function act(fn: () => void | Promise<void>): void {
     return;
   }
 
-  reactAct(() => {
-    const result = fn();
-    if (result && typeof (result as any).then === 'function') {
-      let settled = false;
-      let error: any;
-      (result as Promise<void>).then(
-        () => { settled = true; },
-        (e: any) => { settled = true; error = e; }
-      );
-      for (let i = 0; i < 50 && !settled; i++) {
+  const prev = (globalThis as any).IS_REACT_ACT_ENVIRONMENT;
+  (globalThis as any).IS_REACT_ACT_ENVIRONMENT = true;
+
+  try {
+    reactAct(() => {
+      const result = fn();
+      if (result && typeof (result as any).then === 'function') {
+        let settled = false;
+        let error: any;
+        (result as Promise<void>).then(
+          () => { settled = true; },
+          (e: any) => { settled = true; error = e; }
+        );
         drain();
+        if (error) throw error;
       }
-      if (error) throw error;
-    }
-  });
-  flush();
+    });
+    // Restore env BEFORE flush so async effects resolved by flush
+    // don't trigger "not wrapped in act" warnings
+    (globalThis as any).IS_REACT_ACT_ENVIRONMENT = prev;
+    flush();
+  } catch (error) {
+    (globalThis as any).IS_REACT_ACT_ENVIRONMENT = prev;
+    throw error;
+  }
 }
 
 export function renderHook<T>(

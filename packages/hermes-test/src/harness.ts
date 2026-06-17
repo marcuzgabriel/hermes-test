@@ -1,9 +1,36 @@
 // Polyfills (process, setImmediate) are injected via esbuild banner in bundle.mjs
 // to ensure they run before any bundled dependency (React checks process.env.NODE_ENV at load time)
 
-import { expect } from './expect';
+// Console interceptor — replace console with print()-based output.
+// Hermes's native print() writes to stdout and is always available.
+// This works in all bundle modes (single, split, watch).
+(function() {
+  const p = (globalThis as any).print || (() => {});
+  function fmt(...args: any[]) {
+    return args.map((a: any) => {
+      try { return typeof a === 'string' ? a : JSON.stringify(a, null, 2); }
+      catch { return String(a); }
+    }).join(' ');
+  }
+  (globalThis as any).console = {
+    log: (...args: any[]) => p(fmt(...args)),
+    info: (...args: any[]) => p(fmt(...args)),
+    debug: (...args: any[]) => p(fmt(...args)),
+    warn: (...args: any[]) => p('\x1b[33m⚠ ' + fmt(...args) + '\x1b[0m'),
+    error: (...args: any[]) => {
+      const msg = fmt(...args);
+      // Filter internal framework noise (not actionable by test authors)
+      if (msg.includes('Expected host context to exist')) return;
+      if (msg.includes('An unhandled error occurred processing a request for the endpoint')) return;
+      p('\x1b[31m✗ ' + msg + '\x1b[0m');
+    },
+  };
+})();
+
+import { expect, _setSnapshotContext, getSnapshotCount } from './expect';
 import { spy, spyOn, clearAllMocks } from './spy';
 import { renderHook, act, waitFor } from './hooks';
+import { render, fireEvent } from './render';
 import { useMock, mockModule, resetMocks, resetMockModulePatches } from './mock';
 import { mockFetch, mockFetchUse, mockFetchReset, mockFetchClear, http, HttpResponse } from './fetch';
 import { useFakeTimers, useRealTimers, advanceTimersByTime, runAllTimers, getTimerCount, advanceTimersToNextTimer } from './timers';
@@ -70,6 +97,7 @@ function group(name: string, fn: () => void): void {
   fn();
   currentGroup = prev;
 }
+const describe = group;
 
 function beforeEach(fn: LifecycleHook): void {
   beforeEachHooks.push({ fn, group: currentGroup });
@@ -131,13 +159,14 @@ function flushAsync<T = any>(promise: Promise<T> | T): T {
     (v) => { result = v; settled = true; },
     (e) => { error = e; settled = true; }
   );
-  // Each drain() flushes all current microtasks. We loop because resolved work
-  // may schedule new async work (promise chains, effects, timers). The loop
-  // exits as soon as our promise settles. The cap prevents infinite loops.
-  for (let i = 0; i < 100 && !settled; i++) {
-    drain();
-    // Check timeout during drain loop to catch deadlocked async work
-    checkDeadline();
+  // drainMicrotasks() flushes all pending microtasks. One call should settle
+  // most promises. Loop only as safety net for edge cases (macrotask scheduling).
+  drain();
+  if (!settled) {
+    for (let i = 0; i < 100 && !settled; i++) {
+      drain();
+      checkDeadline();
+    }
   }
   if (!settled) {
     throw new Error('flushAsync: promise did not resolve after 100 drain cycles');
@@ -179,6 +208,97 @@ function _printFileResult(file: string, passed: number, failed: number, duration
   }
 }
 
+/// Format a test error with a clean stack trace and actionable hints.
+/// Works consistently across single-bundle and split-bundle modes.
+function formatTestError(e: any): string {
+  const message = e?.message ?? String(e);
+  const stack = e?.stack as string | undefined;
+  if (!stack) return message;
+
+  // Parse stack into structured frames
+  const frames: { fn: string; file: string; line: string }[] = [];
+  for (const raw of stack.split('\n').slice(1)) {
+    // Hermes format: "at fnName (file:line:col)" or "at file:line:col"
+    const m = raw.match(/at\s+(?:([^\s(]+)\s+\()?([^:)]+):(\d+)/);
+    if (m) frames.push({ fn: m[1] || '', file: m[2], line: m[3] });
+  }
+
+  // Filter to application frames only (skip react internals, harness, native)
+  const skipFn = new Set([
+    'anonymous', 'global', '__init', 'apply', 'map',
+    'react-stack-bottom-frame', 'proxy trap',
+  ]);
+  const skipPrefix = [
+    'render', 'run', 'perform', 'work', 'flush', 'begin', 'update',
+    'reconcile', 'create', 'complete', 'commit', 'process',
+  ];
+  const appFrames = frames.filter(f => {
+    if (skipFn.has(f.fn)) return false;
+    if (f.file.includes('harness') || f.file.includes('runner')) return false;
+    if (f.fn === '' && !f.file.includes('/src/') && !f.file.includes('packages/')) return false;
+    for (const p of skipPrefix) { if (f.fn.startsWith(p)) return false; }
+    return true;
+  });
+
+  // Build clean stack: show source file paths where possible
+  let cleanStack = message;
+  if (appFrames.length > 0) {
+    cleanStack += '\n';
+    for (const f of appFrames.slice(0, 8)) {
+      // esbuild names __esm blocks with source paths like "src/utils/string.ts"
+      const loc = f.fn.includes('/') ? f.fn : (f.fn ? f.fn + ' (' + f.file + ':' + f.line + ')' : f.file + ':' + f.line);
+      cleanStack += '\n    at ' + loc;
+    }
+  }
+
+  // Build hint: resolve the crashing function/module to an ht.mock() suggestion
+  const importMap = (globalThis as any).__HT_shallow_imports;
+  let hint = '';
+
+  for (const f of appFrames) {
+    const fnName = f.fn;
+
+    // Source file path (module init crash): "packages/ui/src/..." or "../../node_modules/@pkg/..."
+    if (fnName.includes('/') && (fnName.includes('.ts') || fnName.includes('.js'))) {
+      const srcPath = fnName.replace(/^(\.\.\/)*/, '');
+      // Extract npm package name from node_modules path
+      const nmMatch = srcPath.match(/node_modules\/((?:@[^/]+\/)?[^/]+)/);
+      if (nmMatch) {
+        const pkg = nmMatch[1];
+        hint = '\n\n  "' + pkg + '" crashed during initialization (native dependency).'
+          + '\n  Add to externals in hermes-test.config.json:\n\n'
+          + '    { "externals": ["' + pkg + '"] }\n'
+          + '\n  Or mock the module that imports it with ht.mock().\n';
+      } else {
+        const cleanPath = srcPath.replace(/\/index\.(tsx?|jsx?)$/, '');
+        hint = '\n\n  Module "' + cleanPath + '" crashed during initialization.'
+          + '\n  A dependency uses an API not available in Hermes.'
+          + '\n  Mock it with ht.mock() or add the native dep to externals.\n';
+      }
+      break;
+    }
+
+    // Function name: resolve via import map
+    if (fnName && fnName.length > 2 && !fnName.includes('(') && importMap) {
+      const modPath = importMap[fnName];
+      if (modPath) {
+        // Collect all exports from this module for a complete mock
+        const siblings: string[] = [];
+        for (const k in importMap) {
+          if (importMap[k] === modPath && siblings.indexOf(k) === -1) siblings.push(k);
+        }
+        const mockBody = siblings.map(s => '    ' + s + ': () => {}').join(',\n');
+        hint = '\n\n  "' + fnName + '" from "' + modPath + '" failed.'
+          + '\n  Add this mock to your test file:\n\n'
+          + "    ht.mock('" + modPath + "', () => ({\n" + mockBody + '\n    }));\n';
+        break;
+      }
+    }
+  }
+
+  return cleanStack + hint;
+}
+
 function runTests(): TestResult[] {
   const results: TestResult[] = [];
   const hasOnly = tests.some((t) => t.options.only);
@@ -217,6 +337,11 @@ function runTests(): TestResult[] {
   for (const entry of tests) {
     // Flush live output when switching to a new file
     if (entry.file !== _currentFile) {
+      // Reset RTK Query API state and drain pending microtasks from
+      // previous file to prevent cross-test contamination.
+      if (_currentFile) {
+        drain();
+      }
       _flushFileResult();
       _currentFile = entry.file;
     }
@@ -235,6 +360,19 @@ function runTests(): TestResult[] {
         beforeAllRan.add(hook);
         resolveSync(hook.fn());
       }
+    }
+
+    // Set up snapshot context for this test
+    {
+      // Use full file path (set by entry code) for correct snapshot directory
+      const filePath = (globalThis as any).__currentTestFilePath || entry.file || 'unknown';
+      // Strip leading ./ if present
+      const clean = filePath.startsWith('./') ? filePath.substring(2) : filePath;
+      const lastSlash = clean.lastIndexOf('/');
+      const dir = lastSlash >= 0 ? clean.substring(0, lastSlash) : '.';
+      const basename = lastSlash >= 0 ? clean.substring(lastSlash + 1) : clean;
+      const snapFile = dir + '/__snapshots__/' + basename + '.snap';
+      _setSnapshotContext(snapFile, entry.name, !!(globalThis as any).__HT_updateSnapshots);
     }
 
     // Set up timeout for this test
@@ -267,6 +405,10 @@ function runTests(): TestResult[] {
       // Reset mocks between tests
       resetMocks();
 
+      // Drain all pending microtasks so async effects from this test
+      // don't leak into the next test (RTK Query dispatches, promises, etc.)
+      drain();
+
       // Clear deadline
       __testMaxDrains = 0;
 
@@ -293,12 +435,16 @@ function runTests(): TestResult[] {
       // Reset mocks between tests
       resetMocks();
 
+      // Drain pending microtasks to prevent cross-test contamination
+      drain();
+
       _fileFailed++;
-      _fileFailures.push({ name: entry.name, error: e?.message ?? String(e) });
+      const errMsg = e?.stack ?? e?.message ?? String(e);
+      _fileFailures.push({ name: entry.name, error: errMsg });
       results.push({
         name: entry.name,
         status: 'fail',
-        error: e?.message ?? String(e),
+        error: errMsg,
         duration: Date.now() - start,
         file: entry.file,
       });
@@ -325,9 +471,12 @@ function runTests(): TestResult[] {
 
 // Reset between watch cycles (persistent runtime)
 function registerCrash(file: string, error: string): void {
+  // Error string already has stack from entry.rs (e.stack || e.message).
+  // Parse it through formatTestError for consistent hints.
+  const formatted = formatTestError({ message: error.split('\n')[0], stack: error });
   tests.push({
     name: `[CRASH] ${file}`,
-    fn: () => { throw new Error(error); },
+    fn: () => { throw new Error(formatted); },
     options: {},
     file,
   });
@@ -346,6 +495,28 @@ function resetRegistry(): void {
   resetMockModulePatches();
 }
 
+// --- ht global: ht.mock(path, factory) + ht.mock.fetch / ht.mock.fetch.overwrite / etc. ---
+// Available globally without import, like jest.mock().
+const mock = mockModule as typeof mockModule & {
+  fetch: typeof mockFetch & {
+    overwrite: typeof mockFetchUse;
+    reset: typeof mockFetchReset;
+    clear: typeof mockFetchClear;
+  };
+};
+mock.fetch = mockFetch as typeof mockFetch & {
+  overwrite: typeof mockFetchUse;
+  reset: typeof mockFetchReset;
+  clear: typeof mockFetchClear;
+};
+mock.fetch.overwrite = mockFetchUse;
+mock.fetch.reset = mockFetchReset;
+mock.fetch.clear = mockFetchClear;
+
+const shallow = (_componentPath: string) => {};
+const unmock = (_modulePath: string) => {}; // Bundler directive — no runtime effect
+(globalThis as any).ht = { mock, shallow, unmock };
+
 // Expose to the global scope for the harness entry
 (globalThis as any).__HT = {
   test,
@@ -354,6 +525,7 @@ function resetRegistry(): void {
   spyOn,
   clearAllMocks,
   group,
+  describe,
   beforeEach,
   afterEach,
   beforeAll,
@@ -363,17 +535,15 @@ function resetRegistry(): void {
   act,
   waitFor,
   useMock,
-  mockModule,
-  mockFetch,
-  mockFetchUse,
-  mockFetchReset,
-  mockFetchClear,
   http,
   HttpResponse,
+  render,
+  fireEvent,
   flushAsync,
   registerCrash,
   resetRegistry,
   resetMockModulePatches,
+  getSnapshotCount,
   // Timer control
   useFakeTimers,
   useRealTimers,
@@ -383,4 +553,4 @@ function resetRegistry(): void {
   advanceTimersToNextTimer,
 };
 
-export { test, expect, spy, spyOn, clearAllMocks, group, beforeEach, afterEach, beforeAll, afterAll, renderHook, act, waitFor, useMock, mockModule, mockFetch, mockFetchUse, mockFetchReset, mockFetchClear, http, HttpResponse, flushAsync, useFakeTimers, useRealTimers, advanceTimersByTime, runAllTimers, getTimerCount, advanceTimersToNextTimer };
+export { test, expect, spy, spyOn, clearAllMocks, group, describe, beforeEach, afterEach, beforeAll, afterAll, renderHook, act, waitFor, render, fireEvent, useMock, http, HttpResponse, flushAsync, useFakeTimers, useRealTimers, advanceTimersByTime, runAllTimers, getTimerCount, advanceTimersToNextTimer };

@@ -134,7 +134,7 @@ jobs:
           sed -i "s/^version = \".*\"/version = \"${{ inputs.version }}\"/" crates/hermes-test-cli/Cargo.toml
           git add packages/*/package.json crates/hermes-test-cli/Cargo.toml
           git diff --cached --quiet || git commit -m "v${{ inputs.version }}"
-          git push origin main
+          git push origin HEAD
 
       - name: Create tag
         run: |

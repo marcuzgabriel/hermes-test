@@ -1,7 +1,7 @@
 // useMock — patches module exports for test mocking
 // Works by replacing the getter functions on ESM namespace objects
 //
-// mockModule — jest.mock() equivalent: registers factory in global __HT_mocks
+// mock() — jest.mock() equivalent: registers factory in global __HT_mocks
 // so that externalized modules resolve through our mock layer at require() time.
 
 import { spy, type Spy } from './spy';
@@ -9,7 +9,7 @@ import { spy, type Spy } from './spy';
 type SavedDescriptor = { target: any; key: string; desc: PropertyDescriptor };
 let savedDescriptors: SavedDescriptor[] = [];
 
-// --- mockModule: jest.mock() equivalent ---
+// --- mock(): jest.mock() equivalent ---
 // Registers a mock factory for a module path, scoped to the current test file.
 // The bundler wraps mocked module exports in Proxies that check the per-file
 // mock registry at access time. This allows multiple files to mock the same
@@ -21,7 +21,7 @@ const mockRegistry: Record<string, Record<string, any>> = (globalThis as any).__
 const fileMocks: Record<string, Record<string, any>> =
   (globalThis as any).__HT_file_mocks || ((globalThis as any).__HT_file_mocks = {});
 
-// Track patches applied by mockModule so they can be undone between files
+// Track patches applied by mock() so they can be undone between files
 let mockModulePatches: { target: any; key: string; original: any }[] = [];
 
 export function mockModule(
@@ -75,7 +75,7 @@ export function mockModule(
   }
 }
 
-// Called between test files to undo mockModule patches and mark
+// Called between test files to undo mock() patches and mark
 // source modules for re-initialization (so they re-read from Proxies
 // with the new __currentTestFile).
 export function resetMockModulePatches(): void {

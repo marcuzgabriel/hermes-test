@@ -53,13 +53,17 @@ struct Cli {
     #[arg(long)]
     eval: Option<String>,
 
-    /// Use vendor/group bundle splitting (auto-enabled for large suites)
-    #[arg(long)]
+    /// Deprecated: split mode is incompatible with ht.shallow() component rendering
+    #[arg(long, hide = true)]
     split: bool,
 
     /// Collect coverage and write lcov report to coverage/lcov.info
     #[arg(long)]
     coverage: bool,
+
+    /// Update snapshot files instead of comparing
+    #[arg(long, alias = "update-snapshots")]
+    update_snapshots: bool,
 
     #[command(subcommand)]
     command: Option<Commands>,
@@ -95,7 +99,7 @@ fn main() {
                 root,
                 no_bundle,
             } => {
-                run_tests(&files, &root, no_bundle, false, false);
+                run_tests(&files, &root, no_bundle, false, false, false);
             }
             Commands::Watch {
                 files,
@@ -118,10 +122,15 @@ fn main() {
     // Resolve file arguments: if a name has no path separator, search the project
     let files = resolve_test_files(&cli.files, &root);
 
+    if cli.split {
+        eprintln!("\x1b[31mError:\x1b[0m --split is deprecated and incompatible with ht.shallow() component rendering.");
+        std::process::exit(1);
+    }
+
     if cli.watch {
         watch_tests(&files, &root);
     } else {
-        run_tests(&files, &root, cli.no_bundle, cli.split, cli.coverage);
+        run_tests(&files, &root, cli.no_bundle, false, cli.coverage, cli.update_snapshots);
     }
 }
 
@@ -209,7 +218,7 @@ fn eval_file(path: &str) {
     }
 }
 
-fn run_tests(files: &[PathBuf], root: &PathBuf, no_bundle: bool, force_split: bool, coverage: bool) {
+fn run_tests(files: &[PathBuf], root: &PathBuf, no_bundle: bool, force_split: bool, coverage: bool, update_snapshots: bool) {
     let root = std::fs::canonicalize(root).unwrap_or_else(|e| {
         eprintln!("Invalid root directory: {e}");
         std::process::exit(1);
@@ -294,7 +303,31 @@ JSON.stringify({
         let cfg = bundler::read_config(&root);
         let start = Instant::now();
 
-        let all_mocks = bundler::find_mock_modules(&test_files);
+        let alias_names: Vec<String> = cfg.aliases.iter().map(|(a, _)| a.clone()).collect();
+        let alias_pairs: Vec<(String, String)> = cfg.aliases.clone();
+        let all_mocks = bundler::find_mock_modules_with_alias_pairs(&test_files, &alias_names, &alias_pairs);
+
+        // Scan ht.shallow() for auto-mock generation
+        let mut shallow_auto_mocks: Vec<(String, Vec<String>, Vec<String>)> = Vec::new();
+        for file in &test_files {
+            for entry in bundler::scan_shallow_auto_mocks_with_pairs(file, &alias_names, &alias_pairs) {
+                if let Some((_, existing_jsx, existing_other)) = shallow_auto_mocks.iter_mut().find(|(p, _, _)| p == &entry.0) {
+                    for name in entry.1 { if !existing_jsx.contains(&name) { existing_jsx.push(name); } }
+                    for name in entry.2 { if !existing_other.contains(&name) { existing_other.push(name); } }
+                } else {
+                    shallow_auto_mocks.push(entry);
+                }
+            }
+        }
+
+        // Debug: print shallow auto-mocks (HT_DEBUG=1)
+        if !shallow_auto_mocks.is_empty() && std::env::var("HT_DEBUG").is_ok() {
+            let mut dbg = format!("[DEBUG] Shallow auto-mocks ({}):\n", shallow_auto_mocks.len());
+            for (path, jsx_names, other_names) in &shallow_auto_mocks {
+                dbg.push_str(&format!("  {} -> jsx: {:?}, other: {:?}\n", path, jsx_names, other_names));
+            }
+            eprint!("{}", dbg);
+        }
 
         // All files in one batch — shadow wrappers handle aliased mock isolation.
         // HT_PER_FILE forces per-file isolation as fallback.
@@ -302,11 +335,9 @@ JSON.stringify({
         if force_per_file {
             run_tests_per_file(&rt, &test_files, &root, &cfg, start);
         } else {
-            let use_split = (force_split || cfg.split) && !coverage;
-            if use_split {
-                run_tests_split(&rt, &test_files, &root, &all_mocks, &cfg, start);
-            } else {
-                run_tests_single(&rt, &test_files, &root, &all_mocks, &cfg, start, &[], coverage);
+            // split mode is blocked in config.rs validation
+            {
+                run_tests_single(&rt, &test_files, &root, &all_mocks, &cfg, start, &[], coverage, update_snapshots, &shallow_auto_mocks);
             }
         }
     }
@@ -322,6 +353,8 @@ fn run_tests_single(
     start: Instant,
     transforms: &[(PathBuf, PathBuf)],
     coverage: bool,
+    update_snapshots: bool,
+    shallow_auto_mocks: &[(String, Vec<String>, Vec<String>)],
 ) {
     // Check single-bundle cache FIRST — skip shadow wrapper/shim setup if cached.
     let cache_key = bundler::compute_single_bundle_cache_key(test_files, root, mock_modules, cfg);
@@ -348,7 +381,7 @@ fn run_tests_single(
         }).cloned().collect();
         let (shim_cfg, shim_dir, remaining_externals) =
             bundler::create_package_shims(root, &non_aliased_mocks, &shadow_cfg);
-        let entry_content = bundler::generate_entry(test_files, None, mock_modules, &shim_cfg, transforms, Some(root));
+        let entry_content = bundler::generate_entry_with_shallow(test_files, None, mock_modules, &shim_cfg, transforms, Some(root), shallow_auto_mocks);
         let entry_path = root.join(".hermes-test-entry.js");
         std::fs::write(&entry_path, &entry_content).unwrap_or_else(|e| {
             eprintln!("Failed to write entry file: {e}");
@@ -452,6 +485,11 @@ fn run_tests_single(
     // Set coverage flag so harness suppresses PASS lines
     if coverage {
         let _ = rt.eval("globalThis.__HT_coverage = true", "coverage-flag");
+    }
+
+    // Set update-snapshots flag
+    if update_snapshots {
+        let _ = rt.eval("globalThis.__HT_updateSnapshots = true", "snapshot-flag");
     }
 
     // Eval: prefer bytecode → compile+cache bytecode → fallback to JS text
@@ -592,6 +630,8 @@ fn run_tests_per_file(
     let mut _total_skipped = 0usize;
     let mut total_count = 0usize;
     let mut any_failed = false;
+    let mut suites_passed = 0usize;
+    let mut suites_failed = 0usize;
 
     for (file, bundle_result) in &bundles {
         let name = file.file_name().map(|n| n.to_string_lossy().to_string())
@@ -646,8 +686,10 @@ fn run_tests_per_file(
 
                     if f > 0 {
                         any_failed = true;
+                        suites_failed += 1;
                         print_results(&raw);
                     } else {
+                        suites_passed += 1;
                         println!("\x1b[32mPASS\x1b[0m  {name} \x1b[2m({t} tests)\x1b[0m");
                     }
                 }
@@ -661,15 +703,19 @@ fn run_tests_per_file(
 
     // Print summary
     let elapsed = start.elapsed();
+    let total_suites = suites_passed + suites_failed;
     println!();
-    if total_failed > 0 {
-        print!(" \x1b[31mTests:\x1b[0m  \x1b[32m{total_passed} passed\x1b[0m, \x1b[31m{total_failed} failed\x1b[0m");
+    if suites_failed > 0 {
+        println!(" \x1b[1mTest Suites:\x1b[0m  \x1b[32m{suites_passed} passed\x1b[0m, \x1b[31m{suites_failed} failed\x1b[0m, {total_suites} total");
     } else {
-        print!(" \x1b[32mTests:\x1b[0m  {total_passed} passed");
+        println!(" \x1b[1mTest Suites:\x1b[0m  \x1b[32m{suites_passed} passed\x1b[0m, {total_suites} total");
     }
-    println!(", {total_count} total");
-    println!(" \x1b[2mFiles:\x1b[0m  {}", test_files.len());
-    println!(" \x1b[2mTime:\x1b[0m   {:.2}s", elapsed.as_secs_f64());
+    if total_failed > 0 {
+        println!(" \x1b[1mTests:\x1b[0m        \x1b[32m{total_passed} passed\x1b[0m, \x1b[31m{total_failed} failed\x1b[0m, {total_count} total");
+    } else {
+        println!(" \x1b[1mTests:\x1b[0m        \x1b[32m{total_passed} passed\x1b[0m, {total_count} total");
+    }
+    println!(" \x1b[2mTime:\x1b[0m         {:.2}s", elapsed.as_secs_f64());
 
     if any_failed {
         std::process::exit(1);
@@ -868,11 +914,13 @@ fn watch_tests(files: &[PathBuf], root: &PathBuf) {
 
                     // If the changed file IS a test file, include it
                     let name = changed.to_string_lossy();
-                    if (name.ends_with(".test.ts")
+                    let suffix = cfg.test_match.as_deref().unwrap_or(".test.ts");
+                    let is_test = name.ends_with(suffix)
+                        || (suffix.ends_with(".ts") && name.ends_with(&format!("{}x", suffix)))
+                        || name.ends_with(".test.ts")
                         || name.ends_with(".test.tsx")
-                        || name.ends_with(".test.js"))
-                        && !affected.contains(&canonical)
-                    {
+                        || name.ends_with(".test.js");
+                    if is_test && !affected.contains(&canonical) {
                         affected.push(canonical);
                     }
                 }
@@ -914,10 +962,22 @@ fn watch_tests(files: &[PathBuf], root: &PathBuf) {
                 suppress_hermes_stderr(|| {
                     let _ = watch_rt.eval(HARNESS_JS, "hermes-test/harness.js");
                 });
-                let mock_modules = bundler::find_mock_modules(&rerun_files);
+                let alias_names: Vec<String> = cfg.aliases.iter().map(|(a, _)| a.clone()).collect();
+                let mock_modules = bundler::find_mock_modules_with_aliases(&rerun_files, &alias_names);
                 let rerun_start = Instant::now();
 
-                // Build single bundle (same as run_tests_single but without exit)
+                // Scan shallow auto-mocks
+                let mut watch_shallow: Vec<(String, Vec<String>, Vec<String>)> = Vec::new();
+                for f in &rerun_files {
+                    for s in bundler::scan_shallow_auto_mocks(f, &alias_names) {
+                        if let Some((_, ej, eo)) = watch_shallow.iter_mut().find(|(p, _, _)| p == &s.0) {
+                            for name in s.1 { if !ej.contains(&name) { ej.push(name); } }
+                            for name in s.2 { if !eo.contains(&name) { eo.push(name); } }
+                        } else { watch_shallow.push(s); }
+                    }
+                }
+
+                // Build single bundle
                 let (wrapper_cfg, wrapper_shim_dir) = bundler::create_wrapper_shims(&root, &cfg);
                 let (shadow_cfg, shadow_dirs) = bundler::create_shadow_wrappers(&root, &mock_modules, &wrapper_cfg);
                 let non_aliased: Vec<String> = mock_modules.iter().filter(|m| {
@@ -925,7 +985,7 @@ fn watch_tests(files: &[PathBuf], root: &PathBuf) {
                 }).cloned().collect();
                 let (shim_cfg, shim_dir, remaining) =
                     bundler::create_package_shims(&root, &non_aliased, &shadow_cfg);
-                let entry = bundler::generate_entry(&rerun_files, None, &mock_modules, &shim_cfg, &[], Some(&root));
+                let entry = bundler::generate_entry_with_shallow(&rerun_files, None, &mock_modules, &shim_cfg, &[], Some(&root), &watch_shallow);
                 let entry_path = root.join(".hermes-test-watch-entry.js");
                 let _ = std::fs::write(&entry_path, &entry);
 
@@ -976,11 +1036,23 @@ fn run_persistent_cycle(
 ) -> bundler::DepGraph {
     let start = Instant::now();
 
-    let mock_modules = bundler::find_mock_modules(test_files);
+    let alias_names: Vec<String> = cfg.aliases.iter().map(|(a, _)| a.clone()).collect();
+    let mock_modules = bundler::find_mock_modules_with_aliases(test_files, &alias_names);
+
+    // Scan shallow auto-mocks
+    let mut shallow_mocks: Vec<(String, Vec<String>, Vec<String>)> = Vec::new();
+    for f in test_files {
+        for s in bundler::scan_shallow_auto_mocks(f, &alias_names) {
+            if let Some((_, ej, eo)) = shallow_mocks.iter_mut().find(|(p, _, _)| p == &s.0) {
+                for name in s.1 { if !ej.contains(&name) { ej.push(name); } }
+                for name in s.2 { if !eo.contains(&name) { eo.push(name); } }
+            } else { shallow_mocks.push(s); }
+        }
+    }
 
     if first_run {
         // First run: use split mode to load vendor into __HT_mocks (persists across reruns)
-        let split = match bundler::bundle_split(test_files, root, &mock_modules, cfg) {
+        let split = match bundler::bundle_split_with_shallow(test_files, root, &mock_modules, cfg, &shallow_mocks) {
             Ok(s) => s,
             Err(e) => {
                 eprintln!("\x1b[31mBundle split failed: {e}\x1b[0m");
@@ -1030,6 +1102,7 @@ globalThis.__HT_results = JSON.stringify({
         }
 
         let elapsed = start.elapsed();
+        print_console_logs(rt);
         match rt.eval("globalThis.__HT_results", "results") {
             Ok(json) => {
                 print_summary(&json);
@@ -1062,7 +1135,18 @@ globalThis.__HT_results = JSON.stringify({
         }
 
         // Bundle affected test files as a group (--packages=external if vendor loaded)
-        let entry = bundler::generate_group_entry_pub(test_files, &mock_modules, Some(root));
+        // Scan shallow auto-mocks for persistent watch first-run
+        let alias_watch: Vec<String> = cfg.aliases.iter().map(|(a, _)| a.clone()).collect();
+        let mut persist_shallow: Vec<(String, Vec<String>, Vec<String>)> = Vec::new();
+        for f in test_files {
+            for s in bundler::scan_shallow_auto_mocks(f, &alias_watch) {
+                if let Some((_, ej, eo)) = persist_shallow.iter_mut().find(|(p, _, _)| p == &s.0) {
+                    for name in s.1 { if !ej.contains(&name) { ej.push(name); } }
+                    for name in s.2 { if !eo.contains(&name) { eo.push(name); } }
+                } else { persist_shallow.push(s); }
+            }
+        }
+        let entry = bundler::generate_group_entry_pub(test_files, &mock_modules, Some(root), &persist_shallow);
         let entry_path = root.join(".hermes-test-rerun.js");
         if std::fs::write(&entry_path, &entry).is_err() {
             eprintln!("Failed to write rerun entry");
@@ -1149,6 +1233,8 @@ fn print_console_logs(rt: &hermes::Runtime) {
             for entry in &entries {
                 let level = entry["level"].as_str().unwrap_or("log");
                 let msg = entry["message"].as_str().unwrap_or("");
+                // Skip known noise from our custom react-reconciler host config
+                if msg.contains("Expected host context to exist") { continue; }
                 match level {
                     "warn" => eprintln!("\x1b[33m⚠ {msg}\x1b[0m"),
                     "error" => eprintln!("\x1b[31m✗ {msg}\x1b[0m"),
@@ -1161,8 +1247,14 @@ fn print_console_logs(rt: &hermes::Runtime) {
 
 fn print_results_with_time(json: &str, elapsed_ms: u128, file_count: usize) -> bool {
     let ok = print_results(json);
-    eprintln!(" \x1b[2mFiles:\x1b[0m  {file_count}");
-    eprintln!(" \x1b[2mTime:\x1b[0m   {:.2}s", elapsed_ms as f64 / 1000.0);
+    // Parse for summary stats
+    let inner: String = serde_json::from_str(json).unwrap_or(json.to_string());
+    let results: serde_json::Value = serde_json::from_str(&inner).unwrap_or_default();
+    let passed = results["passed"].as_u64().unwrap_or(0);
+    let failed = results["failed"].as_u64().unwrap_or(0);
+    let total = results["total"].as_u64().unwrap_or(0);
+    let snapshots = results["snapshots"].as_u64().unwrap_or(0);
+    print_jest_summary(file_count, passed, failed, total, snapshots, elapsed_ms as f64 / 1000.0);
     ok
 }
 
@@ -1176,15 +1268,9 @@ fn print_summary_with_time(json: &str, elapsed_ms: u128, file_count: usize) -> b
     let passed = results["passed"].as_u64().unwrap_or(0);
     let failed = results["failed"].as_u64().unwrap_or(0);
     let total = results["total"].as_u64().unwrap_or(0);
+    let snapshots = results["snapshots"].as_u64().unwrap_or(0);
     let secs = elapsed_ms as f64 / 1000.0;
-    eprintln!();
-    if failed == 0 {
-        eprintln!(" \x1b[32mTests:\x1b[0m  {passed} passed, {total} total");
-    } else {
-        eprintln!(" \x1b[31mTests:\x1b[0m  \x1b[32m{passed} passed\x1b[0m, \x1b[31m{failed} failed\x1b[0m, {total} total");
-    }
-    eprintln!(" \x1b[2mFiles:\x1b[0m  {file_count}");
-    eprintln!(" \x1b[2mTime:\x1b[0m   {secs:.2}s");
+    print_jest_summary(file_count, passed, failed, total, snapshots, secs);
     failed == 0
 }
 
@@ -1205,6 +1291,21 @@ fn print_summary(json: &str) -> bool {
         eprintln!(" \x1b[31mTests:\x1b[0m  \x1b[32m{passed} passed\x1b[0m, \x1b[31m{failed} failed\x1b[0m, {total} total");
     }
     failed == 0
+}
+
+fn print_jest_summary(file_count: usize, passed: u64, failed: u64, total: u64, snapshots: u64, secs: f64) {
+    eprintln!();
+    if failed > 0 {
+        eprintln!(" \x1b[1mTest Suites:\x1b[0m  \x1b[32m{file_count} passed\x1b[0m, {file_count} total");
+        eprintln!(" \x1b[1mTests:\x1b[0m        \x1b[32m{passed} passed\x1b[0m, \x1b[31m{failed} failed\x1b[0m, {total} total");
+    } else {
+        eprintln!(" \x1b[1mTest Suites:\x1b[0m  \x1b[32m{file_count} passed\x1b[0m, {file_count} total");
+        eprintln!(" \x1b[1mTests:\x1b[0m        \x1b[32m{passed} passed\x1b[0m, {total} total");
+    }
+    if snapshots > 0 {
+        eprintln!(" \x1b[1mSnapshots:\x1b[0m    \x1b[32m{snapshots} passed\x1b[0m, {snapshots} total");
+    }
+    eprintln!(" \x1b[1mTime:\x1b[0m         {secs:.2}s");
 }
 
 fn print_results(json: &str) -> bool {
