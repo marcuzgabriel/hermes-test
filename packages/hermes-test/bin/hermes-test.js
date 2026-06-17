@@ -4,9 +4,21 @@
 const { execFileSync } = require("child_process");
 const path = require("path");
 const os = require("os");
+const fs = require("fs");
 
 const platform = os.platform();
 const arch = os.arch();
+
+// Check for local development build first (target/release/hermes-test next to the package)
+const localBin = path.join(__dirname, "..", "..", "..", "target", "release", "hermes-test");
+if (fs.existsSync(localBin)) {
+  try {
+    execFileSync(localBin, process.argv.slice(2), { stdio: "inherit" });
+  } catch (e) {
+    process.exit(e.status ?? 1);
+  }
+  process.exit(0);
+}
 
 const pkgMap = {
   "darwin-arm64": "@hermes-test/darwin-arm64",
