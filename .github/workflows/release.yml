@@ -102,6 +102,7 @@ jobs:
   release:
     needs: build
     runs-on: ubuntu-latest
+    environment: release
     permissions:
       contents: write
       packages: write
