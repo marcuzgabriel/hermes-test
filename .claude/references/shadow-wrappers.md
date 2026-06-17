@@ -100,7 +100,11 @@ In detail:
 variables at bundle time. No filesystem-level or Proxy interception point exists.
 Fix: use `withStore` pattern (real Redux store, no mocking needed).
 
-## Split Mode
+## Split Mode (DEPRECATED)
+
+> **Split mode is incompatible with `ht.shallow()` and component rendering tests.**
+> The shallow auto-mock Proxy stubs can't intercept modules loaded from the vendor bundle.
+> Use single-bundle mode (default) instead.
 
 - **Vendor bundle**: all npm packages + aliased source (aliases resolved, real code bundled)
 - **Group bundles**: 10 test files each with `--packages=external`, shadow wrappers + package shims applied

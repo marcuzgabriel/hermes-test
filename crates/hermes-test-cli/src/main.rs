@@ -53,8 +53,8 @@ struct Cli {
     #[arg(long)]
     eval: Option<String>,
 
-    /// Use vendor/group bundle splitting (auto-enabled for large suites)
-    #[arg(long)]
+    /// Deprecated: split mode is incompatible with ht.shallow() component rendering
+    #[arg(long, hide = true)]
     split: bool,
 
     /// Collect coverage and write lcov report to coverage/lcov.info

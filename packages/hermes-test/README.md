@@ -351,7 +351,6 @@ monorepo/
 | `testMatch` | Test file suffix (default: `.test.ts`) | No |
 | `externals` | Additional modules to externalize | No (most auto-detected) |
 | `shims` | Built-in or custom module replacements | No |
-| `split` | Enable vendor/group bundle splitting for large suites | No |
 | `coverageThreshold` | Minimum coverage % — fails if below (e.g. `65`) | No |
 
 **tsconfig paths** are read automatically — monorepo path aliases just work:
