@@ -513,7 +513,8 @@ mock.fetch.reset = mockFetchReset;
 mock.fetch.clear = mockFetchClear;
 
 const shallow = (_componentPath: string) => {};
-(globalThis as any).ht = { mock, shallow };
+const unmock = (_modulePath: string) => {}; // Bundler directive — no runtime effect
+(globalThis as any).ht = { mock, shallow, unmock };
 
 // Expose to the global scope for the harness entry
 (globalThis as any).__HT = {

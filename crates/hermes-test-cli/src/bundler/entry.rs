@@ -67,7 +67,9 @@ pub fn find_mock_modules_with_aliases(test_files: &[PathBuf], aliases: &[String]
 
 pub fn find_mock_modules_with_alias_pairs(test_files: &[PathBuf], aliases: &[String], alias_pairs: &[(String, String)]) -> Vec<String> {
     let mut mocks = Vec::new();
+    let mut unmocks = Vec::new();
     let re_mock = regex::Regex::new(r#"ht\.mock\(\s*['"]([^'"]+)['"]\s*,"#).ok();
+    let re_unmock = regex::Regex::new(r#"ht\.unmock\(\s*['"]([^'"]+)['"]\s*\)"#).ok();
     let re_shallow = regex::Regex::new(r#"ht\.shallow\(\s*['"]([^'"]+)['"]\s*\)"#).ok();
 
     for file in test_files {
@@ -81,6 +83,14 @@ pub fn find_mock_modules_with_alias_pairs(test_files: &[PathBuf], aliases: &[Str
             }
         }
 
+        // ht.unmock() — exclude from mock/shim system, bundle real module
+        if let Some(ref re) = re_unmock {
+            for cap in re.captures_iter(&content) {
+                let path = cap[1].to_string();
+                if !unmocks.contains(&path) { unmocks.push(path); }
+            }
+        }
+
         // ht.shallow() — scan component for JSX-rendered imports
         if let Some(ref _re) = re_shallow {
             let auto_mocks = scan_shallow_auto_mocks_with_pairs(file, aliases, alias_pairs);
@@ -89,6 +99,9 @@ pub fn find_mock_modules_with_alias_pairs(test_files: &[PathBuf], aliases: &[Str
             }
         }
     }
+
+    // Remove unmocked paths — they should be bundled as real modules
+    mocks.retain(|m| !unmocks.contains(m));
     mocks
 }
 
