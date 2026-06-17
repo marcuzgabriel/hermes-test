@@ -122,10 +122,15 @@ fn main() {
     // Resolve file arguments: if a name has no path separator, search the project
     let files = resolve_test_files(&cli.files, &root);
 
+    if cli.split {
+        eprintln!("\x1b[31mError:\x1b[0m --split is deprecated and incompatible with ht.shallow() component rendering.");
+        std::process::exit(1);
+    }
+
     if cli.watch {
         watch_tests(&files, &root);
     } else {
-        run_tests(&files, &root, cli.no_bundle, cli.split, cli.coverage, cli.update_snapshots);
+        run_tests(&files, &root, cli.no_bundle, false, cli.coverage, cli.update_snapshots);
     }
 }
 
@@ -330,12 +335,8 @@ JSON.stringify({
         if force_per_file {
             run_tests_per_file(&rt, &test_files, &root, &cfg, start);
         } else {
-            let use_split = (force_split || cfg.split) && !coverage;
-            if use_split {
-                eprintln!("\x1b[31mError:\x1b[0m split mode is deprecated and incompatible with ht.shallow() component rendering.");
-                eprintln!("       Remove \"split\": true from hermes-test.config.json or --split from the command line.");
-                std::process::exit(1);
-            } else {
+            // split mode is blocked in config.rs validation
+            {
                 run_tests_single(&rt, &test_files, &root, &all_mocks, &cfg, start, &[], coverage, update_snapshots, &shallow_auto_mocks);
             }
         }
