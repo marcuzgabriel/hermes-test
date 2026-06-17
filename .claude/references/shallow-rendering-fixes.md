@@ -333,34 +333,82 @@ Danish (`påkørte`, `køretøj`, `behøver`).
 
 ```
 Before: Tests: 1486 passed, 87 failed, 1573 total
-After:  Tests: 1572 passed, 1 failed,  1573 total
+After:  Tests: 1766 passed, 0 failed, 1766 total (Jest fully removed)
 ```
 
-86 tests fixed. The remaining 1 failure:
-
-| File | Test | Root cause |
-|------|------|------------|
-| DatePickerTimeFreeTextInput | location input test | ActionFormBottomSheet `footer` prop not rendering after `show()` via ref — `useState` update inside forwardRef mock doesn't propagate to parent tree in single act pass |
+All 87 rendering failures fixed. Then 193 missing tests added for full Jest parity.
+Jest removed entirely — hermes-test is the sole test runner.
 
 ---
 
-## Files changed
+## Phase 4: Full Jest parity + Jest removal (June 17, 2026)
+
+### Test parity
+- Added 193 missing tests across 38 files (batch-converted from Jest)
+- 4 new hermes test files created (useFormSummary, useMileage*)
+- Fixed all conversion failures: mock wiring, moment.now, FormContext, encoding
+- GW payment mock mutation fix: `JSON.parse(JSON.stringify())` clones
+
+### New hermes-test features added
+- `describe()` — standard JS test API (replaces `group()`)
+- `toMatchObject()` — partial object matching in expect
+- `mock.fetch()` auto-overwrite — no more `mock.fetch.overwrite()`
+- `ht.unmock('module')` — exclude from shim/Proxy system
+- `fireEvent.press` disabled check + event bubbling with `_parent` tracking
+- Jest-style summary: Test Suites / Tests / Snapshots / Time
+- Snapshot count tracking in `__HT_results`
+- `--coverage` fix: Int32Array counters bypass Hermes 196607 property limit
+
+### Code quality
+- `group()` → `describe()` across 289 files
+- `mock.fetch.overwrite()` → `mock.fetch()` across 27 files (104 occurrences)
+- `__esModule: true` removed from all mocks (32 occurrences, not needed)
+- `React.createElement` → JSX in all `.tsx` test files (render calls + mock factories)
+- Consistent formatting: blank lines between imports/spies/mocks/describe/tests
+- Comments placed directly above code (no gaps)
+- ESLint `react/display-name` disabled for hermes test files
+- Dead code removed: test/shims/ (10 files), hermesApiMockHandlers.ts
+
+### Jest removal
+- 284 Jest test files deleted (47,518 lines)
+- jest.config.ts, jest-setup-pre.ts deleted
+- Jest deps removed: jest, jest-expo, ts-jest, @testing-library/*, react-test-renderer, msw
+- `npm test` → `hermes-test`, `npm run test:watch` → `hermes-test watch`
+- CI pipeline updated: removed --forceExit, --maxWorkers (Jest flags)
+- Config shims removed (not externalized by esbuild, tests use explicit ht.mock)
+
+### Split mode deprecated
+- Incompatible with `ht.shallow()` (92 failures from Proxy stubs not intercepting vendor modules)
+- `--split` CLI flag hidden, removed from README
+- Single-bundle mode is the default and only supported mode
+
+---
+
+## Files changed (full session)
 
 ```
 hermes-test (infrastructure):
-  crates/hermes-test-cli/src/bundler/entry.rs   — scan_shallow_auto_mocks rewrite, ht.unmock scanner
-  crates/hermes-test-cli/src/bundler/esbuild.rs — thread-local type update
-  crates/hermes-test-cli/src/main.rs            — merge logic, alias pairs, HT_DEBUG
-  packages/hermes-test/src/render.ts            — fireEvent.press disabled check + bubbling
+  crates/hermes-test-cli/src/bundler/entry.rs   — scan_shallow_auto_mocks, ht.unmock scanner
+  crates/hermes-test-cli/src/bundler/esbuild.rs — thread-local type, split deprecation
+  crates/hermes-test-cli/src/main.rs            — merge logic, alias pairs, HT_DEBUG, Jest summary
+  crates/hermes-test-cli/src/coverage.rs        — Int32Array counters
+  packages/hermes-test/src/harness.ts           — describe, unmock, getSnapshotCount
+  packages/hermes-test/src/render.ts            — fireEvent.press disabled+bubbling
   packages/hermes-test/src/hooks.ts             — _parent tracking in reconciler
-  packages/hermes-test/src/harness.ts           — ht.unmock runtime no-op
+  packages/hermes-test/src/expect.ts            — toMatchObject, snapshot counter
+  packages/hermes-test/src/fetch.ts             — mock.fetch auto-overwrite
+  packages/hermes-test/src/index.ts             — describe export
+  packages/hermes-test/index.d.ts               — describe type declaration
+  packages/hermes-test/package.json             — version 1.0.0
+  README.md                                     — v1.0 status, describe, new APIs
+  CLAUDE.md                                     — updated benchmarks
 
-topdanmark tests (23 files modified):
-  All Claims/ActionForm/* tests                 — ActionFormBottomSheet mock, renderField mock,
-                                                  _MENU testIDs, theme colors, Danish encoding,
-                                                  validateFields.isValid, DrillDownPill mock,
-                                                  DateTimePickerBottomSheet mock, TextField mock
-  InsurancePurchase/* tests                     — text-as-prop queries, FormContext, RegExp matching
-  Hook tests                                    — ht.unmock('moment'), moment.now patching,
-                                                  LaunchArguments mock, useCampaigns mock
+topdanmark:
+  295 files deleted (Jest tests, config, deps, shims, MSW)
+  289 files modified (group→describe, formatting, createElement→JSX)
+  38 files with new/updated tests
+  package.json                                  — hermes-test scripts, deps cleaned
+  hermes-test.config.json                       — shims + split removed
+  eslint.config.mjs                             — react/display-name off for hermes tests
+  .github/workflows/pull_request_check.yaml     — hermes-test CI
 ```
