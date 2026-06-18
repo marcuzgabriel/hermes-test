@@ -1,6 +1,6 @@
 {
   "name": "hermes-test",
-  "version": "1.0.2",
+  "version": "1.0.3",
   "description": "26-64x faster than Jest. A test runner built for React Native and Expo. One esbuild pass, one process, zero Babel.",
   "main": "src/index.ts",
   "types": "index.d.ts",
@@ -54,9 +54,9 @@
     "react": ">=18"
   },
   "optionalDependencies": {
-    "@hermes-test/darwin-arm64": "1.0.2",
-    "@hermes-test/darwin-x64": "1.0.2",
-    "@hermes-test/linux-x64": "1.0.2"
+    "@hermes-test/darwin-arm64": "1.0.3",
+    "@hermes-test/darwin-x64": "1.0.3",
+    "@hermes-test/linux-x64": "1.0.3"
   },
   "files": [
     "src/",
