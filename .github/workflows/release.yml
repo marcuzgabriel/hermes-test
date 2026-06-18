@@ -48,6 +48,8 @@ jobs:
           cd vendor/hermes
           git checkout fd0e1d3ed
           sed -i.bak 's/FATAL_ERROR "Host compiler/WARNING "Host compiler/g' external/llvh/cmake/modules/CheckAtomic.cmake
+          # GCC needs explicit <cstdint> for std::uint8_t (Clang includes it transitively)
+          sed -i.bak '1s/^/#include <cstdint>\n/' lib/Platform/Intl/impl_icu/IntlUtils.cpp
 
       - uses: dtolnay/rust-toolchain@stable
         with:
