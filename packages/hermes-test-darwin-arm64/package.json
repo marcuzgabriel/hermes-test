@@ -1,6 +1,6 @@
 {
   "name": "@hermes-test/darwin-arm64",
-  "version": "1.0.4",
+  "version": "1.0.5",
   "description": "hermes-test binary for macOS arm64 (Apple Silicon)",
   "os": [
     "darwin"
