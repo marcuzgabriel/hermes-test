@@ -10,7 +10,9 @@
 // useFakeTimers does `globalThis.Date.now = () => fakeNow` which mutates the original
 // Date object's .now property. So we must save the function itself, not the constructor.
 const _savedDateNow: () => number = Date.now;
-export function realDateNow(): number { return _savedDateNow(); }
+export function realDateNow(): number {
+  return _savedDateNow();
+}
 
 interface PendingTimer {
   id: number;
@@ -118,7 +120,7 @@ export function runAllTimers() {
   if (!isFake) throw new Error('runAllTimers called without useFakeTimers()');
   let safety = 1000;
   while (pending.length > 0 && safety-- > 0) {
-    const next = pending.reduce((min, t) => t.fireAt < min.fireAt ? t : min);
+    const next = pending.reduce((min, t) => (t.fireAt < min.fireAt ? t : min));
     fakeNow = next.fireAt;
     if (next.type === 'timeout') {
       pending = pending.filter(t => t.id !== next.id);
@@ -136,6 +138,6 @@ export function getTimerCount(): number {
 
 export function advanceTimersToNextTimer() {
   if (!isFake || pending.length === 0) return;
-  const next = pending.reduce((min, t) => t.fireAt < min.fireAt ? t : min);
+  const next = pending.reduce((min, t) => (t.fireAt < min.fireAt ? t : min));
   advanceTimersByTime(next.fireAt - fakeNow);
 }

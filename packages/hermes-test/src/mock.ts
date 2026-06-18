@@ -18,16 +18,13 @@ const mockRegistry: Record<string, Record<string, any>> = (globalThis as any).__
 (globalThis as any).__HT_mocks = mockRegistry;
 
 // Per-file mock scoping: __HT_file_mocks[filename][modulePath] = mock
-const fileMocks: Record<string, Record<string, any>> =
-  (globalThis as any).__HT_file_mocks || ((globalThis as any).__HT_file_mocks = {});
+const fileMocks: Record<string, Record<string, any>> = (globalThis as any).__HT_file_mocks ||
+((globalThis as any).__HT_file_mocks = {});
 
 // Track patches applied by mock() so they can be undone between files
 let mockModulePatches: { target: any; key: string; original: any }[] = [];
 
-export function mockModule(
-  modulePath: string,
-  factory: () => Record<string, any>
-): void {
+export function mockModule(modulePath: string, factory: () => Record<string, any>): void {
   const impl = factory();
   const value = typeof impl === 'function' ? impl : wrapWithSpies(impl);
 
@@ -55,7 +52,9 @@ export function mockModule(
           mockModulePatches.push({ target: globalMock, key, original: globalMock[key] });
           globalMock[key] = value[key];
         }
-      } catch { /* frozen or non-configurable */ }
+      } catch {
+        /* frozen or non-configurable */
+      }
     }
     // Also patch 'default' export if mock provides it
     if ('default' in value && 'default' in globalMock) {
@@ -68,7 +67,9 @@ export function mockModule(
               mockModulePatches.push({ target: realDefault, key, original: realDefault[key] });
               realDefault[key] = mockDefault[key];
             }
-          } catch { /* frozen */ }
+          } catch {
+            /* frozen */
+          }
         }
       }
     }
@@ -80,10 +81,13 @@ export function mockModule(
 // with the new __currentTestFile).
 export function resetMockModulePatches(): void {
   for (const { target, key, original } of mockModulePatches) {
-    try { target[key] = original; } catch { /* best effort */ }
+    try {
+      target[key] = original;
+    } catch {
+      /* best effort */
+    }
   }
   mockModulePatches = [];
-
 }
 
 function wrapWithSpies<T extends Record<string, any>>(impl: T): T {
@@ -101,7 +105,7 @@ function wrapWithSpies<T extends Record<string, any>>(impl: T): T {
 
 export function useMock<T extends Record<string, any>>(
   moduleExports: T,
-  implementation: Partial<T>
+  implementation: Partial<T>,
 ): { [K in keyof T]: T[K] extends (...args: any[]) => any ? Spy<T[K]> : T[K] } {
   const wrapped = wrapWithSpies(implementation as Record<string, any>);
 

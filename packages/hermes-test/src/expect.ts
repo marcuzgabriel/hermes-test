@@ -6,9 +6,9 @@ const _readFile = (globalThis as any).__HT_readFile || (() => null);
 const _writeFile = (globalThis as any).__HT_writeFile || (() => false);
 
 // Snapshot state — set by the harness before each test runs
-let _snapshotFile = '';      // path to .snap file
-let _snapshotTestName = '';  // current test name (used as snapshot key)
-let _snapshotCounter = 0;    // counter for multiple snapshots in one test
+let _snapshotFile = ''; // path to .snap file
+let _snapshotTestName = ''; // current test name (used as snapshot key)
+let _snapshotCounter = 0; // counter for multiple snapshots in one test
 let _updateSnapshots = false;
 
 // Cache of loaded snapshot files: path → { key → serialized value }
@@ -22,10 +22,14 @@ function _setSnapshotContext(file: string, testName: string, update: boolean) {
 }
 
 function _serializeSnapshot(value: any): string {
-  return JSON.stringify(value, (_key, val) => {
-    if (typeof val === 'function') return '[Function]';
-    return val;
-  }, 2);
+  return JSON.stringify(
+    value,
+    (_key, val) => {
+      if (typeof val === 'function') return '[Function]';
+      return val;
+    },
+    2,
+  );
 }
 
 function _loadSnapshots(path: string): Record<string, string> {
@@ -49,7 +53,9 @@ function _saveSnapshots(path: string, data: Record<string, string>) {
 }
 
 let _totalSnapshotCount = 0;
-export function getSnapshotCount(): number { return _totalSnapshotCount; }
+export function getSnapshotCount(): number {
+  return _totalSnapshotCount;
+}
 
 function _matchSnapshot(actual: any): void {
   _snapshotCounter++;
@@ -75,16 +81,18 @@ function _matchSnapshot(actual: any): void {
   if (serialized !== expected) {
     throw new Error(
       `Snapshot mismatch for "${key}":\n` +
-      `Expected:\n${expected}\n\nReceived:\n${serialized}\n\n` +
-      `Run with --update-snapshots to update.`
+        `Expected:\n${expected}\n\nReceived:\n${serialized}\n\n` +
+        `Run with --update-snapshots to update.`,
     );
   }
 }
 
 function deepEqual(a: any, b: any): boolean {
   // Support asymmetric matchers (expect.anything(), expect.any(), expect.objectContaining())
-  if (b != null && typeof b === 'object' && b.__htMatcher && typeof b.matches === 'function') return b.matches(a);
-  if (a != null && typeof a === 'object' && a.__htMatcher && typeof a.matches === 'function') return a.matches(b);
+  if (b != null && typeof b === 'object' && b.__htMatcher && typeof b.matches === 'function')
+    return b.matches(a);
+  if (a != null && typeof a === 'object' && a.__htMatcher && typeof a.matches === 'function')
+    return a.matches(b);
 
   if (a === b) return true;
   if (a == null || b == null) return a === b;
@@ -100,10 +108,10 @@ function deepEqual(a: any, b: any): boolean {
   }
 
   if (typeof a === 'object') {
-    const keysA = Object.keys(a).filter((k) => a[k] !== undefined);
-    const keysB = Object.keys(b).filter((k) => b[k] !== undefined);
+    const keysA = Object.keys(a).filter(k => a[k] !== undefined);
+    const keysB = Object.keys(b).filter(k => b[k] !== undefined);
     if (keysA.length !== keysB.length) return false;
-    return keysA.every((k) => deepEqual(a[k], b[k]));
+    return keysA.every(k => deepEqual(a[k], b[k]));
   }
 
   return false;
@@ -135,7 +143,8 @@ function createAssertion(actual: any, negated: boolean): any {
     if (!pass) {
       let hint = '';
       if (actual === undefined && !negated) {
-        hint = '\n    Hint: Received is undefined. This usually means the module needs to be mocked with ht.mock().';
+        hint =
+          '\n    Hint: Received is undefined. This usually means the module needs to be mocked with ht.mock().';
       }
       throw new Error(message + hint);
     }
@@ -146,8 +155,12 @@ function createAssertion(actual: any, negated: boolean): any {
       assert(
         actual === expected,
         negated
-          ? `expect(received).not.toBe(expected)\n\n    Expected: not ${formatValue(expected)}\n    Received: ${formatValue(actual)}`
-          : `expect(received).toBe(expected)\n\n    Expected: ${formatValue(expected)}\n    Received: ${formatValue(actual)}`
+          ? `expect(received).not.toBe(expected)\n\n    Expected: not ${formatValue(
+              expected,
+            )}\n    Received: ${formatValue(actual)}`
+          : `expect(received).toBe(expected)\n\n    Expected: ${formatValue(
+              expected,
+            )}\n    Received: ${formatValue(actual)}`,
       );
     },
 
@@ -155,14 +168,24 @@ function createAssertion(actual: any, negated: boolean): any {
       assert(
         deepEqual(actual, expected),
         negated
-          ? `expect(received).not.toEqual(expected)\n\n    Expected: not ${formatValue(expected)}\n    Received: ${formatValue(actual)}`
-          : `expect(received).toEqual(expected)\n\n    Expected: ${formatValue(expected)}\n    Received: ${formatValue(actual)}`
+          ? `expect(received).not.toEqual(expected)\n\n    Expected: not ${formatValue(
+              expected,
+            )}\n    Received: ${formatValue(actual)}`
+          : `expect(received).toEqual(expected)\n\n    Expected: ${formatValue(
+              expected,
+            )}\n    Received: ${formatValue(actual)}`,
       );
     },
 
     toMatchObject(expected: any) {
       function matchesObject(a: any, b: any): boolean {
-        if (b != null && typeof b === 'object' && (b as any).__htMatcher && typeof (b as any).matches === 'function') return (b as any).matches(a);
+        if (
+          b != null &&
+          typeof b === 'object' &&
+          (b as any).__htMatcher &&
+          typeof (b as any).matches === 'function'
+        )
+          return (b as any).matches(a);
         if (typeof b !== 'object' || b === null) return a === b;
         if (Array.isArray(b)) {
           if (!Array.isArray(a) || a.length < b.length) return false;
@@ -176,8 +199,12 @@ function createAssertion(actual: any, negated: boolean): any {
       assert(
         matchesObject(actual, expected),
         negated
-          ? `expect(received).not.toMatchObject(expected)\n\n    Expected: not ${formatValue(expected)}\n    Received: ${formatValue(actual)}`
-          : `expect(received).toMatchObject(expected)\n\n    Expected: ${formatValue(expected)}\n    Received: ${formatValue(actual)}`
+          ? `expect(received).not.toMatchObject(expected)\n\n    Expected: not ${formatValue(
+              expected,
+            )}\n    Received: ${formatValue(actual)}`
+          : `expect(received).toMatchObject(expected)\n\n    Expected: ${formatValue(
+              expected,
+            )}\n    Received: ${formatValue(actual)}`,
       );
     },
 
@@ -186,7 +213,7 @@ function createAssertion(actual: any, negated: boolean): any {
         actual !== undefined,
         negated
           ? `expect(received).not.toBeDefined()\n\n    Received: ${formatValue(actual)}`
-          : `expect(received).toBeDefined()\n\n    Received: undefined`
+          : `expect(received).toBeDefined()\n\n    Received: undefined`,
       );
     },
 
@@ -195,7 +222,7 @@ function createAssertion(actual: any, negated: boolean): any {
         actual === undefined,
         negated
           ? `expect(received).not.toBeUndefined()\n\n    Received: ${formatValue(actual)}`
-          : `expect(received).toBeUndefined()\n\n    Received: ${formatValue(actual)}`
+          : `expect(received).toBeUndefined()\n\n    Received: ${formatValue(actual)}`,
       );
     },
 
@@ -204,7 +231,7 @@ function createAssertion(actual: any, negated: boolean): any {
         actual === null,
         negated
           ? `expect(received).not.toBeNull()\n\n    Received: ${formatValue(actual)}`
-          : `expect(received).toBeNull()\n\n    Received: ${formatValue(actual)}`
+          : `expect(received).toBeNull()\n\n    Received: ${formatValue(actual)}`,
       );
     },
 
@@ -214,7 +241,7 @@ function createAssertion(actual: any, negated: boolean): any {
         len === expected,
         negated
           ? `expect(received).not.toHaveLength(expected)\n\n    Expected: not ${expected}\n    Received length: ${len}`
-          : `expect(received).toHaveLength(expected)\n\n    Expected: ${expected}\n    Received length: ${len}`
+          : `expect(received).toHaveLength(expected)\n\n    Expected: ${expected}\n    Received length: ${len}`,
       );
     },
 
@@ -222,8 +249,12 @@ function createAssertion(actual: any, negated: boolean): any {
       assert(
         actual instanceof expected,
         negated
-          ? `expect(received).not.toBeInstanceOf(expected)\n\n    Expected: not ${expected?.name ?? expected}`
-          : `expect(received).toBeInstanceOf(expected)\n\n    Expected: ${expected?.name ?? expected}\n    Received: ${formatValue(actual)}`
+          ? `expect(received).not.toBeInstanceOf(expected)\n\n    Expected: not ${
+              expected?.name ?? expected
+            }`
+          : `expect(received).toBeInstanceOf(expected)\n\n    Expected: ${
+              expected?.name ?? expected
+            }\n    Received: ${formatValue(actual)}`,
       );
     },
 
@@ -232,7 +263,7 @@ function createAssertion(actual: any, negated: boolean): any {
         !!actual,
         negated
           ? `expect(received).not.toBeTruthy()\n\n    Received: ${formatValue(actual)}`
-          : `expect(received).toBeTruthy()\n\n    Received: ${formatValue(actual)}`
+          : `expect(received).toBeTruthy()\n\n    Received: ${formatValue(actual)}`,
       );
     },
 
@@ -241,7 +272,7 @@ function createAssertion(actual: any, negated: boolean): any {
         !actual,
         negated
           ? `expect(received).not.toBeFalsy()\n\n    Received: ${formatValue(actual)}`
-          : `expect(received).toBeFalsy()\n\n    Received: ${formatValue(actual)}`
+          : `expect(received).toBeFalsy()\n\n    Received: ${formatValue(actual)}`,
       );
     },
 
@@ -250,7 +281,7 @@ function createAssertion(actual: any, negated: boolean): any {
         actual > n,
         negated
           ? `Expected ${actual} not to be greater than ${n}`
-          : `Expected ${actual} to be greater than ${n}`
+          : `Expected ${actual} to be greater than ${n}`,
       );
     },
 
@@ -259,7 +290,7 @@ function createAssertion(actual: any, negated: boolean): any {
         actual < n,
         negated
           ? `Expected ${actual} not to be less than ${n}`
-          : `Expected ${actual} to be less than ${n}`
+          : `Expected ${actual} to be less than ${n}`,
       );
     },
 
@@ -267,13 +298,13 @@ function createAssertion(actual: any, negated: boolean): any {
       const contains = Array.isArray(actual)
         ? actual.some((v: any) => deepEqual(v, item))
         : typeof actual === 'string'
-          ? actual.includes(item)
-          : false;
+        ? actual.includes(item)
+        : false;
       assert(
         contains,
         negated
           ? `Expected ${formatValue(actual)} not to contain ${formatValue(item)}`
-          : `Expected ${formatValue(actual)} to contain ${formatValue(item)}`
+          : `Expected ${formatValue(actual)} to contain ${formatValue(item)}`,
       );
     },
 
@@ -283,7 +314,7 @@ function createAssertion(actual: any, negated: boolean): any {
         contains,
         negated
           ? `Expected array not to contain equal ${formatValue(item)}`
-          : `Expected array to contain equal ${formatValue(item)}, got ${formatValue(actual)}`
+          : `Expected array to contain equal ${formatValue(item)}, got ${formatValue(actual)}`,
       );
     },
 
@@ -293,7 +324,7 @@ function createAssertion(actual: any, negated: boolean): any {
         pass,
         negated
           ? `Expected ${actual} not to be close to ${expected}`
-          : `Expected ${actual} to be close to ${expected} (precision ${precision})`
+          : `Expected ${actual} to be close to ${expected} (precision ${precision})`,
       );
     },
 
@@ -303,7 +334,7 @@ function createAssertion(actual: any, negated: boolean): any {
         regex.test(String(actual)),
         negated
           ? `Expected ${formatValue(actual)} not to match ${pattern}`
-          : `Expected ${formatValue(actual)} to match ${pattern}`
+          : `Expected ${formatValue(actual)} to match ${pattern}`,
       );
     },
 
@@ -322,21 +353,19 @@ function createAssertion(actual: any, negated: boolean): any {
           threw,
           negated
             ? `Expected function not to throw, but it threw ${formatValue(error)}`
-            : `Expected function to throw, but it did not`
+            : `Expected function to throw, but it did not`,
         );
       } else {
         const errMsg = error?.message ?? String(error ?? '');
         const matches =
-          typeof message === 'string'
-            ? errMsg.includes(message)
-            : message.test(errMsg);
+          typeof message === 'string' ? errMsg.includes(message) : message.test(errMsg);
         assert(
           threw && matches,
           negated
             ? `Expected function not to throw matching ${message}`
             : threw
-              ? `Expected thrown error to match ${message}, got "${errMsg}"`
-              : `Expected function to throw, but it did not`
+            ? `Expected thrown error to match ${message}, got "${errMsg}"`
+            : `Expected function to throw, but it did not`,
         );
       }
     },
@@ -346,8 +375,10 @@ function createAssertion(actual: any, negated: boolean): any {
       assert(
         (actual as Spy).callCount > 0,
         negated
-          ? `Expected spy not to have been called, but it was called ${(actual as Spy).callCount} times`
-          : `Expected spy to have been called, but it was never called`
+          ? `Expected spy not to have been called, but it was called ${
+              (actual as Spy).callCount
+            } times`
+          : `Expected spy to have been called, but it was never called`,
       );
     },
 
@@ -356,7 +387,9 @@ function createAssertion(actual: any, negated: boolean): any {
         (actual as Spy).callCount === 1,
         negated
           ? `Expected spy not to have been called once, but it was`
-          : `Expected spy to have been called once, but it was called ${(actual as Spy).callCount} times`
+          : `Expected spy to have been called once, but it was called ${
+              (actual as Spy).callCount
+            } times`,
       );
     },
 
@@ -365,7 +398,9 @@ function createAssertion(actual: any, negated: boolean): any {
         (actual as Spy).callCount === n,
         negated
           ? `Expected spy not to have been called ${n} times`
-          : `Expected spy to have been called ${n} times, but it was called ${(actual as Spy).callCount} times`
+          : `Expected spy to have been called ${n} times, but it was called ${
+              (actual as Spy).callCount
+            } times`,
       );
     },
 
@@ -376,7 +411,9 @@ function createAssertion(actual: any, negated: boolean): any {
         match,
         negated
           ? `Expected spy not to have been called with ${formatValue(args)}`
-          : `Expected spy to have been called with ${formatValue(args)}, calls: ${formatValue(s.calls)}`
+          : `Expected spy to have been called with ${formatValue(args)}, calls: ${formatValue(
+              s.calls,
+            )}`,
       );
     },
 
@@ -387,7 +424,7 @@ function createAssertion(actual: any, negated: boolean): any {
         deepEqual(lastCall, args),
         negated
           ? `Expected last call not to be ${formatValue(args)}`
-          : `Expected last call to be ${formatValue(args)}, got ${formatValue(lastCall)}`
+          : `Expected last call to be ${formatValue(args)}, got ${formatValue(lastCall)}`,
       );
     },
 
@@ -396,15 +433,25 @@ function createAssertion(actual: any, negated: boolean): any {
         (actual as Spy).callCount === 0,
         negated
           ? `Expected spy to have been called, but it was never called`
-          : `Expected spy to never have been called, but it was called ${(actual as Spy).callCount} times`
+          : `Expected spy to never have been called, but it was called ${
+              (actual as Spy).callCount
+            } times`,
       );
     },
 
     // Jest-compatible aliases
-    toHaveBeenCalled() { return this.wasCalled(); },
-    toHaveBeenCalledTimes(n: number) { return this.wasCalledTimes(n); },
-    toHaveBeenCalledWith(...args: any[]) { return this.wasCalledWith(...args); },
-    toHaveBeenLastCalledWith(...args: any[]) { return this.wasLastCalledWith(...args); },
+    toHaveBeenCalled() {
+      return this.wasCalled();
+    },
+    toHaveBeenCalledTimes(n: number) {
+      return this.wasCalledTimes(n);
+    },
+    toHaveBeenCalledWith(...args: any[]) {
+      return this.wasCalledWith(...args);
+    },
+    toHaveBeenLastCalledWith(...args: any[]) {
+      return this.wasLastCalledWith(...args);
+    },
 
     // --- Element matchers (for render() HTNode results) ---
 
@@ -415,20 +462,21 @@ function createAssertion(actual: any, negated: boolean): any {
         isNode && el.type !== '__ROOT__',
         negated
           ? `Expected element not to be rendered`
-          : `Expected element to be rendered, got ${formatValue(el)}`
+          : `Expected element to be rendered, got ${formatValue(el)}`,
       );
     },
 
     toHaveTextContent(expected: string | RegExp) {
       const text = _getTextContent(actual);
-      const matches = typeof expected === 'string'
-        ? text === expected || text.includes(expected)
-        : expected.test(text);
+      const matches =
+        typeof expected === 'string'
+          ? text === expected || text.includes(expected)
+          : expected.test(text);
       assert(
         matches,
         negated
           ? `Expected element not to have text content "${expected}", but it does`
-          : `Expected text content "${expected}", got "${text}"`
+          : `Expected text content "${expected}", got "${text}"`,
       );
     },
 
@@ -442,7 +490,7 @@ function createAssertion(actual: any, negated: boolean): any {
         _contains(actual, child),
         negated
           ? `Expected element not to contain the given child`
-          : `Expected element to contain the given child`
+          : `Expected element to contain the given child`,
       );
     },
 
@@ -452,7 +500,7 @@ function createAssertion(actual: any, negated: boolean): any {
         empty,
         negated
           ? `Expected element not to be empty, but it has no children`
-          : `Expected element to be empty, but it has ${actual?.children?.length} children`
+          : `Expected element to be empty, but it has ${actual?.children?.length} children`,
       );
     },
 
@@ -463,7 +511,7 @@ function createAssertion(actual: any, negated: boolean): any {
         matches,
         negated
           ? `Expected display value not to be "${expected}"`
-          : `Expected display value "${expected}", got "${value}"`
+          : `Expected display value "${expected}", got "${value}"`,
       );
     },
 
@@ -474,7 +522,7 @@ function createAssertion(actual: any, negated: boolean): any {
           hasProp,
           negated
             ? `Expected element not to have prop "${name}"`
-            : `Expected element to have prop "${name}"`
+            : `Expected element to have prop "${name}"`,
         );
       } else {
         const propVal = actual?.props?.[name];
@@ -482,7 +530,7 @@ function createAssertion(actual: any, negated: boolean): any {
           hasProp && deepEqual(propVal, value),
           negated
             ? `Expected prop "${name}" not to be ${formatValue(value)}`
-            : `Expected prop "${name}" to be ${formatValue(value)}, got ${formatValue(propVal)}`
+            : `Expected prop "${name}" to be ${formatValue(value)}, got ${formatValue(propVal)}`,
         );
       }
     },
@@ -495,41 +543,43 @@ function createAssertion(actual: any, negated: boolean): any {
       for (const s of styles) {
         if (s && typeof s === 'object') Object.assign(flat, s);
       }
-      const allMatch = Object.keys(expected).every((k) => deepEqual(flat[k], expected[k]));
+      const allMatch = Object.keys(expected).every(k => deepEqual(flat[k], expected[k]));
       const mismatches = Object.keys(expected)
-        .filter((k) => !deepEqual(flat[k], expected[k]))
-        .map((k) => `${k}: expected ${formatValue(expected[k])}, got ${formatValue(flat[k])}`);
+        .filter(k => !deepEqual(flat[k], expected[k]))
+        .map(k => `${k}: expected ${formatValue(expected[k])}, got ${formatValue(flat[k])}`);
       assert(
         allMatch,
         negated
           ? `Expected element not to have styles ${formatValue(expected)}`
-          : `Style mismatch: ${mismatches.join('; ')}`
+          : `Style mismatch: ${mismatches.join('; ')}`,
       );
     },
 
     toBeEnabled() {
-      const disabled = actual?.props?.disabled === true
-        || actual?.props?.editable === false
-        || actual?.props?.accessibilityState?.disabled === true
-        || actual?.props?.['aria-disabled'] === true;
+      const disabled =
+        actual?.props?.disabled === true ||
+        actual?.props?.editable === false ||
+        actual?.props?.accessibilityState?.disabled === true ||
+        actual?.props?.['aria-disabled'] === true;
       assert(
         !disabled,
         negated
           ? `Expected element to be disabled, but it is enabled`
-          : `Expected element to be enabled, but it is disabled`
+          : `Expected element to be enabled, but it is disabled`,
       );
     },
 
     toBeDisabled() {
-      const disabled = actual?.props?.disabled === true
-        || actual?.props?.editable === false
-        || actual?.props?.accessibilityState?.disabled === true
-        || actual?.props?.['aria-disabled'] === true;
+      const disabled =
+        actual?.props?.disabled === true ||
+        actual?.props?.editable === false ||
+        actual?.props?.accessibilityState?.disabled === true ||
+        actual?.props?.['aria-disabled'] === true;
       assert(
         disabled,
         negated
           ? `Expected element not to be disabled, but it is`
-          : `Expected element to be disabled, but it is enabled`
+          : `Expected element to be disabled, but it is enabled`,
       );
     },
 
@@ -540,14 +590,16 @@ function createAssertion(actual: any, negated: boolean): any {
       for (const s of styles) {
         if (s && typeof s === 'object') Object.assign(flat, s);
       }
-      const hidden = flat.display === 'none' || flat.opacity === 0
-        || actual?.props?.accessibilityElementsHidden === true
-        || actual?.props?.importantForAccessibility === 'no-hide-descendants';
+      const hidden =
+        flat.display === 'none' ||
+        flat.opacity === 0 ||
+        actual?.props?.accessibilityElementsHidden === true ||
+        actual?.props?.importantForAccessibility === 'no-hide-descendants';
       assert(
         !hidden,
         negated
           ? `Expected element not to be visible`
-          : `Expected element to be visible, but it is hidden`
+          : `Expected element to be visible, but it is hidden`,
       );
     },
 
@@ -576,19 +628,50 @@ export function expect(actual: any): any {
 
   // resolves / rejects for promise assertions
   base.resolves = {
-    toBeUndefined: async () => { const r = await actual; if (r !== undefined) throw new Error(`Expected undefined, got ${formatValue(r)}`); },
-    toBe: async (expected: any) => { const r = await actual; if (r !== expected) throw new Error(`Expected ${formatValue(expected)}, got ${formatValue(r)}`); },
-    toEqual: async (expected: any) => { const r = await actual; if (!deepEqual(r, expected)) throw new Error(`Expected deep equal to ${formatValue(expected)}, got ${formatValue(r)}`); },
-    toBeDefined: async () => { const r = await actual; if (r === undefined) throw new Error(`Expected value to be defined`); },
-    toBeTruthy: async () => { const r = await actual; if (!r) throw new Error(`Expected truthy, got ${formatValue(r)}`); },
-    toBeFalsy: async () => { const r = await actual; if (r) throw new Error(`Expected falsy, got ${formatValue(r)}`); },
-    toBeNull: async () => { const r = await actual; if (r !== null) throw new Error(`Expected null, got ${formatValue(r)}`); },
+    toBeUndefined: async () => {
+      const r = await actual;
+      if (r !== undefined) throw new Error(`Expected undefined, got ${formatValue(r)}`);
+    },
+    toBe: async (expected: any) => {
+      const r = await actual;
+      if (r !== expected)
+        throw new Error(`Expected ${formatValue(expected)}, got ${formatValue(r)}`);
+    },
+    toEqual: async (expected: any) => {
+      const r = await actual;
+      if (!deepEqual(r, expected))
+        throw new Error(`Expected deep equal to ${formatValue(expected)}, got ${formatValue(r)}`);
+    },
+    toBeDefined: async () => {
+      const r = await actual;
+      if (r === undefined) throw new Error(`Expected value to be defined`);
+    },
+    toBeTruthy: async () => {
+      const r = await actual;
+      if (!r) throw new Error(`Expected truthy, got ${formatValue(r)}`);
+    },
+    toBeFalsy: async () => {
+      const r = await actual;
+      if (r) throw new Error(`Expected falsy, got ${formatValue(r)}`);
+    },
+    toBeNull: async () => {
+      const r = await actual;
+      if (r !== null) throw new Error(`Expected null, got ${formatValue(r)}`);
+    },
   };
 
   base.rejects = {
     toThrow: async (msg?: string | RegExp) => {
-      try { await actual; throw new Error('Expected promise to reject'); }
-      catch (e: any) { if (msg) { const m = e?.message ?? String(e); const ok = typeof msg === 'string' ? m.includes(msg) : msg.test(m); if (!ok) throw new Error(`Expected rejection matching ${msg}, got "${m}"`); } }
+      try {
+        await actual;
+        throw new Error('Expected promise to reject');
+      } catch (e: any) {
+        if (msg) {
+          const m = e?.message ?? String(e);
+          const ok = typeof msg === 'string' ? m.includes(msg) : msg.test(m);
+          if (!ok) throw new Error(`Expected rejection matching ${msg}, got "${m}"`);
+        }
+      }
     },
   };
 
@@ -596,26 +679,31 @@ export function expect(actual: any): any {
 }
 
 // Static matchers on expect
-expect.anything = () => makeMatcher((v) => v !== null && v !== undefined);
-expect.any = (ctor: any) => makeMatcher((v) => {
-  if (ctor === String) return typeof v === 'string';
-  if (ctor === Number) return typeof v === 'number';
-  if (ctor === Boolean) return typeof v === 'boolean';
-  if (ctor === Function) return typeof v === 'function';
-  return v instanceof ctor;
-});
-expect.objectContaining = (subset: Record<string, any>) => makeMatcher((v) => {
-  if (typeof v !== 'object' || v === null) return false;
-  return Object.keys(subset).every((k) => deepEqual(v[k], subset[k]));
-});
-expect.arrayContaining = (expected: any[]) => makeMatcher((v) => {
-  if (!Array.isArray(v)) return false;
-  return expected.every((e) => v.some((item: any) => deepEqual(item, e)));
-});
-expect.stringContaining = (substr: string) => makeMatcher((v) => typeof v === 'string' && v.includes(substr));
-expect.stringMatching = (pattern: RegExp | string) => makeMatcher((v) => {
-  const re = typeof pattern === 'string' ? new RegExp(pattern) : pattern;
-  return typeof v === 'string' && re.test(v);
-});
+expect.anything = () => makeMatcher(v => v !== null && v !== undefined);
+expect.any = (ctor: any) =>
+  makeMatcher(v => {
+    if (ctor === String) return typeof v === 'string';
+    if (ctor === Number) return typeof v === 'number';
+    if (ctor === Boolean) return typeof v === 'boolean';
+    if (ctor === Function) return typeof v === 'function';
+    return v instanceof ctor;
+  });
+expect.objectContaining = (subset: Record<string, any>) =>
+  makeMatcher(v => {
+    if (typeof v !== 'object' || v === null) return false;
+    return Object.keys(subset).every(k => deepEqual(v[k], subset[k]));
+  });
+expect.arrayContaining = (expected: any[]) =>
+  makeMatcher(v => {
+    if (!Array.isArray(v)) return false;
+    return expected.every(e => v.some((item: any) => deepEqual(item, e)));
+  });
+expect.stringContaining = (substr: string) =>
+  makeMatcher(v => typeof v === 'string' && v.includes(substr));
+expect.stringMatching = (pattern: RegExp | string) =>
+  makeMatcher(v => {
+    const re = typeof pattern === 'string' ? new RegExp(pattern) : pattern;
+    return typeof v === 'string' && re.test(v);
+  });
 
 export { _setSnapshotContext };

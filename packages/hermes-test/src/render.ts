@@ -71,13 +71,16 @@ function makeQuery<T>(queryAll: (root: HTNode, arg: T) => HTNode[], label: strin
   return {
     getAll(root: HTNode, arg: T): HTNode[] {
       const result = queryAll(root, arg);
-      if (result.length === 0) throw new Error(`Unable to find element with ${label}: ${String(arg)}`);
+      if (result.length === 0)
+        throw new Error(`Unable to find element with ${label}: ${String(arg)}`);
       return result;
     },
     get(root: HTNode, arg: T): HTNode {
       const result = queryAll(root, arg);
-      if (result.length === 0) throw new Error(`Unable to find element with ${label}: ${String(arg)}`);
-      if (result.length > 1) throw new Error(`Found ${result.length} elements with ${label}: ${String(arg)}`);
+      if (result.length === 0)
+        throw new Error(`Unable to find element with ${label}: ${String(arg)}`);
+      if (result.length > 1)
+        throw new Error(`Found ${result.length} elements with ${label}: ${String(arg)}`);
       return result[0];
     },
     queryAll(root: HTNode, arg: T): HTNode[] {
@@ -85,7 +88,8 @@ function makeQuery<T>(queryAll: (root: HTNode, arg: T) => HTNode[], label: strin
     },
     query(root: HTNode, arg: T): HTNode | null {
       const result = queryAll(root, arg);
-      if (result.length > 1) throw new Error(`Found ${result.length} elements with ${label}: ${String(arg)}`);
+      if (result.length > 1)
+        throw new Error(`Found ${result.length} elements with ${label}: ${String(arg)}`);
       return result[0] || null;
     },
   };
@@ -123,7 +127,7 @@ function prettyPrint(json: any, indent: number = 0): string {
   let propsStr = '';
   if (props) {
     const entries = Object.entries(props).map(([k, v]) =>
-      typeof v === 'string' ? `${k}="${v}"` : `${k}={${JSON.stringify(v)}}`
+      typeof v === 'string' ? `${k}="${v}"` : `${k}={${JSON.stringify(v)}}`,
     );
     if (entries.length > 0) propsStr = ' ' + entries.join(' ');
   }
@@ -133,7 +137,11 @@ function prettyPrint(json: any, indent: number = 0): string {
   // Collapse adjacent string children into one
   const merged: any[] = [];
   for (const c of children) {
-    if (typeof c === 'string' && merged.length > 0 && typeof merged[merged.length - 1] === 'string') {
+    if (
+      typeof c === 'string' &&
+      merged.length > 0 &&
+      typeof merged[merged.length - 1] === 'string'
+    ) {
       merged[merged.length - 1] += c;
     } else {
       merged.push(c);
@@ -154,7 +162,9 @@ export const fireEvent = Object.assign(
     const handlerName = 'on' + eventName.charAt(0).toUpperCase() + eventName.slice(1);
     const handler = node.props?.[handlerName];
     if (!handler) throw new Error(`No handler "${handlerName}" on <${node.type}>`);
-    act(() => { handler(...args); });
+    act(() => {
+      handler(...args);
+    });
   },
   {
     press(node: HTNode, event?: any) {
@@ -166,19 +176,25 @@ export const fireEvent = Object.assign(
       const handler = target?.props?.onPress || node.props?.onPress;
       if (!handler) throw new Error(`No "onPress" handler on <${node.type}>`);
       if ((target || node).props?.disabled) return; // Disabled elements don't fire press
-      act(() => { handler(event); });
+      act(() => {
+        handler(event);
+      });
     },
     changeText(node: HTNode, text: string) {
       const handler = node.props?.onChangeText;
       if (!handler) throw new Error(`No "onChangeText" handler on <${node.type}>`);
-      act(() => { handler(text); });
+      act(() => {
+        handler(text);
+      });
     },
     scroll(node: HTNode, event: any) {
       const handler = node.props?.onScroll;
       if (!handler) throw new Error(`No "onScroll" handler on <${node.type}>`);
-      act(() => { handler(event); });
+      act(() => {
+        handler(event);
+      });
     },
-  }
+  },
 );
 
 // --- render() ---
@@ -213,11 +229,17 @@ export function render(element: any, options?: { shallow?: boolean }): RenderRes
   const container: HTNode = { type: '__ROOT__', props: {}, children: [] };
   const root = reconciler.createContainer(
     container,
-    0,    // LegacyRoot
+    0, // LegacyRoot
     null, // hydrationCallbacks
-    false, false, '',
-    (err: any) => { throw err; },
-    (err: any) => { throw err; },
+    false,
+    false,
+    '',
+    (err: any) => {
+      throw err;
+    },
+    (err: any) => {
+      throw err;
+    },
     null,
     () => {},
   );
@@ -232,7 +254,7 @@ export function render(element: any, options?: { shallow?: boolean }): RenderRes
     const topType = element.type;
     const origCE = React.createElement;
 
-    React.createElement = function(type: any, ...args: any[]) {
+    React.createElement = function (type: any, ...args: any[]) {
       if (typeof type === 'function' && type !== topType) {
         const name = type.displayName || type.name || 'Component';
         return origCE.call(React, name, ...args);
@@ -253,22 +275,22 @@ export function render(element: any, options?: { shallow?: boolean }): RenderRes
 
   const result: RenderResult = {
     container,
-    getByText: (t) => textQ.get(container, t),
-    getAllByText: (t) => textQ.getAll(container, t),
-    queryByText: (t) => textQ.query(container, t),
-    queryAllByText: (t) => textQ.queryAll(container, t),
-    getByTestId: (id) => testIdQ.get(container, id),
-    getAllByTestId: (id) => testIdQ.getAll(container, id),
-    queryByTestId: (id) => testIdQ.query(container, id),
-    queryAllByTestId: (id) => testIdQ.queryAll(container, id),
-    getByProps: (p) => propsQ.get(container, p),
-    getAllByProps: (p) => propsQ.getAll(container, p),
-    queryByProps: (p) => propsQ.query(container, p),
-    queryAllByProps: (p) => propsQ.queryAll(container, p),
-    getByType: (t) => typeQ.get(container, t),
-    getAllByType: (t) => typeQ.getAll(container, t),
-    queryByType: (t) => typeQ.query(container, t),
-    queryAllByType: (t) => typeQ.queryAll(container, t),
+    getByText: t => textQ.get(container, t),
+    getAllByText: t => textQ.getAll(container, t),
+    queryByText: t => textQ.query(container, t),
+    queryAllByText: t => textQ.queryAll(container, t),
+    getByTestId: id => testIdQ.get(container, id),
+    getAllByTestId: id => testIdQ.getAll(container, id),
+    queryByTestId: id => testIdQ.query(container, id),
+    queryAllByTestId: id => testIdQ.queryAll(container, id),
+    getByProps: p => propsQ.get(container, p),
+    getAllByProps: p => propsQ.getAll(container, p),
+    queryByProps: p => propsQ.query(container, p),
+    queryAllByProps: p => propsQ.queryAll(container, p),
+    getByType: t => typeQ.get(container, t),
+    getAllByType: t => typeQ.getAll(container, t),
+    queryByType: t => typeQ.query(container, t),
+    queryAllByType: t => typeQ.queryAll(container, t),
     toJSON() {
       if (container.children.length === 0) return null;
       if (container.children.length === 1) return toJSON(container.children[0]);

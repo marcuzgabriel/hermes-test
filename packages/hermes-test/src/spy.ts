@@ -1,31 +1,30 @@
-export type Spy<F extends (...args: any[]) => any = (...args: any[]) => any> =
-  F & {
-    readonly calls: ReadonlyArray<Parameters<F>>;
-    readonly callCount: number;
-    readonly returnValues: ReadonlyArray<ReturnType<F>>;
-    reset(): void;
+export type Spy<F extends (...args: any[]) => any = (...args: any[]) => any> = F & {
+  readonly calls: ReadonlyArray<Parameters<F>>;
+  readonly callCount: number;
+  readonly returnValues: ReadonlyArray<ReturnType<F>>;
+  reset(): void;
 
-    // Core
-    setImpl(impl: F): void;
-    returns(value: ReturnType<F>): Spy<F>;
+  // Core
+  setImpl(impl: F): void;
+  returns(value: ReturnType<F>): Spy<F>;
 
-    // Jest-compatible API
-    mockImplementation(fn: F): Spy<F>;
-    mockImplementationOnce(fn: F): Spy<F>;
-    mockReturnValue(value: ReturnType<F>): Spy<F>;
-    mockReturnValueOnce(value: ReturnType<F>): Spy<F>;
-    mockResolvedValue(value: any): Spy<F>;
-    mockResolvedValueOnce(value: any): Spy<F>;
-    mockRejectedValue(value: any): Spy<F>;
-    mockRejectedValueOnce(value: any): Spy<F>;
-    mockClear(): void;
-    mockReset(): void;
-    mockRestore(): void;
+  // Jest-compatible API
+  mockImplementation(fn: F): Spy<F>;
+  mockImplementationOnce(fn: F): Spy<F>;
+  mockReturnValue(value: ReturnType<F>): Spy<F>;
+  mockReturnValueOnce(value: ReturnType<F>): Spy<F>;
+  mockResolvedValue(value: any): Spy<F>;
+  mockResolvedValueOnce(value: any): Spy<F>;
+  mockRejectedValue(value: any): Spy<F>;
+  mockRejectedValueOnce(value: any): Spy<F>;
+  mockClear(): void;
+  mockReset(): void;
+  mockRestore(): void;
 
-    // spyOn support
-    _restore?: () => void;
-    _isSpy: true;
-  };
+  // spyOn support
+  _restore?: () => void;
+  _isSpy: true;
+};
 
 // Registry of all spies created — clearAllMocks() clears them all at once.
 const _allSpies: Spy[] = [];
@@ -34,9 +33,7 @@ export function clearAllMocks(): void {
   for (const s of _allSpies) s.mockClear();
 }
 
-export function spy<F extends (...args: any[]) => any = () => void>(
-  impl?: F
-): Spy<F> {
+export function spy<F extends (...args: any[]) => any = () => void>(impl?: F): Spy<F> {
   let baseImpl: F | undefined = impl;
   const onceImpls: F[] = []; // FIFO queue for mockImplementationOnce/mockReturnValueOnce
   const calls: any[][] = [];
@@ -154,13 +151,12 @@ export function spy<F extends (...args: any[]) => any = () => void>(
 }
 
 // --- spyOn: replace a method on an object with a spy, preserving original ---
-export function spyOn<T extends Record<string, any>>(
-  obj: T,
-  method: keyof T & string,
-): Spy {
+export function spyOn<T extends Record<string, any>>(obj: T, method: keyof T & string): Spy {
   const original = obj[method];
   const s = spy(typeof original === 'function' ? original.bind(obj) : undefined);
-  (s as any)._restore = () => { obj[method] = original; };
+  (s as any)._restore = () => {
+    obj[method] = original;
+  };
   obj[method] = s as any;
   return s;
 }

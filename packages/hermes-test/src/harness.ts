@@ -4,13 +4,18 @@
 // Console interceptor — replace console with print()-based output.
 // Hermes's native print() writes to stdout and is always available.
 // This works in all bundle modes (single, split, watch).
-(function() {
+(function () {
   const p = (globalThis as any).print || (() => {});
   function fmt(...args: any[]) {
-    return args.map((a: any) => {
-      try { return typeof a === 'string' ? a : JSON.stringify(a, null, 2); }
-      catch { return String(a); }
-    }).join(' ');
+    return args
+      .map((a: any) => {
+        try {
+          return typeof a === 'string' ? a : JSON.stringify(a, null, 2);
+        } catch {
+          return String(a);
+        }
+      })
+      .join(' ');
   }
   (globalThis as any).console = {
     log: (...args: any[]) => p(fmt(...args)),
@@ -32,8 +37,22 @@ import { spy, spyOn, clearAllMocks } from './spy';
 import { renderHook, act, waitFor } from './hooks';
 import { render, fireEvent } from './render';
 import { useMock, mockModule, resetMocks, resetMockModulePatches } from './mock';
-import { mockFetch, mockFetchUse, mockFetchReset, mockFetchClear, http, HttpResponse } from './fetch';
-import { useFakeTimers, useRealTimers, advanceTimersByTime, runAllTimers, getTimerCount, advanceTimersToNextTimer } from './timers';
+import {
+  mockFetch,
+  mockFetchUse,
+  mockFetchReset,
+  mockFetchClear,
+  http,
+  HttpResponse,
+} from './fetch';
+import {
+  useFakeTimers,
+  useRealTimers,
+  advanceTimersByTime,
+  runAllTimers,
+  getTimerCount,
+  advanceTimersToNextTimer,
+} from './timers';
 
 type TestFn = ((ctx: TestContext) => void | Promise<void>) | (() => void | Promise<void>);
 type TestContext = {
@@ -83,11 +102,11 @@ function test(name: string, fn: TestFn, options?: TestOptions): void {
   });
 }
 
-test.only = function(name: string, fn: TestFn): void {
+test.only = function (name: string, fn: TestFn): void {
   test(name, fn, { only: true });
 };
 
-test.skip = function(name: string, fn: TestFn): void {
+test.skip = function (name: string, fn: TestFn): void {
   test(name, fn, { skip: true });
 };
 
@@ -156,8 +175,14 @@ function flushAsync<T = any>(promise: Promise<T> | T): T {
   let error: any;
   let settled = false;
   (promise as Promise<T>).then(
-    (v) => { result = v; settled = true; },
-    (e) => { error = e; settled = true; }
+    v => {
+      result = v;
+      settled = true;
+    },
+    e => {
+      error = e;
+      settled = true;
+    },
   );
   // drainMicrotasks() flushes all pending microtasks. One call should settle
   // most promises. Loop only as safety net for edge cases (macrotask scheduling).
@@ -199,10 +224,14 @@ function _printFileResult(file: string, passed: number, failed: number, duration
       // Clear progress line before printing failure
       _print(`\r\x1b[K`);
     }
-    _print(` \x1b[31mFAIL\x1b[0m  ${file} \x1b[2m(${passed} passed, ${failed} failed)\x1b[0m${time}\n`);
+    _print(
+      ` \x1b[31mFAIL\x1b[0m  ${file} \x1b[2m(${passed} passed, ${failed} failed)\x1b[0m${time}\n`,
+    );
   } else if ((globalThis as any).__HT_coverage) {
     // In-place progress counter
-    _print(`\r\x1b[K \x1b[2mRunning...\x1b[0m ${_filesCompleted}/${_totalFiles} files (${_testsCompleted} tests)`);
+    _print(
+      `\r\x1b[K \x1b[2mRunning...\x1b[0m ${_filesCompleted}/${_totalFiles} files (${_testsCompleted} tests)`,
+    );
   } else {
     _print(` \x1b[32mPASS\x1b[0m  ${file} \x1b[2m(${total} tests)\x1b[0m${time}\n`);
   }
@@ -225,18 +254,35 @@ function formatTestError(e: any): string {
 
   // Filter to application frames only (skip react internals, harness, native)
   const skipFn = new Set([
-    'anonymous', 'global', '__init', 'apply', 'map',
-    'react-stack-bottom-frame', 'proxy trap',
+    'anonymous',
+    'global',
+    '__init',
+    'apply',
+    'map',
+    'react-stack-bottom-frame',
+    'proxy trap',
   ]);
   const skipPrefix = [
-    'render', 'run', 'perform', 'work', 'flush', 'begin', 'update',
-    'reconcile', 'create', 'complete', 'commit', 'process',
+    'render',
+    'run',
+    'perform',
+    'work',
+    'flush',
+    'begin',
+    'update',
+    'reconcile',
+    'create',
+    'complete',
+    'commit',
+    'process',
   ];
   const appFrames = frames.filter(f => {
     if (skipFn.has(f.fn)) return false;
     if (f.file.includes('harness') || f.file.includes('runner')) return false;
     if (f.fn === '' && !f.file.includes('/src/') && !f.file.includes('packages/')) return false;
-    for (const p of skipPrefix) { if (f.fn.startsWith(p)) return false; }
+    for (const p of skipPrefix) {
+      if (f.fn.startsWith(p)) return false;
+    }
     return true;
   });
 
@@ -246,7 +292,11 @@ function formatTestError(e: any): string {
     cleanStack += '\n';
     for (const f of appFrames.slice(0, 8)) {
       // esbuild names __esm blocks with source paths like "src/utils/string.ts"
-      const loc = f.fn.includes('/') ? f.fn : (f.fn ? f.fn + ' (' + f.file + ':' + f.line + ')' : f.file + ':' + f.line);
+      const loc = f.fn.includes('/')
+        ? f.fn
+        : f.fn
+        ? f.fn + ' (' + f.file + ':' + f.line + ')'
+        : f.file + ':' + f.line;
       cleanStack += '\n    at ' + loc;
     }
   }
@@ -265,15 +315,23 @@ function formatTestError(e: any): string {
       const nmMatch = srcPath.match(/node_modules\/((?:@[^/]+\/)?[^/]+)/);
       if (nmMatch) {
         const pkg = nmMatch[1];
-        hint = '\n\n  "' + pkg + '" crashed during initialization (native dependency).'
-          + '\n  Add to externals in hermes-test.config.json:\n\n'
-          + '    { "externals": ["' + pkg + '"] }\n'
-          + '\n  Or mock the module that imports it with ht.mock().\n';
+        hint =
+          '\n\n  "' +
+          pkg +
+          '" crashed during initialization (native dependency).' +
+          '\n  Add to externals in hermes-test.config.json:\n\n' +
+          '    { "externals": ["' +
+          pkg +
+          '"] }\n' +
+          '\n  Or mock the module that imports it with ht.mock().\n';
       } else {
         const cleanPath = srcPath.replace(/\/index\.(tsx?|jsx?)$/, '');
-        hint = '\n\n  Module "' + cleanPath + '" crashed during initialization.'
-          + '\n  A dependency uses an API not available in Hermes.'
-          + '\n  Mock it with ht.mock() or add the native dep to externals.\n';
+        hint =
+          '\n\n  Module "' +
+          cleanPath +
+          '" crashed during initialization.' +
+          '\n  A dependency uses an API not available in Hermes.' +
+          '\n  Mock it with ht.mock() or add the native dep to externals.\n';
       }
       break;
     }
@@ -288,9 +346,18 @@ function formatTestError(e: any): string {
           if (importMap[k] === modPath && siblings.indexOf(k) === -1) siblings.push(k);
         }
         const mockBody = siblings.map(s => '    ' + s + ': () => {}').join(',\n');
-        hint = '\n\n  "' + fnName + '" from "' + modPath + '" failed.'
-          + '\n  Add this mock to your test file:\n\n'
-          + "    ht.mock('" + modPath + "', () => ({\n" + mockBody + '\n    }));\n';
+        hint =
+          '\n\n  "' +
+          fnName +
+          '" from "' +
+          modPath +
+          '" failed.' +
+          '\n  Add this mock to your test file:\n\n' +
+          "    ht.mock('" +
+          modPath +
+          "', () => ({\n" +
+          mockBody +
+          '\n    }));\n';
         break;
       }
     }
@@ -301,7 +368,7 @@ function formatTestError(e: any): string {
 
 function runTests(): TestResult[] {
   const results: TestResult[] = [];
-  const hasOnly = tests.some((t) => t.options.only);
+  const hasOnly = tests.some(t => t.options.only);
 
   // Count unique files for progress counter
   const uniqueFiles = new Set(tests.map(t => t.file));
@@ -317,7 +384,7 @@ function runTests(): TestResult[] {
   let _fileFailures: { name: string; error: string }[] = [];
 
   function _flushFileResult() {
-    if (_currentFile && (_filePassed + _fileFailed) > 0) {
+    if (_currentFile && _filePassed + _fileFailed > 0) {
       _printFileResult(_currentFile, _filePassed, _fileFailed, Date.now() - _fileStart);
       // Print failure details
       for (const f of _fileFailures) {
@@ -476,7 +543,9 @@ function registerCrash(file: string, error: string): void {
   const formatted = formatTestError({ message: error.split('\n')[0], stack: error });
   tests.push({
     name: `[CRASH] ${file}`,
-    fn: () => { throw new Error(formatted); },
+    fn: () => {
+      throw new Error(formatted);
+    },
     options: {},
     file,
   });
@@ -553,4 +622,31 @@ const unmock = (_modulePath: string) => {}; // Bundler directive — no runtime 
   advanceTimersToNextTimer,
 };
 
-export { test, expect, spy, spyOn, clearAllMocks, group, describe, beforeEach, afterEach, beforeAll, afterAll, renderHook, act, waitFor, render, fireEvent, useMock, http, HttpResponse, flushAsync, useFakeTimers, useRealTimers, advanceTimersByTime, runAllTimers, getTimerCount, advanceTimersToNextTimer };
+export {
+  test,
+  expect,
+  spy,
+  spyOn,
+  clearAllMocks,
+  group,
+  describe,
+  beforeEach,
+  afterEach,
+  beforeAll,
+  afterAll,
+  renderHook,
+  act,
+  waitFor,
+  render,
+  fireEvent,
+  useMock,
+  http,
+  HttpResponse,
+  flushAsync,
+  useFakeTimers,
+  useRealTimers,
+  advanceTimersByTime,
+  runAllTimers,
+  getTimerCount,
+  advanceTimersToNextTimer,
+};

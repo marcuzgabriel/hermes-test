@@ -50,7 +50,7 @@ mod.withQueryClient = function withQueryClient(opts) {
   var React = require('react');
   var QCP = mod.QueryClientProvider;
 
-  var wrapper = function(props) {
+  var wrapper = function (props) {
     return React.createElement(QCP, { client: client }, props.children);
   };
 
@@ -59,7 +59,7 @@ mod.withQueryClient = function withQueryClient(opts) {
   return {
     queryClient: client,
     wrapper: wrapper,
-    renderHookWithQuery: function(hookFn, hookOpts) {
+    renderHookWithQuery: function (hookFn, hookOpts) {
       return renderHook(hookFn, Object.assign({}, hookOpts, { wrapper: wrapper }));
     },
   };

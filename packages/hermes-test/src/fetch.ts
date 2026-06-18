@@ -75,13 +75,17 @@ function fakeFetch(input: any, init?: any): any {
   const method = (init?.method || 'GET').toUpperCase();
   let body = init?.body;
   if (typeof body === 'string') {
-    try { body = JSON.parse(body); } catch {}
+    try {
+      body = JSON.parse(body);
+    } catch {}
   }
 
   const reqHeaders: Record<string, string> = {};
   if (init?.headers) {
     if (typeof init.headers.forEach === 'function') {
-      init.headers.forEach((v: string, k: string) => { reqHeaders[k] = v; });
+      init.headers.forEach((v: string, k: string) => {
+        reqHeaders[k] = v;
+      });
     } else {
       Object.assign(reqHeaders, init.headers);
     }
@@ -122,14 +126,24 @@ function fakeFetch(input: any, init?: any): any {
       has: (k: string) => k.toLowerCase() in responseHeaders,
     },
     json: () => Promise.resolve(responseBody),
-    text: () => Promise.resolve(typeof responseBody === 'string' ? responseBody : JSON.stringify(responseBody)),
-    clone: function() { return this; },
+    text: () =>
+      Promise.resolve(
+        typeof responseBody === 'string' ? responseBody : JSON.stringify(responseBody),
+      ),
+    clone: function () {
+      return this;
+    },
   });
 }
 
 // --- Public API ---
 
-function createHandler(method: Method, url: string | RegExp, response: MockResponseInit | ((req: MockRequest) => MockResponseInit), once = false): MockHandler {
+function createHandler(
+  method: Method,
+  url: string | RegExp,
+  response: MockResponseInit | ((req: MockRequest) => MockResponseInit),
+  once = false,
+): MockHandler {
   const handler = typeof response === 'function' ? response : () => response;
   return { method, url, handler, once };
 }

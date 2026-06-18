@@ -28,8 +28,12 @@ function _makeCtx(store: any) {
     wrapper,
     dispatch: store.dispatch.bind(store),
     getState: store.getState.bind(store),
-    setState(state: Record<string, any>) { store.dispatch({ type: '__SET_STATE__', payload: state }); },
-    patchState(partial: Record<string, any>) { store.dispatch({ type: '__PATCH__', payload: partial }); },
+    setState(state: Record<string, any>) {
+      store.dispatch({ type: '__SET_STATE__', payload: state });
+    },
+    patchState(partial: Record<string, any>) {
+      store.dispatch({ type: '__PATCH__', payload: partial });
+    },
     renderHookWithReduxStore<T>(hookFn: (props?: any) => T, options?: { initialProps?: any }) {
       return ht.renderHook(hookFn, { ...options, wrapper });
     },
@@ -38,11 +42,13 @@ function _makeCtx(store: any) {
 
 export function withStore(initialState: Record<string, any> = {}) {
   const { configureStore } = require('@reduxjs/toolkit');
-  return _makeCtx(configureStore({
-    reducer: _withTestActions((s: any = initialState) => s),
-    preloadedState: initialState,
-    middleware: (gdm: any) => gdm({ serializableCheck: false, immutableCheck: false }),
-  }));
+  return _makeCtx(
+    configureStore({
+      reducer: _withTestActions((s: any = initialState) => s),
+      preloadedState: initialState,
+      middleware: (gdm: any) => gdm({ serializableCheck: false, immutableCheck: false }),
+    }),
+  );
 }
 
 export function withAppReducer(
@@ -50,11 +56,13 @@ export function withAppReducer(
   preloadedState?: Record<string, any>,
 ) {
   const { configureStore } = require('@reduxjs/toolkit');
-  return _makeCtx(configureStore({
-    reducer: _withTestActions(reducer),
-    preloadedState,
-    middleware: (gdm: any) => gdm({ serializableCheck: false, immutableCheck: false }),
-  }));
+  return _makeCtx(
+    configureStore({
+      reducer: _withTestActions(reducer),
+      preloadedState,
+      middleware: (gdm: any) => gdm({ serializableCheck: false, immutableCheck: false }),
+    }),
+  );
 }
 
 interface RtkQueryApi {
@@ -90,8 +98,8 @@ export function setupApiStore(
     middleware: (gdm: any) => {
       let chain = gdm({ serializableCheck: false, immutableCheck: false });
       for (const a of apis) chain = chain.concat(a.middleware);
-      for (const mw of (options?.middleware?.concat ?? [])) chain = chain.concat(mw);
-      for (const mw of (options?.middleware?.prepend ?? [])) chain = chain.prepend(mw);
+      for (const mw of options?.middleware?.concat ?? []) chain = chain.concat(mw);
+      for (const mw of options?.middleware?.prepend ?? []) chain = chain.prepend(mw);
       return chain;
     },
   });

@@ -14,7 +14,10 @@ function getReact(): typeof import('react') {
 
 function getReconcilerModule(): any {
   const R = (globalThis as any).__HT_Reconciler;
-  if (!R) throw new Error('react-reconciler not available. Make sure it is installed (it ships with hermes-test).');
+  if (!R)
+    throw new Error(
+      'react-reconciler not available. Make sure it is installed (it ships with hermes-test).',
+    );
   return R;
 }
 
@@ -33,55 +36,129 @@ const hostConfig = {
   supportsMicrotasks: true,
   isPrimaryRenderer: true,
   warnsIfNotActing: true,
-  createInstance(type: string, props: any) { const { children: _c, ...rest } = props; return { type, props: rest, children: [] }; },
-  createTextInstance(text: string) { return { type: '__TEXT__', props: {}, text, children: [] }; },
-  appendInitialChild(p: any, c: any) { p.children.push(c); c._parent = p; },
-  appendChild(p: any, c: any) { p.children.push(c); c._parent = p; },
-  appendChildToContainer(p: any, c: any) { p.children.push(c); c._parent = p; },
-  removeChild(p: any, c: any) { const i = p.children.indexOf(c); if (i !== -1) p.children.splice(i, 1); },
-  removeChildFromContainer(p: any, c: any) { const i = p.children.indexOf(c); if (i !== -1) p.children.splice(i, 1); },
-  insertBefore(p: any, c: any, b: any) { const i = p.children.indexOf(b); p.children.splice(i, 0, c); c._parent = p; },
-  insertInContainerBefore(p: any, c: any, b: any) { const i = p.children.indexOf(b); p.children.splice(i, 0, c); c._parent = p; },
-  commitUpdate(inst: any, _type: any, _oldProps: any, newProps: any) { const { children: _c, ...rest } = newProps; inst.props = rest; },
-  commitTextUpdate(inst: any, _oldText: string, newText: string) { inst.text = newText; },
+  createInstance(type: string, props: any) {
+    const { children: _c, ...rest } = props;
+    return { type, props: rest, children: [] };
+  },
+  createTextInstance(text: string) {
+    return { type: '__TEXT__', props: {}, text, children: [] };
+  },
+  appendInitialChild(p: any, c: any) {
+    p.children.push(c);
+    c._parent = p;
+  },
+  appendChild(p: any, c: any) {
+    p.children.push(c);
+    c._parent = p;
+  },
+  appendChildToContainer(p: any, c: any) {
+    p.children.push(c);
+    c._parent = p;
+  },
+  removeChild(p: any, c: any) {
+    const i = p.children.indexOf(c);
+    if (i !== -1) p.children.splice(i, 1);
+  },
+  removeChildFromContainer(p: any, c: any) {
+    const i = p.children.indexOf(c);
+    if (i !== -1) p.children.splice(i, 1);
+  },
+  insertBefore(p: any, c: any, b: any) {
+    const i = p.children.indexOf(b);
+    p.children.splice(i, 0, c);
+    c._parent = p;
+  },
+  insertInContainerBefore(p: any, c: any, b: any) {
+    const i = p.children.indexOf(b);
+    p.children.splice(i, 0, c);
+    c._parent = p;
+  },
+  commitUpdate(inst: any, _type: any, _oldProps: any, newProps: any) {
+    const { children: _c, ...rest } = newProps;
+    inst.props = rest;
+  },
+  commitTextUpdate(inst: any, _oldText: string, newText: string) {
+    inst.text = newText;
+  },
   commitMount() {},
-  prepareForCommit() { return null; },
+  prepareForCommit() {
+    return null;
+  },
   resetAfterCommit() {},
   resetTextContent() {},
-  finalizeInitialChildren() { return false; },
-  shouldSetTextContent() { return false; },
-  getRootHostContext() { return null; },
-  getChildHostContext(ctx: any) { return ctx; },
-  getPublicInstance(inst: any) { return inst; },
-  prepareUpdate() { return {}; },
-  clearContainer(c: any) { c.children = []; },
+  finalizeInitialChildren() {
+    return false;
+  },
+  shouldSetTextContent() {
+    return false;
+  },
+  getRootHostContext() {
+    return null;
+  },
+  getChildHostContext(ctx: any) {
+    return ctx;
+  },
+  getPublicInstance(inst: any) {
+    return inst;
+  },
+  prepareUpdate() {
+    return {};
+  },
+  clearContainer(c: any) {
+    c.children = [];
+  },
   scheduleTimeout: (globalThis as any).setTimeout || ((fn: any) => fn()),
   cancelTimeout: (globalThis as any).clearTimeout || (() => {}),
   noTimeout: -1,
-  scheduleMicrotask: typeof queueMicrotask === 'function' ? queueMicrotask : (fn: any) => Promise.resolve().then(fn),
-  getCurrentEventPriority() { return getReconcilerConstants().DefaultEventPriority ?? 0; },
-  setCurrentUpdatePriority(priority: number) { currentUpdatePriority = priority; },
-  getCurrentUpdatePriority() { return currentUpdatePriority; },
-  resolveUpdatePriority() { return currentUpdatePriority || (getReconcilerConstants().DefaultEventPriority ?? 0); },
-  shouldAttemptEagerTransition() { return false; },
+  scheduleMicrotask:
+    typeof queueMicrotask === 'function' ? queueMicrotask : (fn: any) => Promise.resolve().then(fn),
+  getCurrentEventPriority() {
+    return getReconcilerConstants().DefaultEventPriority ?? 0;
+  },
+  setCurrentUpdatePriority(priority: number) {
+    currentUpdatePriority = priority;
+  },
+  getCurrentUpdatePriority() {
+    return currentUpdatePriority;
+  },
+  resolveUpdatePriority() {
+    return currentUpdatePriority || (getReconcilerConstants().DefaultEventPriority ?? 0);
+  },
+  shouldAttemptEagerTransition() {
+    return false;
+  },
   trackSchedulerEvent() {},
-  resolveEventType() { return ''; },
-  resolveEventTimeStamp() { return -1.1; },
+  resolveEventType() {
+    return '';
+  },
+  resolveEventTimeStamp() {
+    return -1.1;
+  },
   requestPostPaintCallback() {},
-  maySuspendCommit() { return false; },
-  preloadInstance() { return true; },
+  maySuspendCommit() {
+    return false;
+  },
+  preloadInstance() {
+    return true;
+  },
   startSuspendingCommit() {},
   suspendInstance() {},
-  waitForCommitToBeReady() { return null; },
+  waitForCommitToBeReady() {
+    return null;
+  },
   NotPendingTransition: null,
   resetFormInstance() {},
   hideInstance() {},
   unhideInstance() {},
   hideTextInstance() {},
   unhideTextInstance() {},
-  getInstanceFromNode() { return null; },
+  getInstanceFromNode() {
+    return null;
+  },
   prepareScopeUpdate() {},
-  getInstanceFromScope() { return null; },
+  getInstanceFromScope() {
+    return null;
+  },
   detachDeletedInstance() {},
   beforeActiveInstanceBlur() {},
   afterActiveInstanceBlur() {},
@@ -133,8 +210,13 @@ export function act(fn: () => void | Promise<void>): void {
         let settled = false;
         let error: any;
         (result as Promise<void>).then(
-          () => { settled = true; },
-          (e: any) => { settled = true; error = e; }
+          () => {
+            settled = true;
+          },
+          (e: any) => {
+            settled = true;
+            error = e;
+          },
         );
         drain();
         if (error) throw error;
@@ -152,7 +234,7 @@ export function act(fn: () => void | Promise<void>): void {
 
 export function renderHook<T>(
   hookFn: (props?: any) => T,
-  options?: { initialProps?: any; wrapper?: any }
+  options?: { initialProps?: any; wrapper?: any },
 ): HookResult<T> {
   const history: T[] = [];
   let currentValue: T;
@@ -164,13 +246,17 @@ export function renderHook<T>(
   const root = reconciler.createContainer(
     container,
     0, // LegacyRoot — effects fire synchronously in act()
-    null,  // hydrationCallbacks
+    null, // hydrationCallbacks
     false, // isStrictMode
     false, // concurrentUpdatesByDefaultOverride
-    '',    // identifierPrefix
-    (err: any) => { throw err; }, // onUncaughtError
-    (err: any) => { throw err; }, // onCaughtError
-    null,  // onRecoverableError
+    '', // identifierPrefix
+    (err: any) => {
+      throw err;
+    }, // onUncaughtError
+    (err: any) => {
+      throw err;
+    }, // onCaughtError
+    null, // onRecoverableError
     () => {}, // onDefaultTransitionIndicator
   );
 
@@ -223,13 +309,15 @@ export function renderHook<T>(
 
 export function waitFor<T>(
   predicate: () => T | false | null | undefined,
-  options?: { timeout?: number; interval?: number }
+  options?: { timeout?: number; interval?: number },
 ): T {
   const timeout = options?.timeout ?? 1000;
   const start = Date.now();
 
   for (let attempt = 0; attempt < 100; attempt++) {
-    act(() => { drain(); });
+    act(() => {
+      drain();
+    });
     drain();
 
     const result = predicate();

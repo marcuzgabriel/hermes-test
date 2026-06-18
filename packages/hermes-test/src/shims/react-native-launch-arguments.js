@@ -3,6 +3,8 @@
 
 module.exports = {
   LaunchArguments: {
-    value: function() { return {}; },
+    value: function () {
+      return {};
+    },
   },
 };

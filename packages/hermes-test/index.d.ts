@@ -2,27 +2,26 @@
 
 // --- Spy ---
 
-export type Spy<F extends (...args: any[]) => any = (...args: any[]) => any> =
-  F & {
-    readonly calls: ReadonlyArray<Parameters<F>>;
-    readonly callCount: number;
-    readonly returnValues: ReadonlyArray<ReturnType<F>>;
-    reset(): void;
-    setImpl(impl: F): Spy<F>;
-    returns(value: ReturnType<F>): Spy<F>;
-    mockImplementation(fn: F): Spy<F>;
-    mockImplementationOnce(fn: F): Spy<F>;
-    mockReturnValue(value: ReturnType<F>): Spy<F>;
-    mockReturnValueOnce(value: ReturnType<F>): Spy<F>;
-    mockResolvedValue<V>(value: V): Spy<(...args: Parameters<F>) => Promise<V>>;
-    mockResolvedValueOnce<V>(value: V): Spy<F>;
-    mockRejectedValue(value: unknown): Spy<F>;
-    mockRejectedValueOnce(value: unknown): Spy<F>;
-    mockClear(): void;
-    mockReset(): void;
-    mockRestore(): void;
-    readonly _isSpy: true;
-  };
+export type Spy<F extends (...args: any[]) => any = (...args: any[]) => any> = F & {
+  readonly calls: ReadonlyArray<Parameters<F>>;
+  readonly callCount: number;
+  readonly returnValues: ReadonlyArray<ReturnType<F>>;
+  reset(): void;
+  setImpl(impl: F): Spy<F>;
+  returns(value: ReturnType<F>): Spy<F>;
+  mockImplementation(fn: F): Spy<F>;
+  mockImplementationOnce(fn: F): Spy<F>;
+  mockReturnValue(value: ReturnType<F>): Spy<F>;
+  mockReturnValueOnce(value: ReturnType<F>): Spy<F>;
+  mockResolvedValue<V>(value: V): Spy<(...args: Parameters<F>) => Promise<V>>;
+  mockResolvedValueOnce<V>(value: V): Spy<F>;
+  mockRejectedValue(value: unknown): Spy<F>;
+  mockRejectedValueOnce(value: unknown): Spy<F>;
+  mockClear(): void;
+  mockReset(): void;
+  mockRestore(): void;
+  readonly _isSpy: true;
+};
 
 export function spy(): Spy<(...args: any[]) => undefined>;
 export function spy<F extends (...args: any[]) => any>(impl: F): Spy<F>;
@@ -214,7 +213,9 @@ export const fireEvent: FireEventObject;
 
 export function useMock<T extends Record<string, unknown>>(
   moduleExports: T,
-  implementation: Partial<{ [K in keyof T]: T[K] extends (...args: any[]) => any ? Spy<T[K]> | T[K] : T[K] }>,
+  implementation: Partial<{
+    [K in keyof T]: T[K] extends (...args: any[]) => any ? Spy<T[K]> | T[K] : T[K];
+  }>,
 ): void;
 
 // --- Fetch mocking types ---
@@ -262,11 +263,17 @@ export interface StoreContext {
   getState(): any;
   setState(state: Record<string, any>): void;
   patchState(partial: Record<string, any>): void;
-  renderHookWithReduxStore<T>(hookFn: (props?: any) => T, options?: { initialProps?: any }): HookResult<T>;
+  renderHookWithReduxStore<T>(
+    hookFn: (props?: any) => T,
+    options?: { initialProps?: any },
+  ): HookResult<T>;
 }
 
 export function withStore(initialState?: Record<string, any>): StoreContext;
-export function withAppReducer(reducer: (state: any, action: any) => any, preloadedState?: Record<string, any>): StoreContext;
+export function withAppReducer(
+  reducer: (state: any, action: any) => any,
+  preloadedState?: Record<string, any>,
+): StoreContext;
 
 // --- Timers ---
 
@@ -293,9 +300,9 @@ declare global {
   }
 
   interface HtMock {
-    (modulePath: string, factory: () => Record<string, unknown>): void;
+    (modulePath: string, factory: () => unknown): void;
     fetch: HtMockFetch;
   }
 
-  const ht: { mock: HtMock };
+  const ht: { mock: HtMock; unmock: (modulePath: string) => void };
 }

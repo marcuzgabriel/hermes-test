@@ -9,7 +9,6 @@ import React from 'react';
 import { Provider } from 'react-redux';
 import { configureStore } from '@reduxjs/toolkit';
 
-
 type StoreContext = {
   store: any;
   wrapper: any;
@@ -17,7 +16,10 @@ type StoreContext = {
   getState: () => any;
   setState: (state: Record<string, any>) => void;
   patchState: (partial: Record<string, any>) => void;
-  renderHookWithReduxStore: <T>(hookFn: (props?: any) => T, options?: { initialProps?: any }) => any;
+  renderHookWithReduxStore: <T>(
+    hookFn: (props?: any) => T,
+    options?: { initialProps?: any },
+  ) => any;
 };
 
 function withTestActions(reducer: (state: any, action: any) => any) {
@@ -39,8 +41,12 @@ function makeCtx(store: any): StoreContext {
     wrapper,
     dispatch: store.dispatch.bind(store),
     getState: store.getState.bind(store),
-    setState(state: Record<string, any>) { store.dispatch({ type: '__SET_STATE__', payload: state }); },
-    patchState(partial: Record<string, any>) { store.dispatch({ type: '__PATCH__', payload: partial }); },
+    setState(state: Record<string, any>) {
+      store.dispatch({ type: '__SET_STATE__', payload: state });
+    },
+    patchState(partial: Record<string, any>) {
+      store.dispatch({ type: '__PATCH__', payload: partial });
+    },
     renderHookWithReduxStore<T>(hookFn: (props?: any) => T, options?: { initialProps?: any }) {
       return renderHook(hookFn, { ...options, wrapper });
     },
@@ -49,11 +55,13 @@ function makeCtx(store: any): StoreContext {
 
 /** Quick store from plain state object — identity reducer, any shape */
 export function withStore(initialState: Record<string, any> = {}): StoreContext {
-  return makeCtx(configureStore({
-    reducer: withTestActions((s: any = initialState) => s),
-    preloadedState: initialState,
-    middleware: (gdm) => gdm({ serializableCheck: false, immutableCheck: false }),
-  }));
+  return makeCtx(
+    configureStore({
+      reducer: withTestActions((s: any = initialState) => s),
+      preloadedState: initialState,
+      middleware: gdm => gdm({ serializableCheck: false, immutableCheck: false }),
+    }),
+  );
 }
 
 /** Real app reducer — patchState + real actions both work */
@@ -61,11 +69,13 @@ export function withAppReducer(
   reducer: (state: any, action: any) => any,
   preloadedState?: Record<string, any>,
 ): StoreContext {
-  return makeCtx(configureStore({
-    reducer: withTestActions(reducer),
-    preloadedState,
-    middleware: (gdm) => gdm({ serializableCheck: false, immutableCheck: false }),
-  }));
+  return makeCtx(
+    configureStore({
+      reducer: withTestActions(reducer),
+      preloadedState,
+      middleware: gdm => gdm({ serializableCheck: false, immutableCheck: false }),
+    }),
+  );
 }
 
 interface RtkQueryApi {
@@ -103,11 +113,11 @@ export function setupApiStore(
   const store = configureStore({
     reducer: reducerMap,
     preloadedState: options?.preloadedState,
-    middleware: (gdm) => {
+    middleware: gdm => {
       let chain = gdm({ serializableCheck: false, immutableCheck: false });
       for (const a of apis) chain = chain.concat(a.middleware);
-      for (const mw of (options?.middleware?.concat ?? [])) chain = chain.concat(mw);
-      for (const mw of (options?.middleware?.prepend ?? [])) chain = chain.prepend(mw);
+      for (const mw of options?.middleware?.concat ?? []) chain = chain.concat(mw);
+      for (const mw of options?.middleware?.prepend ?? []) chain = chain.prepend(mw);
       return chain;
     },
   });
