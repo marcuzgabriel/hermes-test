@@ -38,6 +38,7 @@ jobs:
           cmake -S . -B build -G Ninja \
             -DHERMES_STATIC_LINK=OFF -DBUILD_SHARED_LIBS=OFF \
             -DHERMES_BUILD_APPLE_FRAMEWORK=OFF -DHERMES_ENABLE_DEBUGGER=OFF \
+            -DHERMES_ENABLE_INTL=ON \
             -DHERMES_ENABLE_TEST_SUITE=OFF -DCMAKE_BUILD_TYPE=Release
           cmake --build build --parallel 4
 

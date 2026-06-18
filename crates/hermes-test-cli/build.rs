@@ -83,6 +83,7 @@ fn main() {
         hermes_build.join("lib/Support"),
         hermes_build.join("lib/ADT"),
         hermes_build.join("lib/Platform"),
+        hermes_build.join("lib/Platform/Intl"),
         hermes_build.join("lib/Platform/Unicode"),
         hermes_build.join("lib/Regex"),
         hermes_build.join("lib/InternalBytecode"),
@@ -115,6 +116,8 @@ fn main() {
         "hermesSourceMap",
         "hermesInternalBytecode",
         "hermesRegex",
+        "hermesPlatformIntl",
+        "hermesBCP47Parser",
         "hermesPlatformUnicode",
         "hermesPlatform",
         "hermesSupport",
@@ -133,6 +136,8 @@ fn main() {
     if cfg!(target_os = "macos") {
         println!("cargo:rustc-link-lib=c++");
         println!("cargo:rustc-link-lib=framework=Foundation");
+        println!("cargo:rustc-link-lib=framework=CoreFoundation");
+        println!("cargo:rustc-link-lib=framework=CoreServices");
     } else {
         println!("cargo:rustc-link-lib=stdc++");
         println!("cargo:rustc-link-lib=m");
