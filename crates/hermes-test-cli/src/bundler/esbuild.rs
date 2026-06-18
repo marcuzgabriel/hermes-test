@@ -6,8 +6,11 @@ use super::patches::{patch_esbuild_for_hermes, inject_mock_require_shim, hoist_m
 use super::shadow::{create_shadow_wrappers, create_package_shims, create_wrapper_shims};
 use super::entry::{generate_group_entry_pub, compute_bundle_cache_key};
 
-// Note: esbuild patches for Hermes (class-extends, for-let-of) were removed —
-// modern Hermes (RN 0.85+) handles ES6 classes and let-bindings correctly.
+// SWC class transform was evaluated but rejected:
+// - Requires 3 scoped thread-locals (GLOBALS, HANDLER, HELPERS)
+// - inject_helpers() emits require('@swc/helpers') calls incompatible with Hermes
+// - Full SWC codegen re-emits the entire bundle (changes whitespace, breaks other patches)
+// Our regex-based fix_all_class_extends() handles all known patterns at <1ms with zero deps.
 
 /// Bundle an entry file with esbuild.
 pub fn bundle_auto(
