@@ -142,10 +142,11 @@ fn main() {
         println!("cargo:rustc-link-lib=stdc++");
         println!("cargo:rustc-link-lib=m");
         println!("cargo:rustc-link-lib=pthread");
-        // Hermes uses ICU for Unicode on Linux (macOS uses Foundation instead)
-        println!("cargo:rustc-link-lib=icuuc");
-        println!("cargo:rustc-link-lib=icui18n");
-        println!("cargo:rustc-link-lib=icudata");
+        // Hermes uses ICU for Intl + Unicode on Linux (macOS uses Foundation instead)
+        // Static link so the binary is self-contained with bundled locale data
+        println!("cargo:rustc-link-lib=static=icuuc");
+        println!("cargo:rustc-link-lib=static=icui18n");
+        println!("cargo:rustc-link-lib=static=icudata");
     }
 
     println!("cargo:rerun-if-changed={}", bridge_dir.join("src/bridge.cpp").display());
