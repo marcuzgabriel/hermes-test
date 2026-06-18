@@ -258,6 +258,37 @@ expect(fired).toBe(true);
 useRealTimers();
 ```
 
+## Platform requirements
+
+| Platform | Status | Notes |
+|----------|--------|-------|
+| **macOS (Apple Silicon / Intel)** | ✅ Fully supported | Recommended for CI/CD |
+| **Linux** | ⚠️ Partial | Intl/locale formatting incomplete — see below |
+
+hermes-test runs on the **Hermes JavaScript engine**, the same engine that powers React Native on iOS and Android. Hermes's Intl (internationalization) support varies by platform:
+
+- **macOS**: Full Intl support via Apple's Foundation framework (`toLocaleDateString`, `toLocaleString` etc. work correctly with any locale)
+- **Android** (device): Full Intl support via Java ICU
+- **Linux** (desktop/CI): Hermes's Linux Intl implementation (`PlatformIntlICU.cpp`) is incomplete — `Intl.NumberFormat` is a stub that ignores the locale parameter. `Intl.DateTimeFormat` works via ICU but `NumberFormat` produces raw C-style output (e.g. `"1234.560000"` instead of `"1.234,56"`)
+
+**For CI/CD, use a macOS runner** to ensure locale-dependent tests produce correct results. Linux runner support is planned for a future release.
+
+<details>
+<summary>Why is Linux Intl incomplete?</summary>
+
+Hermes has three platform-specific Intl backends ([source](https://github.com/facebook/hermes/blob/main/lib/Platform/Intl/CMakeLists.txt)):
+
+- **Apple** → `PlatformIntlApple.mm` — delegates to Foundation's `NSDateFormatter`/`NSNumberFormatter` (full CLDR locale data)
+- **Android** → `PlatformIntlAndroid.cpp` — delegates to Java's `android.icu` via JNI
+- **Linux/other** → `PlatformIntlICU.cpp` — intended to use ICU4C directly, but `NumberFormat` was never implemented. The [source code](https://github.com/facebook/hermes/blob/fd0e1d3ed/lib/Platform/Intl/PlatformIntlICU.cpp) contains a stub with the comment: *"This isn't right, but I didn't want to do more work for a stub."*
+
+The Hermes team has acknowledged this is a work-in-progress ([discussion #1211](https://github.com/facebook/hermes/discussions/1211), [issue #23](https://github.com/facebook/hermes/issues/23)). Since Hermes is optimized for mobile (iOS/Android), desktop Linux has been lower priority.
+
+See also: [Hermes IntlAPIs documentation](https://github.com/facebook/hermes/blob/main/doc/IntlAPIs.md)
+</details>
+
+---
+
 ## How it works
 
 ```
