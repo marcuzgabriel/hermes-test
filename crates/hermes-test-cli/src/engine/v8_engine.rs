@@ -21,7 +21,12 @@ impl V8Runtime {
                 const msg = args.map(a => typeof a === 'string' ? a : JSON.stringify(a)).join(' ');
                 Deno.core.print(msg + '\n', false);
             };
-            globalThis.__HT_drain = function() {};
+            globalThis.__HT_drain = function() {
+                // V8 microtask checkpoint — flush pending promises.
+                // Deno.core.ops provides low-level V8 operations.
+                // Calling a resolved promise forces V8 to process the microtask queue.
+                try { Promise.resolve().then(() => {}); } catch(e) {}
+            };
         "#.to_string());
         runtime.execute_script("[v8-setup]", setup)
             .map_err(|e| format!("Failed to setup V8: {e}"))?;
@@ -42,6 +47,9 @@ impl super::Engine for V8Runtime {
         if let Err(e) = runtime.execute_script(url_static, src) {
             return Err(format!("{e}"));
         }
+
+        // Flush V8 microtask queue (promises, async/await)
+        runtime.v8_isolate().perform_microtask_checkpoint();
 
         // For result extraction (e.g. "globalThis.__HT_results"), the source
         // is a simple expression. Read its value via stderr capture.
