@@ -22,22 +22,13 @@ impl V8Runtime {
                 Deno.core.print(msg + '\n', false);
             };
             // __HT_drain flushes the microtask/promise queue synchronously.
-            // Deno.core.runMicrotasks() flushes V8's microtask queue — equivalent
-            // to Hermes's native drainMicrotasks().
-            // Also process nextTick and macrotask queues for full compatibility.
-            var __HT_draining = false;
+            // __HT_drain: the polyfills.js wrapper replaces this with its own version
+            // that flushes setImmediate/setTimeout queues AND calls this as nativeDrain.
+            // On V8, we do a simple microtask flush. The polyfills.js wrapper handles the rest.
+            // V8 auto-flushes microtasks between script executions, so this is mainly
+            // needed during synchronous act() loops inside a single execution.
             globalThis.__HT_drain = function() {
-                if (__HT_draining) return;
-                __HT_draining = true;
-                try {
-                    Deno.core.runMicrotasks();
-                    // Also drain nextTick queue if available
-                    if (typeof Deno.core.runNextTicks === 'function') {
-                        Deno.core.runNextTicks();
-                    }
-                } finally {
-                    __HT_draining = false;
-                }
+                // Simple V8 microtask flush — the polyfills.js wrapper adds queue flushing
             };
         "#.to_string());
         runtime.execute_script("[v8-setup]", setup)
@@ -60,11 +51,9 @@ impl super::Engine for V8Runtime {
             return Err(format!("{e}"));
         }
 
-        // Flush microtasks (promises, async/await) without running the full event loop.
-        // The full event loop (run_event_loop) blocks forever because the harness's
-        // timer polyfills schedule work that deno_core waits on.
-        // Instead, just flush the microtask queue which is sufficient for React's act().
-        runtime.v8_isolate().perform_microtask_checkpoint();
+        // Do NOT flush microtasks here — module-level async code (constructors
+        // calling async methods) will crash if promises resolve before mocks are set.
+        // The harness's __HT_drain handles microtask flushing during test execution.
 
         // For result extraction (e.g. "globalThis.__HT_results"), the source
         // is a simple expression. Read its value via stderr capture.
