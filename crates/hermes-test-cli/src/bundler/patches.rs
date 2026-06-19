@@ -739,29 +739,19 @@ fn fix_all_class_extends(code: &str) -> String {
 ///
 /// 2. esbuild creates non-configurable ESM namespace getters, making useMock impossible.
 ///    Fix: add configurable:true to __copyProps and __export.
-pub fn patch_esbuild_for_hermes(code: &str) -> String {
-    let _original_len = code.len();
-    let code_kb = code.len() / 1024;
-
-    // Patch 1: Fix Hermes for-let-of closure bug in __copyProps
-    let code = code.replacen(
-        "for (let key of __getOwnPropNames(from))\n        if (!__hasOwnProp.call(to, key) && key !== except)\n          __defProp(to, key, { get: () => from[key], enumerable: !(desc = __getOwnPropDesc(from, key)) || desc.enumerable });",
-        "var keys = __getOwnPropNames(from);\n      for (var i = 0; i < keys.length; i++) {\n        var key = keys[i];\n        if (!__hasOwnProp.call(to, key) && key !== except)\n          __defProp(to, key, { get: ((k) => from[k]).bind(null, key), enumerable: !(desc = __getOwnPropDesc(from, key)) || desc.enumerable, configurable: true });\n      }",
-        1,
-    );
-
-    // Patch 2: Make __export configurable for useMock
+/// Patches needed by ALL engines for the mock system to work.
+/// These make esbuild's module wrappers compatible with ht.mock() / shadow wrappers.
+pub fn patch_esbuild_for_mocking(code: &str) -> String {
+    // Patch 2: Make __export configurable so useMock can override exports
     let code = code.replacen(
         "{ get: all[name], enumerable: true }",
         "{ get: all[name], enumerable: true, configurable: true }",
         1,
     );
 
-    // Patch 3: Make __toESM return mock Proxies directly (skip copy).
+    // Patch 3: Make __toESM return mock Proxies directly (skip property copy).
     // Our __require returns Proxies with __esModule=true for externalized modules.
     // __toESM normally copies properties into a new object, which destroys Proxy behavior.
-    // Fix: insert early return at the start of __toESM.
-    // Note: esbuild may rename `mod` to `mod2`, `mod3` etc. to avoid conflicts.
     let code = {
         let toesm_re = regex::Regex::new(r"var __toESM = \((\w+), isNodeMode, target\) => \(").unwrap();
         if let Some(caps) = toesm_re.captures(&code) {
@@ -769,7 +759,6 @@ pub fn patch_esbuild_for_hermes(code: &str) -> String {
             let patched = toesm_re.replace(&code, |_caps: &regex::Captures| {
                 format!("var __toESM = ({mod_var}, isNodeMode, target) => ({mod_var} && {mod_var}.__esModule ? {mod_var} : (")
             }).to_string();
-            // Add closing paren for the ternary — right before the final ");".
             patched.replacen(
                 &format!("{mod_var}\n  ));"),
                 &format!("{mod_var}\n  )));"),
@@ -780,18 +769,27 @@ pub fn patch_esbuild_for_hermes(code: &str) -> String {
         }
     };
 
+    code
+}
+
+/// Hermes-only patches that fix Hermes JS engine bugs.
+/// Not needed for V8 — V8 handles ES6 correctly.
+pub fn patch_esbuild_for_hermes(code: &str) -> String {
+    let code_kb = code.len() / 1024;
+
+    // Patch 1: Fix Hermes for-let-of closure bug in __copyProps
+    let code = code.replacen(
+        "for (let key of __getOwnPropNames(from))\n        if (!__hasOwnProp.call(to, key) && key !== except)\n          __defProp(to, key, { get: () => from[key], enumerable: !(desc = __getOwnPropDesc(from, key)) || desc.enumerable });",
+        "var keys = __getOwnPropNames(from);\n      for (var i = 0; i < keys.length; i++) {\n        var key = keys[i];\n        if (!__hasOwnProp.call(to, key) && key !== except)\n          __defProp(to, key, { get: ((k) => from[k]).bind(null, key), enumerable: !(desc = __getOwnPropDesc(from, key)) || desc.enumerable, configurable: true });\n      }",
+        1,
+    );
+
     // Patch 4: Downlevel ALL `class extends Expr` patterns to function-based constructors.
-    // Hermes bugs: (1) TDZ crash with `class X extends Variable` when Variable is local,
-    // (2) super() in Array subclasses discards return value. Fix both by converting all
-    // class-extends to Reflect.construct-based functions.
     let code = fix_all_class_extends(&code);
 
-    let code_str = code;
-
-    // Only warn if the unpatched for-let-of pattern is still present
-    if code_str.contains("for (let key of __getOwnPropNames(from))") {
-        eprintln!("WARNING: esbuild for-let-of patch did not match ({code_kb}KB bundle) — Hermes closure bug may cause failures");
+    if code.contains("for (let key of __getOwnPropNames(from))") {
+        eprintln!("WARNING: esbuild for-let-of patch did not match ({code_kb}KB bundle)");
     }
 
-    code_str
+    code
 }
