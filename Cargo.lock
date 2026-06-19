@@ -774,6 +774,7 @@ dependencies = [
  "regex",
  "serde_json",
  "sourcemap",
+ "tokio",
 ]
 
 [[package]]

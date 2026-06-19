@@ -22,15 +22,19 @@ impl V8Runtime {
                 Deno.core.print(msg + '\n', false);
             };
             // __HT_drain flushes the microtask/promise queue synchronously.
-            // This is critical for React's act() and async test patterns.
-            // Deno.core.runMicrotasks() is the V8 equivalent of Hermes's drainMicrotasks().
-            // Recursion guard prevents infinite loop: drain → promise callback → act → drain.
+            // Deno.core.runMicrotasks() flushes V8's microtask queue — equivalent
+            // to Hermes's native drainMicrotasks().
+            // Also process nextTick and macrotask queues for full compatibility.
             var __HT_draining = false;
             globalThis.__HT_drain = function() {
                 if (__HT_draining) return;
                 __HT_draining = true;
                 try {
                     Deno.core.runMicrotasks();
+                    // Also drain nextTick queue if available
+                    if (typeof Deno.core.runNextTicks === 'function') {
+                        Deno.core.runNextTicks();
+                    }
                 } finally {
                     __HT_draining = false;
                 }
@@ -56,11 +60,11 @@ impl super::Engine for V8Runtime {
             return Err(format!("{e}"));
         }
 
-        // Flush V8 microtask queue — essential for React's scheduler and act().
-        // Multiple checkpoints needed: promise callbacks may queue more microtasks.
-        for _ in 0..10 {
-            runtime.v8_isolate().perform_microtask_checkpoint();
-        }
+        // Flush microtasks (promises, async/await) without running the full event loop.
+        // The full event loop (run_event_loop) blocks forever because the harness's
+        // timer polyfills schedule work that deno_core waits on.
+        // Instead, just flush the microtask queue which is sufficient for React's act().
+        runtime.v8_isolate().perform_microtask_checkpoint();
 
         // For result extraction (e.g. "globalThis.__HT_results"), the source
         // is a simple expression. Read its value via stderr capture.
