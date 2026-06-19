@@ -2,57 +2,11 @@ use std::env;
 use std::path::PathBuf;
 
 fn main() {
-    // V8 engine: locate and embed ICU data file for Intl support
-    if env::var("CARGO_FEATURE_V8_ENGINE").is_ok() {
-        // Find the v8 crate's ICU data file
-        let out_dir = env::var("OUT_DIR").unwrap();
-        // The v8 crate stores its source in the cargo registry
-        // Walk up from OUT_DIR to find the registry, then locate the ICU data
-        let cargo_home = env::var("CARGO_HOME")
-            .unwrap_or_else(|_| format!("{}/.cargo", env::var("HOME").unwrap()));
-        let registry = PathBuf::from(&cargo_home).join("registry/src");
-
-        // Find the v8 crate directory
-        let icu_data_path = find_icu_data(&registry)
-            .unwrap_or_else(|| {
-                eprintln!("WARNING: Could not find V8 ICU data file (icudtl.dat)");
-                eprintln!("  Intl functions (toLocaleDateString, etc.) will not work.");
-                // Create an empty file as fallback
-                let fallback = PathBuf::from(&out_dir).join("empty_icu.dat");
-                std::fs::write(&fallback, &[]).unwrap();
-                fallback.to_string_lossy().to_string()
-            });
-
-        println!("cargo:rustc-env=V8_ICU_DATA_PATH={icu_data_path}");
-    }
-
     // Hermes C++ bridge is only needed when the hermes-engine feature is enabled.
+    // V8 engine uses rusty_v8 crate + deno_core_icudata (pure Rust, no build step).
     if env::var("CARGO_FEATURE_HERMES_ENGINE").is_ok() {
         build_hermes_bridge();
     }
-}
-
-fn find_icu_data(registry: &PathBuf) -> Option<String> {
-    // Search for v8-*/third_party/icu/flutter_desktop/icudtl.dat
-    if let Ok(index_dirs) = std::fs::read_dir(registry) {
-        for index_dir in index_dirs.flatten() {
-            let path = index_dir.path();
-            if let Ok(crate_dirs) = std::fs::read_dir(&path) {
-                for crate_dir in crate_dirs.flatten() {
-                    let name = crate_dir.file_name();
-                    let name = name.to_string_lossy();
-                    if name.starts_with("v8-") {
-                        let icu_path = crate_dir.path()
-                            .join("third_party/icu/flutter_desktop/icudtl.dat");
-                        if icu_path.exists() {
-                            return Some(icu_path.to_string_lossy().to_string());
-                        }
-                    }
-                }
-            }
-        }
-    }
-    None
 }
 
 fn build_hermes_bridge() {

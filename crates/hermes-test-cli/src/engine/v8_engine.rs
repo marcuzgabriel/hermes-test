@@ -12,19 +12,20 @@ use std::sync::Once;
 
 static V8_INIT: Once = Once::new();
 
-// ICU data for V8 Intl support. Built by build.rs, embedded at compile time.
-// Without this, toLocaleDateString/toLocaleString crash with OOM.
-#[cfg(feature = "v8-engine")]
-static ICU_DATA: &[u8] = include_bytes!(env!("V8_ICU_DATA_PATH"));
-
 fn ensure_v8_initialized() {
     V8_INIT.call_once(|| {
-        // Load ICU data for full Intl support (DateTimeFormat, NumberFormat, etc.)
-        v8::icu::set_common_data_74(ICU_DATA)
-            .expect("Failed to load V8 ICU data");
-
+        // Initialize platform FIRST
         let platform = v8::new_default_platform(0, false).make_shared();
         v8::V8::initialize_platform(platform);
+
+        // Load full ICU data BEFORE V8::initialize()
+        // Uses Deno's ICU data package (~10MB, contains all CLDR locale data).
+        // Ref: https://github.com/denoland/deno_core_icudata
+        match v8::icu::set_common_data_74(deno_core_icudata::ICU_DATA) {
+            Ok(()) => {},
+            Err(code) => eprintln!("WARNING: ICU data load returned error code {code}"),
+        }
+
         v8::V8::initialize();
     });
 }
@@ -39,9 +40,7 @@ unsafe impl Send for V8Runtime {}
 impl V8Runtime {
     pub fn new() -> Result<Self, String> {
         ensure_v8_initialized();
-        let params = v8::CreateParams::default()
-            .heap_limits(0, 1024 * 1024 * 1024); // 1GB max heap
-        let isolate = v8::Isolate::new(params);
+        let isolate = v8::Isolate::new(v8::CreateParams::default());
         Ok(V8Runtime { isolate: std::cell::UnsafeCell::new(isolate) })
     }
 }
