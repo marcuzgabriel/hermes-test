@@ -101,6 +101,9 @@ fn main() {
         std::process::exit(1);
     });
 
+    // Enable Hermes-specific esbuild patches only when using Hermes engine
+    engine::set_hermes_patches_enabled(engine::needs_hermes_patches(engine_kind));
+
     // Legacy subcommands still work
     if let Some(cmd) = cli.command {
         match cmd {

@@ -21,11 +21,11 @@ impl V8Runtime {
                 const msg = args.map(a => typeof a === 'string' ? a : JSON.stringify(a)).join(' ');
                 Deno.core.print(msg + '\n', false);
             };
+            // __HT_drain flushes the microtask/promise queue synchronously.
+            // This is critical for React's act() and async test patterns.
+            // Deno.core.runMicrotasks() is the V8 equivalent of Hermes's drainMicrotasks().
             globalThis.__HT_drain = function() {
-                // V8 microtask checkpoint — flush pending promises.
-                // Deno.core.ops provides low-level V8 operations.
-                // Calling a resolved promise forces V8 to process the microtask queue.
-                try { Promise.resolve().then(() => {}); } catch(e) {}
+                Deno.core.runMicrotasks();
             };
         "#.to_string());
         runtime.execute_script("[v8-setup]", setup)
@@ -48,8 +48,11 @@ impl super::Engine for V8Runtime {
             return Err(format!("{e}"));
         }
 
-        // Flush V8 microtask queue (promises, async/await)
-        runtime.v8_isolate().perform_microtask_checkpoint();
+        // Flush V8 microtask queue — essential for React's scheduler and act().
+        // Multiple checkpoints needed: promise callbacks may queue more microtasks.
+        for _ in 0..10 {
+            runtime.v8_isolate().perform_microtask_checkpoint();
+        }
 
         // For result extraction (e.g. "globalThis.__HT_results"), the source
         // is a simple expression. Read its value via stderr capture.

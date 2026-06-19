@@ -130,7 +130,7 @@ pub fn bundle_esbuild_with_sourcemap(
 
     // Apply patches (these shift line numbers, we track the delta)
     let mut code = code;
-    code = super::patches::patch_esbuild_for_hermes(&code);
+    if crate::engine::hermes_patches_enabled() { code = super::patches::patch_esbuild_for_hermes(&code); }
     let has_externals = !external_modules.is_empty() || !cfg.externals.is_empty()
         || code.contains("Dynamic require of");
     if has_externals {
@@ -388,7 +388,7 @@ fn bundle_esbuild_with_config_inner(
     }
 
     // Patch esbuild runtime helpers for Hermes compat
-    code = patch_esbuild_for_hermes(&code);
+    if crate::engine::hermes_patches_enabled() { code = patch_esbuild_for_hermes(&code); }
 
     // Inject __require shim when there are external modules that need runtime resolution
     let has_externals = !external_modules.is_empty() || !cfg.externals.is_empty()
@@ -512,7 +512,7 @@ pub fn bundle_with_depgraph(
     let code = std::fs::read_to_string(&outfile_path)
         .map_err(|e| format!("Failed to read bundle: {e}"))?;
     let _ = std::fs::remove_file(&outfile_path);
-    let mut code = patch_esbuild_for_hermes(&code);
+    let mut code = if crate::engine::hermes_patches_enabled() { patch_esbuild_for_hermes(&code) } else { code };
 
     if !external_modules.is_empty() {
         code = inject_mock_require_shim(&code);

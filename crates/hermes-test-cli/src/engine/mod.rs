@@ -8,6 +8,20 @@
 pub mod hermes;
 pub mod v8_engine;
 
+use std::sync::atomic::{AtomicBool, Ordering};
+
+/// Global flag: whether the current engine needs Hermes-specific esbuild patches.
+/// Set once at startup based on --engine flag. Checked by bundler/esbuild.rs.
+static USE_HERMES_PATCHES: AtomicBool = AtomicBool::new(false);
+
+pub fn set_hermes_patches_enabled(enabled: bool) {
+    USE_HERMES_PATCHES.store(enabled, Ordering::Relaxed);
+}
+
+pub fn hermes_patches_enabled() -> bool {
+    USE_HERMES_PATCHES.load(Ordering::Relaxed)
+}
+
 /// A JavaScript engine that can evaluate source code.
 pub trait Engine {
     /// Evaluate JavaScript source code. Returns the result as a string,
