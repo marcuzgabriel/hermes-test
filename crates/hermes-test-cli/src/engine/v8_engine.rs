@@ -2,10 +2,6 @@
 ///
 /// Uses Deno's V8 runtime which includes full ICU data for Intl support
 /// (DateTimeFormat, NumberFormat, etc.) on all platforms.
-///
-/// Refs:
-/// - https://docs.rs/deno_core/latest/deno_core/
-/// - https://deno.com/blog/roll-your-own-javascript-runtime
 
 use deno_core::JsRuntime;
 use deno_core::RuntimeOptions;
@@ -14,12 +10,22 @@ pub struct V8Runtime {
     runtime: std::cell::UnsafeCell<JsRuntime>,
 }
 
-// Safety: V8Runtime is used single-threaded within a given test run.
 unsafe impl Send for V8Runtime {}
 
 impl V8Runtime {
     pub fn new() -> Result<Self, String> {
-        let runtime = JsRuntime::new(RuntimeOptions::default());
+        let mut runtime = JsRuntime::new(RuntimeOptions::default());
+
+        let setup = deno_core::FastString::from(r#"
+            globalThis.print = function(...args) {
+                const msg = args.map(a => typeof a === 'string' ? a : JSON.stringify(a)).join(' ');
+                Deno.core.print(msg + '\n', false);
+            };
+            globalThis.__HT_drain = function() {};
+        "#.to_string());
+        runtime.execute_script("[v8-setup]", setup)
+            .map_err(|e| format!("Failed to setup V8: {e}"))?;
+
         Ok(V8Runtime {
             runtime: std::cell::UnsafeCell::new(runtime),
         })
@@ -29,23 +35,72 @@ impl V8Runtime {
 impl super::Engine for V8Runtime {
     fn eval(&self, source: &str, url: &str) -> Result<String, String> {
         let runtime = unsafe { &mut *self.runtime.get() };
-
-        // Install print() global — the harness and tests use print() for output.
-        // Deno.core.print is the low-level V8 print function.
-        let print_setup = deno_core::FastString::from(r#"
-            globalThis.print = function(...args) {
-                const msg = args.map(a => typeof a === 'string' ? a : JSON.stringify(a)).join(' ');
-                Deno.core.print(msg + '\n', false);
-            };
-        "#.to_string());
-        let setup_name: &'static str = "[print-setup]";
-        let _ = runtime.execute_script(setup_name, print_setup);
-
-        let source_owned = deno_core::FastString::from(source.to_string());
+        let src = deno_core::FastString::from(source.to_string());
         let url_static: &'static str = Box::leak(url.to_string().into_boxed_str());
-        match runtime.execute_script(url_static, source_owned) {
-            Ok(_) => Ok("null".into()),
-            Err(e) => Err(format!("{e}")),
+
+        // Execute the source in global scope (no wrapping — important for harness)
+        if let Err(e) = runtime.execute_script(url_static, src) {
+            return Err(format!("{e}"));
         }
+
+        // For result extraction (e.g. "globalThis.__HT_results"), the source
+        // is a simple expression. Read its value via stderr capture.
+        // Check if this looks like a result-reading expression (short, no semicolons)
+        let is_expression = source.len() < 200 && !source.contains(';')
+            && !source.contains("function") && !source.contains("var ");
+        if is_expression {
+            let read_code = format!(
+                "Deno.core.print((function() {{ \
+                    var __r = {source}; \
+                    if (__r === undefined || __r === null) return 'null'; \
+                    if (typeof __r === 'string') return __r; \
+                    return JSON.stringify(__r); \
+                }})(), true)"
+            );
+            let read_src = deno_core::FastString::from(read_code);
+            let captured = capture_stderr(|| {
+                let _ = runtime.execute_script("[v8-read]", read_src);
+            });
+            if !captured.is_empty() {
+                return Ok(captured);
+            }
+        }
+
+        Ok("null".into())
+    }
+}
+
+/// Capture stderr output during closure execution.
+fn capture_stderr<F: FnOnce()>(f: F) -> String {
+    use std::os::unix::io::AsRawFd;
+
+    let (read_fd, write_fd) = unsafe {
+        let mut fds = [0i32; 2];
+        libc::pipe(fds.as_mut_ptr());
+        (fds[0], fds[1])
+    };
+
+    let old_stderr = unsafe { libc::dup(2) };
+    unsafe { libc::dup2(write_fd, 2) };
+
+    f();
+
+    // Restore stderr and close write end
+    unsafe {
+        libc::dup2(old_stderr, 2);
+        libc::close(old_stderr);
+        libc::close(write_fd);
+    }
+
+    // Read captured output (non-blocking)
+    unsafe { libc::fcntl(read_fd, libc::F_SETFL, libc::O_NONBLOCK) };
+    let mut buf = vec![0u8; 65536];
+    let n = unsafe { libc::read(read_fd, buf.as_mut_ptr() as *mut _, buf.len()) };
+    unsafe { libc::close(read_fd) };
+
+    if n > 0 {
+        String::from_utf8_lossy(&buf[..n as usize]).to_string()
+    } else {
+        String::new()
     }
 }
