@@ -45,9 +45,9 @@ Micro benchmarks (Apple Silicon, no coverage):
 | 50 hook tests (renderHook + act) | **75ms** | 721ms | **10x** |
 | Trivial cold start | **4.6ms** | 1,486ms | **364x** |
 
-### V8 evaluation summary (Topdanmark)
+### V8 evaluation summary
 
-We ran a full V8 evaluation on the same production app and workload.
+We ran a full V8 evaluation on a large real-world Expo workload.
 
 | Scenario | Hermes | V8 | Observation |
 |---|---:|---:|---|
