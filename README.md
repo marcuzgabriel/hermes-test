@@ -45,6 +45,26 @@ Micro benchmarks (Apple Silicon, no coverage):
 | 50 hook tests (renderHook + act) | **75ms** | 721ms | **10x** |
 | Trivial cold start | **4.6ms** | 1,486ms | **364x** |
 
+### V8 evaluation summary (Topdanmark)
+
+We ran a full V8 evaluation on the same production app and workload.
+
+| Scenario | Hermes | V8 | Observation |
+|---|---:|---:|---|
+| Full run (no coverage) | ~3–5s | ~3s in best observed local run | Comparable in best case |
+| Coverage run | ~7–8s | ~20–26s | Hermes clearly faster |
+| Watch mode | Stable baseline | Improved but still experimental | Hermes better day-to-day DX |
+
+**Why Hermes won overall:** bytecode-first startup path, better fit with current cache architecture, and significantly lower overhead in the current coverage pipeline.
+
+**What bytecode-first means in this runner:**
+1. Bundle once with esbuild.
+2. Compile bundle to Hermes bytecode (`.hbc`) ahead of execution.
+3. Execute cached bytecode directly (`eval_bytes`) instead of parsing large JS text at runtime.
+4. Reuse `.hbc` from cache on subsequent runs.
+
+Detailed notes: `.claude/references/v8-evaluation-summary.md`
+
 ---
 
 ## Quick start
