@@ -9,7 +9,7 @@ path = "src/main.rs"
 
 [features]
 default = ["v8-engine"]
-v8-engine = ["dep:v8", "dep:deno_core_icudata"]
+v8-engine = ["dep:deno_core"]
 hermes-engine = []
 
 [dependencies]
@@ -21,8 +21,7 @@ regex = "1"
 oxc = { version = "0.132", features = ["semantic"] }
 libc = "0.2"
 sourcemap = "9"
-v8 = { version = "130", optional = true }
-deno_core_icudata = { version = "0.77", optional = true }
+deno_core = { version = "0.404", optional = true }
 
 [build-dependencies]
 cc = "1"
