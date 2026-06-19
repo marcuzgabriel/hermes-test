@@ -34,6 +34,14 @@ const _clearTimeout = (globalThis as any).clearTimeout;
 const _setInterval = (globalThis as any).setInterval;
 const _clearInterval = (globalThis as any).clearInterval;
 const _Date = globalThis.Date;
+const _drain = (globalThis as any).__HT_drain;
+
+function runTimerCallback(fn: () => void) {
+  const result = fn();
+  if (result && typeof (result as any).then === 'function' && typeof _drain === 'function') {
+    _drain();
+  }
+}
 
 function fakeSetTimeout(fn: () => void, delay: number = 0): number {
   const id = nextId++;
@@ -105,11 +113,11 @@ export function advanceTimersByTime(ms: number) {
 
     if (timer.type === 'timeout') {
       pending = pending.filter(t => t.id !== timer.id);
-      timer.fn();
+      runTimerCallback(timer.fn);
     } else {
       // interval: fire and reschedule
       timer.fireAt += timer.interval;
-      timer.fn();
+      runTimerCallback(timer.fn);
     }
   }
 
@@ -124,10 +132,10 @@ export function runAllTimers() {
     fakeNow = next.fireAt;
     if (next.type === 'timeout') {
       pending = pending.filter(t => t.id !== next.id);
-      next.fn();
+      runTimerCallback(next.fn);
     } else {
       next.fireAt += next.interval;
-      next.fn();
+      runTimerCallback(next.fn);
     }
   }
 }

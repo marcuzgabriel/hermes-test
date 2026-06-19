@@ -407,6 +407,9 @@ function runTests(): TestResult[] {
       // Reset RTK Query API state and drain pending microtasks from
       // previous file to prevent cross-test contamination.
       if (_currentFile) {
+        // A file may enable fake timers in beforeAll and rely on them
+        // for its own tests. Restore real timers when we leave that file.
+        useRealTimers();
         drain();
       }
       _flushFileResult();
@@ -520,6 +523,7 @@ function runTests(): TestResult[] {
 
   // Flush last file
   _flushFileResult();
+  useRealTimers();
 
   // Clear progress line if in coverage mode
   if ((globalThis as any).__HT_coverage) {

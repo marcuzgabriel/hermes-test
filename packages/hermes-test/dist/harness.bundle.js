@@ -22,6 +22,45 @@ if (typeof globalThis.process.nextTick === 'undefined') {
   };
 }
 
+// atob/btoa — required by jwt-decode and other browser-leaning libraries
+(function () {
+  var chars = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/=';
+
+  if (typeof globalThis.atob === 'undefined') {
+    globalThis.atob = function (input) {
+      var str = String(input).replace(/=+$/, '');
+      var output = '';
+      if (str.length % 4 === 1) {
+        throw new Error('InvalidCharacterError');
+      }
+      for (
+        var bc = 0, bs = 0, buffer, idx = 0;
+        (buffer = str.charAt(idx++));
+        ~buffer &&
+        ((bs = bc % 4 ? bs * 64 + buffer : buffer), bc++ % 4)
+          ? (output += String.fromCharCode(255 & (bs >> ((-2 * bc) & 6))))
+          : 0
+      ) {
+        buffer = chars.indexOf(buffer);
+      }
+      return output;
+    };
+  }
+
+  if (typeof globalThis.btoa === 'undefined') {
+    globalThis.btoa = function (input) {
+      var str = String(input);
+      var output = '';
+      for (var block = 0, charCode, idx = 0, map = chars; str.charAt(idx | 0) || ((map = '='), idx % 1); output += map.charAt(63 & (block >> (8 - (idx % 1) * 8)))) {
+        charCode = str.charCodeAt((idx += 3 / 4));
+        if (charCode > 0xff) throw new Error('InvalidCharacterError');
+        block = (block << 8) | charCode;
+      }
+      return output;
+    };
+  }
+})();
+
 // Object.fromEntries — ES2019, may not exist in older Hermes builds
 if (typeof Object.fromEntries === 'undefined') {
   Object.fromEntries = function (iterable) {
@@ -98,29 +137,69 @@ if (typeof globalThis.MessageChannel === 'undefined') {
   //   - V8/Deno: calls Deno.core.runMicrotasks() (can trigger callbacks)
   // We wrap it to also flush our setImmediate/setTimeout polyfill queues.
   var nativeDrain = globalThis.__HT_drain || function () {};
+  var isV8DenoRuntime = typeof Deno !== 'undefined' && Deno && Deno.core;
+
+  function hasPolyfillWork() {
+    if (queue.length > 0) return true;
+    return Object.keys(timers).length > 0;
+  }
+
+  function hasV8NativeWork() {
+    if (!isV8DenoRuntime) return false;
+    var core = Deno.core;
+    if (typeof core.hasTickScheduled === 'function' && core.hasTickScheduled()) {
+      return true;
+    }
+    return false;
+  }
+
+  function drainV8NativeOnce() {
+    var core = Deno.core;
+    if (typeof core.runNextTicks === 'function') {
+      core.runNextTicks();
+    } else {
+      core.runMicrotasks();
+    }
+  }
+
+  function flushPolyfillQueues() {
+    // Flush setImmediate queue
+    var limit = 1000;
+    while (queue.length > 0 && limit-- > 0) {
+      queue.shift()();
+    }
+    // Flush pending timers
+    var ids = Object.keys(timers);
+    for (var i = 0; i < ids.length; i++) {
+      var t = timers[ids[i]];
+      if (t) {
+        delete timers[ids[i]];
+        t();
+      }
+    }
+  }
+
   var __draining = false;
   globalThis.__HT_drain = function () {
     if (__draining) return; // Prevent re-entrant infinite loop (V8 callbacks trigger drain)
     __draining = true;
     try {
-      // 1. Drain engine's internal promise/microtask queue
-      nativeDrain();
-      // 2. Flush our setImmediate queue
-      var limit = 1000;
-      while (queue.length > 0 && limit-- > 0) {
-        queue.shift()();
-      }
-      // 3. Flush pending timers
-      var ids = Object.keys(timers);
-      for (var i = 0; i < ids.length; i++) {
-        var t = timers[ids[i]];
-        if (t) {
-          delete timers[ids[i]];
-          t();
+      if (isV8DenoRuntime) {
+        // V8-specific draining: run bounded cycles until both native and
+        // polyfill queues are idle. Avoids non-terminating drain loops.
+        for (var pass = 0; pass < 50; pass++) {
+          drainV8NativeOnce();
+          flushPolyfillQueues();
+          if (!hasV8NativeWork() && !hasPolyfillWork()) {
+            break;
+          }
         }
+      } else {
+        // Hermes path: drain + flush queues + drain again.
+        nativeDrain();
+        flushPolyfillQueues();
+        nativeDrain();
       }
-      // 4. Drain again (timer callbacks may have queued more microtasks)
-      nativeDrain();
     } finally {
       __draining = false;
     }
@@ -1143,13 +1222,43 @@ Run with --update-snapshots to update.`
   }
 
   // src/hooks.ts
+  function getOptionalRequire() {
+    const explicitRequire = globalThis.__HT_require;
+    if (typeof explicitRequire === "function") {
+      return explicitRequire;
+    }
+    try {
+      return (0, eval)('typeof require !== "undefined" ? require : undefined');
+    } catch {
+      return void 0;
+    }
+  }
   function getReact() {
-    const R = globalThis.__HT_React;
+    let R = globalThis.__HT_React;
+    const req = getOptionalRequire();
+    if (!R && typeof req === "function") {
+      try {
+        R = req("react");
+        globalThis.__HT_React = R;
+      } catch {
+      }
+    }
     if (!R) throw new Error("React not available. Make sure react is installed in your project.");
     return R;
   }
   function getReconcilerModule() {
-    const R = globalThis.__HT_Reconciler;
+    let R = globalThis.__HT_Reconciler;
+    const req = getOptionalRequire();
+    if (!R && typeof req === "function") {
+      try {
+        const rec = req("react-reconciler");
+        R = typeof rec === "function" ? rec : rec.default || rec;
+        globalThis.__HT_Reconciler = R;
+        const recConsts = req("react-reconciler/constants");
+        globalThis.__HT_ReconcilerConstants = recConsts.__esModule ? recConsts : recConsts.default || recConsts;
+      } catch {
+      }
+    }
     if (!R)
       throw new Error(
         "react-reconciler not available. Make sure it is installed (it ships with hermes-test)."
@@ -1751,7 +1860,8 @@ ${pad}</${type}>`;
     const wrapped = {};
     for (const key of Object.keys(impl)) {
       const value = impl[key];
-      if (typeof value === "function" && !value._isSpy) {
+      const isClassConstructor = typeof value === "function" && /^class\s/.test(Function.prototype.toString.call(value));
+      if (typeof value === "function" && !value._isSpy && !isClassConstructor) {
         wrapped[key] = spy(value);
       } else {
         wrapped[key] = value;
@@ -1958,6 +2068,13 @@ ${pad}</${type}>`;
   var _setInterval = globalThis.setInterval;
   var _clearInterval = globalThis.clearInterval;
   var _Date = globalThis.Date;
+  var _drain = globalThis.__HT_drain;
+  function runTimerCallback(fn) {
+    const result = fn();
+    if (result && typeof result.then === "function" && typeof _drain === "function") {
+      _drain();
+    }
+  }
   function fakeSetTimeout(fn, delay = 0) {
     const id = nextId++;
     pending.push({ id, fn, delay, fireAt: fakeNow + delay, type: "timeout", interval: 0 });
@@ -2014,10 +2131,10 @@ ${pad}</${type}>`;
       fakeNow = timer.fireAt;
       if (timer.type === "timeout") {
         pending = pending.filter((t) => t.id !== timer.id);
-        timer.fn();
+        runTimerCallback(timer.fn);
       } else {
         timer.fireAt += timer.interval;
-        timer.fn();
+        runTimerCallback(timer.fn);
       }
     }
     fakeNow = target;
@@ -2030,10 +2147,10 @@ ${pad}</${type}>`;
       fakeNow = next.fireAt;
       if (next.type === "timeout") {
         pending = pending.filter((t) => t.id !== next.id);
-        next.fn();
+        runTimerCallback(next.fn);
       } else {
         next.fireAt += next.interval;
-        next.fn();
+        runTimerCallback(next.fn);
       }
     }
   }
@@ -2305,6 +2422,7 @@ ${pad}</${type}>`;
     for (const entry of tests) {
       if (entry.file !== _currentFile) {
         if (_currentFile) {
+          useRealTimers();
           drain2();
         }
         _flushFileResult();
@@ -2385,6 +2503,7 @@ ${pad}</${type}>`;
       }
     }
     _flushFileResult();
+    useRealTimers();
     if (globalThis.__HT_coverage) {
       _print(`\r\x1B[K`);
     }

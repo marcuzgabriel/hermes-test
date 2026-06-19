@@ -6,14 +6,45 @@
 // from the user's node_modules via globalThis.__HT_Reconciler. This ensures
 // the reconciler always matches the user's React version.
 
+function getOptionalRequire(): ((moduleId: string) => any) | undefined {
+  const explicitRequire = (globalThis as any).__HT_require;
+  if (typeof explicitRequire === 'function') {
+    return explicitRequire;
+  }
+  try {
+    return (0, eval)('typeof require !== "undefined" ? require : undefined');
+  } catch {
+    return undefined;
+  }
+}
+
 function getReact(): typeof import('react') {
-  const R = (globalThis as any).__HT_React;
+  let R = (globalThis as any).__HT_React;
+  const req = getOptionalRequire();
+  if (!R && typeof req === 'function') {
+    try {
+      R = req('react');
+      (globalThis as any).__HT_React = R;
+    } catch {}
+  }
   if (!R) throw new Error('React not available. Make sure react is installed in your project.');
   return R;
 }
 
 function getReconcilerModule(): any {
-  const R = (globalThis as any).__HT_Reconciler;
+  let R = (globalThis as any).__HT_Reconciler;
+  const req = getOptionalRequire();
+  if (!R && typeof req === 'function') {
+    try {
+      const rec = req('react-reconciler');
+      R = typeof rec === 'function' ? rec : rec.default || rec;
+      (globalThis as any).__HT_Reconciler = R;
+      const recConsts = req('react-reconciler/constants');
+      (globalThis as any).__HT_ReconcilerConstants = recConsts.__esModule
+        ? recConsts
+        : recConsts.default || recConsts;
+    } catch {}
+  }
   if (!R)
     throw new Error(
       'react-reconciler not available. Make sure it is installed (it ships with hermes-test).',

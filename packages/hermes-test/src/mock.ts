@@ -94,7 +94,10 @@ function wrapWithSpies<T extends Record<string, any>>(impl: T): T {
   const wrapped: any = {};
   for (const key of Object.keys(impl)) {
     const value = impl[key];
-    if (typeof value === 'function' && !(value as any)._isSpy) {
+    const isClassConstructor =
+      typeof value === 'function' &&
+      /^class\s/.test(Function.prototype.toString.call(value));
+    if (typeof value === 'function' && !(value as any)._isSpy && !isClassConstructor) {
       wrapped[key] = spy(value);
     } else {
       wrapped[key] = value;

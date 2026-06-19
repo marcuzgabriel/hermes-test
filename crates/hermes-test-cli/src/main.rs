@@ -28,6 +28,18 @@ where F: FnOnce() -> R {
     result
 }
 
+fn set_runtime_engine_flag(rt: &engine::Runtime, engine_kind: engine::EngineKind) {
+    let engine = match engine_kind {
+        engine::EngineKind::V8 => "v8",
+        #[cfg(feature = "hermes-engine")]
+        engine::EngineKind::Hermes => "hermes",
+    };
+    let _ = rt.eval(
+        &format!("globalThis.__HT_ENGINE = '{}';", engine),
+        "hermes-test/engine-flag.js",
+    );
+}
+
 // Embed the harness bundle at compile time
 const HARNESS_JS: &str = include_str!("../../../packages/hermes-test/dist/harness.bundle.js");
 
@@ -216,6 +228,7 @@ fn eval_file(path: &str, engine_kind: engine::EngineKind) {
         eprintln!("Error: {e}");
         std::process::exit(1);
     });
+    set_runtime_engine_flag(&rt, engine_kind);
 
     let source = std::fs::read_to_string(path).unwrap_or_else(|e| {
         eprintln!("Failed to read {path}: {e}");
@@ -265,6 +278,7 @@ fn run_tests(files: &[PathBuf], root: &PathBuf, no_bundle: bool, force_split: bo
         eprintln!("Error: {e}");
         std::process::exit(1);
     });
+    set_runtime_engine_flag(&rt, engine_kind);
 
     // Inject the harness via source eval. The minified harness has no ES6 class
     // syntax, so bytecode compilation is unnecessary overhead (~90ms per invocation).
@@ -315,12 +329,16 @@ JSON.stringify({
     } else {
         let cfg = bundler::read_config(&root);
         let start = Instant::now();
+        let prebundle_debug = std::env::var("HT_PHASE_DEBUG").is_ok();
 
         let alias_names: Vec<String> = cfg.aliases.iter().map(|(a, _)| a.clone()).collect();
         let alias_pairs: Vec<(String, String)> = cfg.aliases.clone();
+        if prebundle_debug { eprintln!("[phase] discover-mocks-start"); }
         let all_mocks = bundler::find_mock_modules_with_alias_pairs(&test_files, &alias_names, &alias_pairs);
+        if prebundle_debug { eprintln!("[phase] discover-mocks-done count={}", all_mocks.len()); }
 
         // Scan ht.shallow() for auto-mock generation
+        if prebundle_debug { eprintln!("[phase] shallow-scan-start"); }
         let mut shallow_auto_mocks: Vec<(String, Vec<String>, Vec<String>)> = Vec::new();
         for file in &test_files {
             for entry in bundler::scan_shallow_auto_mocks_with_pairs(file, &alias_names, &alias_pairs) {
@@ -331,7 +349,8 @@ JSON.stringify({
                     shallow_auto_mocks.push(entry);
                 }
             }
-        }
+            }
+            if prebundle_debug { eprintln!("[phase] shallow-scan-done count={}", shallow_auto_mocks.len()); }
 
         // Debug: print shallow auto-mocks (HT_DEBUG=1)
         if !shallow_auto_mocks.is_empty() && std::env::var("HT_DEBUG").is_ok() {
@@ -369,6 +388,10 @@ fn run_tests_single(
     update_snapshots: bool,
     shallow_auto_mocks: &[(String, Vec<String>, Vec<String>)],
 ) {
+    let can_use_bytecode_cache = engine::needs_hermes_patches(rt.kind());
+    let phase_debug = std::env::var("HT_PHASE_DEBUG").is_ok();
+    let phase_start = Instant::now();
+
     // Check single-bundle cache FIRST — skip shadow wrapper/shim setup if cached.
     let cache_key = bundler::compute_single_bundle_cache_key(test_files, root, mock_modules, cfg);
     let cache_dir = root.join(".hermes-test-cache");
@@ -379,14 +402,17 @@ fn run_tests_single(
     // When coverage is enabled, we need source maps so always do a fresh bundle.
     let mut sm_info: Option<coverage::SourceMapInfo> = None;
 
-    let bundle = if !coverage && bytecode_path.exists() {
+    let bundle = if !coverage && can_use_bytecode_cache && bytecode_path.exists() {
         // Bytecode cache hit — skip everything, load directly
+        if phase_debug { eprintln!("[phase] bytecode-cache-hit @{}ms", phase_start.elapsed().as_millis()); }
         None
     } else if !coverage && cache_path.exists() {
         // JS cache hit — patched bundle, skip shadow setup + esbuild
+        if phase_debug { eprintln!("[phase] js-cache-hit @{}ms", phase_start.elapsed().as_millis()); }
         Some(std::fs::read_to_string(&cache_path).unwrap_or_default())
     } else {
         // Cache miss (or coverage mode) — full pipeline
+        if phase_debug { eprintln!("[phase] bundle-start @{}ms", phase_start.elapsed().as_millis()); }
         let (wrapper_cfg, wrapper_shim_dir) = bundler::create_wrapper_shims(root, cfg);
         let (shadow_cfg, shadow_dirs) = bundler::create_shadow_wrappers(root, mock_modules, &wrapper_cfg);
         let non_aliased_mocks: Vec<String> = mock_modules.iter().filter(|m| {
@@ -466,6 +492,7 @@ fn run_tests_single(
             }
             let _ = std::fs::write(&cache_path, &b);
         }
+        if phase_debug { eprintln!("[phase] bundle-done @{}ms", phase_start.elapsed().as_millis()); }
         Some(b)
     };
 
@@ -506,7 +533,8 @@ fn run_tests_single(
     }
 
     // Eval: prefer bytecode → compile+cache bytecode → fallback to JS text
-    let eval_result = if !coverage && bytecode_path.exists() {
+    if phase_debug { eprintln!("[phase] eval-start @{}ms", phase_start.elapsed().as_millis()); }
+    let eval_result = if !coverage && can_use_bytecode_cache && bytecode_path.exists() {
         // Bytecode cache hit
         match std::fs::read(&bytecode_path) {
             Ok(bytes) => rt.eval_bytes(&bytes, "bundle.hbc"),
@@ -532,6 +560,7 @@ fn run_tests_single(
         eprintln!("Test execution failed: {e}");
         std::process::exit(1);
     }
+    if phase_debug { eprintln!("[phase] eval-done @{}ms", phase_start.elapsed().as_millis()); }
 
     print_console_logs(rt);
 
@@ -655,6 +684,7 @@ fn run_tests_per_file(
             Ok(r) => r,
             Err(e) => { eprintln!("Runtime error: {e}"); any_failed = true; continue; }
         };
+        set_runtime_engine_flag(&rt, engine_kind);
         suppress_stderr(|| {
             if let Err(e) = rt.eval(HARNESS_JS, "hermes-test/harness.js") {
                 eprintln!("Failed to load harness: {e}");
@@ -850,6 +880,7 @@ fn watch_tests(files: &[PathBuf], root: &PathBuf, engine_kind: engine::EngineKin
         eprintln!("Hermes error: {e}");
         std::process::exit(1);
     });
+    set_runtime_engine_flag(&rt, engine_kind);
 
     // Load harness once
     if rt.eval(HARNESS_JS, "harness.js").is_err() {
@@ -964,6 +995,7 @@ fn watch_tests(files: &[PathBuf], root: &PathBuf, engine_kind: engine::EngineKin
                     Ok(r) => r,
                     Err(e) => { eprintln!("Hermes error: {e}"); continue; }
                 };
+                set_runtime_engine_flag(&watch_rt, engine_kind);
                 suppress_stderr(|| {
                     let _ = watch_rt.eval(HARNESS_JS, "hermes-test/harness.js");
                 });
@@ -1272,6 +1304,9 @@ fn print_summary_with_time(json: &str, elapsed_ms: u128, file_count: usize) -> b
     let total = results["total"].as_u64().unwrap_or(0);
     let snapshots = results["snapshots"].as_u64().unwrap_or(0);
     let secs = elapsed_ms as f64 / 1000.0;
+    if failed > 0 && std::env::var("HT_SHOW_FAILS").is_ok() {
+        let _ = print_results(json);
+    }
     print_jest_summary(file_count, passed, failed, total, snapshots, secs);
     failed == 0
 }

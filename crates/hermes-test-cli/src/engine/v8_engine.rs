@@ -81,8 +81,6 @@ impl super::Engine for V8Runtime {
 
 /// Capture stderr output during closure execution.
 fn capture_stderr<F: FnOnce()>(f: F) -> String {
-    use std::os::unix::io::AsRawFd;
-
     let (read_fd, write_fd) = unsafe {
         let mut fds = [0i32; 2];
         libc::pipe(fds.as_mut_ptr());
@@ -91,6 +89,21 @@ fn capture_stderr<F: FnOnce()>(f: F) -> String {
 
     let old_stderr = unsafe { libc::dup(2) };
     unsafe { libc::dup2(write_fd, 2) };
+
+    // Read stderr concurrently to avoid pipe-buffer deadlocks on large output.
+    let reader = std::thread::spawn(move || {
+        let mut out: Vec<u8> = Vec::new();
+        let mut buf = [0u8; 8192];
+        loop {
+            let n = unsafe { libc::read(read_fd, buf.as_mut_ptr() as *mut _, buf.len()) };
+            if n <= 0 {
+                break;
+            }
+            out.extend_from_slice(&buf[..n as usize]);
+        }
+        unsafe { libc::close(read_fd) };
+        out
+    });
 
     f();
 
@@ -101,15 +114,6 @@ fn capture_stderr<F: FnOnce()>(f: F) -> String {
         libc::close(write_fd);
     }
 
-    // Read captured output (non-blocking)
-    unsafe { libc::fcntl(read_fd, libc::F_SETFL, libc::O_NONBLOCK) };
-    let mut buf = vec![0u8; 65536];
-    let n = unsafe { libc::read(read_fd, buf.as_mut_ptr() as *mut _, buf.len()) };
-    unsafe { libc::close(read_fd) };
-
-    if n > 0 {
-        String::from_utf8_lossy(&buf[..n as usize]).to_string()
-    } else {
-        String::new()
-    }
+    let bytes = reader.join().unwrap_or_default();
+    String::from_utf8_lossy(&bytes).to_string()
 }
