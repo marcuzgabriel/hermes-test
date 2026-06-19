@@ -23,10 +23,22 @@ jobs:
             target: aarch64-apple-darwin
             asset: hermes-test-darwin-arm64
             pkg: hermes-test-darwin-arm64
+            engine: hermes
           - os: ubuntu-latest
             target: x86_64-unknown-linux-gnu
             asset: hermes-test-linux-x64
             pkg: hermes-test-linux-x64
+            engine: hermes
+          - os: marcuzgabriel-dedicated
+            target: aarch64-apple-darwin
+            asset: hermes-test-v8-darwin-arm64
+            pkg: hermes-test-v8-darwin-arm64
+            engine: v8
+          - os: ubuntu-latest
+            target: x86_64-unknown-linux-gnu
+            asset: hermes-test-v8-linux-x64
+            pkg: hermes-test-v8-linux-x64
+            engine: v8
 
     runs-on: ${{ matrix.os }}
 
@@ -38,6 +50,7 @@ jobs:
         run: echo "/opt/homebrew/bin:/usr/local/bin" >> $GITHUB_PATH
 
       - name: Clone Hermes
+        if: matrix.engine == 'hermes'
         run: |
           for i in 1 2 3; do
             git clone --filter=blob:none https://github.com/facebook/hermes.git vendor/hermes && break
@@ -68,6 +81,7 @@ jobs:
       - uses: oven-sh/setup-bun@v2
 
       - name: Build Hermes
+        if: matrix.engine == 'hermes'
         run: |
           cd vendor/hermes
           cmake -S . -B build -G Ninja \
@@ -91,7 +105,12 @@ jobs:
         run: sed -i.bak "s/^version = \".*\"/version = \"${{ inputs.version }}\"/" crates/hermes-test-cli/Cargo.toml
 
       - name: Build CLI
-        run: cargo build --release --target ${{ matrix.target }}
+        run: |
+          if [ "${{ matrix.engine }}" = "hermes" ]; then
+            cargo build --release --no-default-features --features hermes-engine --target ${{ matrix.target }}
+          else
+            cargo build --release --no-default-features --features v8-engine --target ${{ matrix.target }}
+          fi
 
       - name: Package binary
         run: cp target/${{ matrix.target }}/release/hermes-test ${{ matrix.asset }}
@@ -118,7 +137,7 @@ jobs:
       - name: Bump version
         run: |
           VERSION=${{ inputs.version }}
-          for dir in packages/hermes-test packages/hermes-test-darwin-arm64 packages/hermes-test-linux-x64; do
+          for dir in packages/hermes-test packages/hermes-test-darwin-arm64 packages/hermes-test-linux-x64 packages/hermes-test-v8-darwin-arm64 packages/hermes-test-v8-linux-x64 packages/hermes-test-v8-darwin-x64; do
             node -e "
               const pkg = require('./${dir}/package.json');
               pkg.version = '${VERSION}';
@@ -159,6 +178,8 @@ jobs:
           files: |
             hermes-test-darwin-arm64/hermes-test-darwin-arm64
             hermes-test-linux-x64/hermes-test-linux-x64
+            hermes-test-v8-darwin-arm64/hermes-test-v8-darwin-arm64
+            hermes-test-v8-linux-x64/hermes-test-v8-linux-x64
           generate_release_notes: true
 
       # --- GitHub Packages (always) ---
@@ -173,6 +194,14 @@ jobs:
             cd packages/hermes-test-${pkg}
             mkdir -p bin
             cp ../../hermes-test-${pkg}/hermes-test-${pkg} bin/hermes-test
+            chmod +x bin/hermes-test
+            npm publish || true
+            cd ../..
+          done
+          for pkg in darwin-arm64 linux-x64; do
+            cd packages/hermes-test-v8-${pkg}
+            mkdir -p bin
+            cp ../../hermes-test-v8-${pkg}/hermes-test-v8-${pkg} bin/hermes-test
             chmod +x bin/hermes-test
             npm publish || true
             cd ../..
@@ -196,6 +225,14 @@ jobs:
             cd packages/hermes-test-${pkg}
             mkdir -p bin
             cp ../../hermes-test-${pkg}/hermes-test-${pkg} bin/hermes-test
+            chmod +x bin/hermes-test
+            npm publish --access public || true
+            cd ../..
+          done
+          for pkg in darwin-arm64 linux-x64; do
+            cd packages/hermes-test-v8-${pkg}
+            mkdir -p bin
+            cp ../../hermes-test-v8-${pkg}/hermes-test-v8-${pkg} bin/hermes-test
             chmod +x bin/hermes-test
             npm publish --access public || true
             cd ../..

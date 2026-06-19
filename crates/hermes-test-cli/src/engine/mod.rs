@@ -1,11 +1,10 @@
 /// Engine abstraction for hermes-test.
 ///
 /// Supports multiple JavaScript engines behind a common trait.
-/// V8 is the default (full Intl, cross-platform). Hermes is available
-/// via --engine hermes for engine parity with React Native production.
 
 #[cfg(feature = "hermes-engine")]
 pub mod hermes;
+#[cfg(feature = "v8-engine")]
 pub mod v8_engine;
 
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -30,8 +29,8 @@ pub trait Engine {
 
     /// Evaluate raw bytes as JavaScript source.
     fn eval_bytes(&self, source: &[u8], url: &str) -> Result<String, String> {
-        let source_str = std::str::from_utf8(source)
-            .map_err(|e| format!("Invalid UTF-8 source: {e}"))?;
+        let source_str =
+            std::str::from_utf8(source).map_err(|e| format!("Invalid UTF-8 source: {e}"))?;
         self.eval(source_str, url)
     }
 }
@@ -39,6 +38,7 @@ pub trait Engine {
 /// Which engine to use.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum EngineKind {
+    #[cfg(feature = "v8-engine")]
     V8,
     #[cfg(feature = "hermes-engine")]
     Hermes,
@@ -47,6 +47,7 @@ pub enum EngineKind {
 impl std::fmt::Display for EngineKind {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
+            #[cfg(feature = "v8-engine")]
             EngineKind::V8 => write!(f, "v8"),
             #[cfg(feature = "hermes-engine")]
             EngineKind::Hermes => write!(f, "hermes"),
@@ -54,16 +55,54 @@ impl std::fmt::Display for EngineKind {
     }
 }
 
+pub fn default_engine_name() -> &'static str {
+    #[cfg(feature = "hermes-engine")]
+    {
+        return "hermes";
+    }
+    #[cfg(all(not(feature = "hermes-engine"), feature = "v8-engine"))]
+    {
+        return "v8";
+    }
+    #[allow(unreachable_code)]
+    "unknown"
+}
+
+pub fn available_engines() -> &'static str {
+    #[cfg(all(feature = "hermes-engine", feature = "v8-engine"))]
+    {
+        return "hermes, v8";
+    }
+    #[cfg(all(feature = "hermes-engine", not(feature = "v8-engine")))]
+    {
+        return "hermes";
+    }
+    #[cfg(all(not(feature = "hermes-engine"), feature = "v8-engine"))]
+    {
+        return "v8";
+    }
+    #[allow(unreachable_code)]
+    "none"
+}
+
 impl std::str::FromStr for EngineKind {
     type Err = String;
     fn from_str(s: &str) -> Result<Self, Self::Err> {
         match s.to_lowercase().as_str() {
+            #[cfg(feature = "v8-engine")]
             "v8" => Ok(EngineKind::V8),
+            #[cfg(not(feature = "v8-engine"))]
+            "v8" => Err("V8 engine not available — install the V8 platform package".into()),
             #[cfg(feature = "hermes-engine")]
             "hermes" => Ok(EngineKind::Hermes),
             #[cfg(not(feature = "hermes-engine"))]
-            "hermes" => Err("Hermes engine not available — rebuild with --features hermes-engine".into()),
-            other => Err(format!("Unknown engine: {other}. Available: v8, hermes")),
+            "hermes" => {
+                Err("Hermes engine not available — install the default platform package".into())
+            }
+            other => Err(format!(
+                "Unknown engine: {other}. Available: {}",
+                available_engines()
+            )),
         }
     }
 }
@@ -78,6 +117,7 @@ pub struct Runtime {
 impl Runtime {
     pub fn new(kind: EngineKind) -> Result<Self, String> {
         let engine: Box<dyn Engine> = match kind {
+            #[cfg(feature = "v8-engine")]
             EngineKind::V8 => {
                 let rt = v8_engine::V8Runtime::new()?;
                 Ok::<Box<dyn Engine>, String>(Box::new(rt))
@@ -85,7 +125,7 @@ impl Runtime {
             #[cfg(feature = "hermes-engine")]
             EngineKind::Hermes => {
                 let rt = hermes::HermesRuntime::new()?;
-                Ok(Box::new(rt) as Box<dyn Engine>)
+                Ok::<Box<dyn Engine>, String>(Box::new(rt) as Box<dyn Engine>)
             }
         }?;
         Ok(Runtime { engine, kind })
@@ -104,6 +144,7 @@ impl Runtime {
         match self.kind {
             #[cfg(feature = "hermes-engine")]
             EngineKind::Hermes => Some(hermes::compile_bytecode(source, url)),
+            #[cfg(feature = "v8-engine")]
             _ => None,
         }
     }
@@ -146,6 +187,7 @@ pub fn compile_bytecode_if_hermes(source: &str, url: &str) -> Option<Vec<u8>> {
 /// Whether the engine requires Hermes-specific esbuild patches.
 pub fn needs_hermes_patches(kind: EngineKind) -> bool {
     match kind {
+        #[cfg(feature = "v8-engine")]
         EngineKind::V8 => false,
         #[cfg(feature = "hermes-engine")]
         EngineKind::Hermes => true,

@@ -1,0 +1,15 @@
+{
+  "name": "@hermes-test-v8/linux-x64",
+  "version": "1.0.4",
+  "description": "hermes-test V8 binary for Linux x64",
+  "os": [
+    "linux"
+  ],
+  "cpu": [
+    "x64"
+  ],
+  "files": [
+    "bin/"
+  ],
+  "license": "MIT"
+}

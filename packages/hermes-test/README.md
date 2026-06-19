@@ -24,7 +24,7 @@ On top of that, the configuration tax is real: `transformIgnorePatterns` breaks 
 
 hermes-test replaces the entire Jest pipeline with two things: **esbuild** (one bundle pass, <100ms) and a **Rust CLI** that evaluates it in a single process. No workers, no Babel, no `transformIgnorePatterns`. Native modules are auto-detected and externalized — zero manual configuration needed.
 
-Your tests run in Hermes — the same JavaScript engine your app ships with — so you also get engine parity for free. But the real win is speed: results appear before your hand leaves `Cmd+S`.
+By default, tests run in Hermes — the same JavaScript engine your app ships with — so you get engine parity for free. But the real win is speed: results appear before your hand leaves `Cmd+S`.
 
 ### Benchmarks
 
@@ -67,6 +67,18 @@ test('useCounter increments', () => {
 ```bash
 hermes-test              # run all tests
 hermes-test --watch      # watch mode
+```
+
+### Engine selection
+
+- **Default:** Hermes (`hermes-test`)
+- **Optional:** V8 via `--engine v8` with a matching optional V8 platform package installed
+- **V8 status:** Experimental (interop-focused, not the recommended default for performance)
+- **Coverage note:** Current V8 coverage runs are significantly slower than Hermes on large suites (observed Topdanmark: V8 ~20–26s vs Hermes ~7–8s)
+
+```bash
+hermes-test --engine hermes
+hermes-test --engine v8
 ```
 
 ## API
@@ -302,6 +314,8 @@ hermes-test src/hooks/useLogin.test.ts  # run a specific file
 hermes-test --watch                  # watch mode — reruns on file changes
 hermes-test --watch useLogin         # watch mode, filtered to matching files
 hermes-test --coverage               # run with coverage (lcov + HTML report)
+hermes-test --engine hermes          # explicit Hermes (default)
+hermes-test --engine v8              # V8 (requires @hermes-test-v8/<platform>)
 ```
 
 ## Configuration

@@ -1,0 +1,15 @@
+{
+  "name": "@hermes-test-v8/darwin-x64",
+  "version": "1.0.4",
+  "description": "hermes-test V8 binary for macOS x64 (Intel)",
+  "os": [
+    "darwin"
+  ],
+  "cpu": [
+    "x64"
+  ],
+  "files": [
+    "bin/"
+  ],
+  "license": "MIT"
+}

@@ -8,7 +8,7 @@ name = "hermes-test"
 path = "src/main.rs"
 
 [features]
-default = ["v8-engine"]
+default = ["hermes-engine"]
 v8-engine = ["dep:deno_core", "dep:tokio"]
 hermes-engine = []
 
