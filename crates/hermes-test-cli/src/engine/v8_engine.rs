@@ -24,8 +24,16 @@ impl V8Runtime {
             // __HT_drain flushes the microtask/promise queue synchronously.
             // This is critical for React's act() and async test patterns.
             // Deno.core.runMicrotasks() is the V8 equivalent of Hermes's drainMicrotasks().
+            // Recursion guard prevents infinite loop: drain → promise callback → act → drain.
+            var __HT_draining = false;
             globalThis.__HT_drain = function() {
-                Deno.core.runMicrotasks();
+                if (__HT_draining) return;
+                __HT_draining = true;
+                try {
+                    Deno.core.runMicrotasks();
+                } finally {
+                    __HT_draining = false;
+                }
             };
         "#.to_string());
         runtime.execute_script("[v8-setup]", setup)
