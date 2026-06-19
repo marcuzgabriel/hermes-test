@@ -12,8 +12,17 @@ use std::sync::Once;
 
 static V8_INIT: Once = Once::new();
 
+// ICU data for V8 Intl support. Built by build.rs, embedded at compile time.
+// Without this, toLocaleDateString/toLocaleString crash with OOM.
+#[cfg(feature = "v8-engine")]
+static ICU_DATA: &[u8] = include_bytes!(env!("V8_ICU_DATA_PATH"));
+
 fn ensure_v8_initialized() {
     V8_INIT.call_once(|| {
+        // Load ICU data for full Intl support (DateTimeFormat, NumberFormat, etc.)
+        v8::icu::set_common_data_74(ICU_DATA)
+            .expect("Failed to load V8 ICU data");
+
         let platform = v8::new_default_platform(0, false).make_shared();
         v8::V8::initialize_platform(platform);
         v8::V8::initialize();
@@ -21,25 +30,25 @@ fn ensure_v8_initialized() {
 }
 
 pub struct V8Runtime {
-    isolate: v8::OwnedIsolate,
+    isolate: std::cell::UnsafeCell<v8::OwnedIsolate>,
 }
+
+// Safety: V8Runtime is used single-threaded within a given test run.
+unsafe impl Send for V8Runtime {}
 
 impl V8Runtime {
     pub fn new() -> Result<Self, String> {
         ensure_v8_initialized();
-        let isolate = v8::Isolate::new(v8::CreateParams::default());
-        Ok(V8Runtime { isolate })
+        let params = v8::CreateParams::default()
+            .heap_limits(0, 1024 * 1024 * 1024); // 1GB max heap
+        let isolate = v8::Isolate::new(params);
+        Ok(V8Runtime { isolate: std::cell::UnsafeCell::new(isolate) })
     }
 }
 
 impl super::Engine for V8Runtime {
     fn eval(&self, source: &str, url: &str) -> Result<String, String> {
-        // V8 requires mutable access to the isolate for scope creation.
-        // We use unsafe to cast away the shared ref since we know we're
-        // single-threaded within a given runtime instance.
-        let isolate = unsafe {
-            &mut *(&self.isolate as *const v8::OwnedIsolate as *mut v8::OwnedIsolate)
-        };
+        let isolate = unsafe { &mut *self.isolate.get() };
 
         let handle_scope = &mut v8::HandleScope::new(isolate);
         let context = v8::Context::new(handle_scope, Default::default());
@@ -77,19 +86,19 @@ impl super::Engine for V8Runtime {
                                   None, false, false, false, None)
         };
 
-        let script = v8::Script::compile(scope, v8_source, Some(&origin))
-            .ok_or_else(|| {
-                // Try to get the exception message
-                if let Some(exception) = scope.exception() {
-                    let msg = exception.to_string(scope)
-                        .map(|s| s.to_rust_string_lossy(scope))
-                        .unwrap_or_else(|| "Compilation failed".into());
-                    return msg;
-                }
-                "Script compilation failed".to_string()
-            })?;
-
         let try_catch = &mut v8::TryCatch::new(scope);
+
+        let script = match v8::Script::compile(try_catch, v8_source, Some(&origin)) {
+            Some(s) => s,
+            None => {
+                let msg = try_catch.exception()
+                    .and_then(|e| e.to_string(try_catch))
+                    .map(|s| s.to_rust_string_lossy(try_catch))
+                    .unwrap_or_else(|| "Script compilation failed".into());
+                return Err(msg);
+            }
+        };
+
         let result = script.run(try_catch);
 
         match result {

@@ -109,7 +109,7 @@ fn main() {
                 root,
                 no_bundle,
             } => {
-                run_tests(&files, &root, no_bundle, false, false, false);
+                run_tests(&files, &root, no_bundle, false, false, false, engine_kind);
             }
             Commands::Watch {
                 files,
@@ -343,7 +343,7 @@ JSON.stringify({
         // HT_PER_FILE forces per-file isolation as fallback.
         let force_per_file = std::env::var("HT_PER_FILE").is_ok();
         if force_per_file {
-            run_tests_per_file(&rt, &test_files, &root, &cfg, start);
+            run_tests_per_file(&rt, &test_files, &root, &cfg, start, engine_kind);
         } else {
             // split mode is blocked in config.rs validation
             {
@@ -513,22 +513,13 @@ fn run_tests_single(
             }
         }
     } else if let Some(ref js) = bundle {
-        if coverage {
-            // Coverage: compile to bytecode first (Hermes handles instrumented code
-            // differently in raw JS eval vs bytecode — bytecode is needed for correctness)
-            match rt.compile_bytecode(js, "bundle.js") {
-                Ok(bytecode) => rt.eval_bytes(&bytecode, "bundle.hbc"),
-                Err(_) => rt.eval(js, "bundle.js"),
+        if let Some(Ok(bytecode)) = rt.compile_bytecode(js, "bundle.js") {
+            if !coverage {
+                let _ = std::fs::write(&bytecode_path, &bytecode);
             }
+            rt.eval_bytes(&bytecode, "bundle.hbc")
         } else {
-            // Try to compile to bytecode and cache it
-            match rt.compile_bytecode(js, "bundle.js") {
-                Ok(bytecode) => {
-                    let _ = std::fs::write(&bytecode_path, &bytecode);
-                    rt.eval_bytes(&bytecode, "bundle.hbc")
-                }
-                Err(_) => rt.eval(js, "bundle.js"),
-            }
+            rt.eval(js, "bundle.js")
         }
     } else {
         eprintln!("No bundle available");
@@ -601,6 +592,7 @@ fn run_tests_per_file(
     root: &PathBuf,
     cfg: &bundler::BundleConfig,
     start: Instant,
+    engine_kind: engine::EngineKind,
 ) {
     // Phase 1: Parallel esbuild — spawn all bundlers concurrently.
     // Each file gets a unique entry path to avoid write conflicts.
@@ -814,7 +806,7 @@ globalThis.__HT_results = JSON.stringify({
     }
 }
 
-fn watch_tests(files: &[PathBuf], root: &PathBuf) {
+fn watch_tests(files: &[PathBuf], root: &PathBuf, engine_kind: engine::EngineKind) {
     let root = std::fs::canonicalize(root).unwrap_or_else(|e| {
         eprintln!("Invalid root directory: {e}");
         std::process::exit(1);
@@ -1007,10 +999,7 @@ fn watch_tests(files: &[PathBuf], root: &PathBuf) {
 
                 match bundle_result {
                     Ok(bundle) => {
-                        let eval_result = match rt.compile_bytecode(&bundle, "bundle.js") {
-                            Ok(bc) => watch_rt.eval_bytes(&bc, "bundle.hbc"),
-                            Err(_) => watch_rt.eval(&bundle, "bundle.js"),
-                        };
+                        let eval_result = watch_rt.eval_smart(&bundle, "bundle.js");
                         if let Err(e) = eval_result {
                             eprintln!("\x1b[31mTest execution failed: {e}\x1b[0m");
                         } else {

@@ -64,9 +64,15 @@ pub struct Runtime {
 impl Runtime {
     pub fn new(kind: EngineKind) -> Result<Self, String> {
         let engine: Box<dyn Engine> = match kind {
-            EngineKind::V8 => Ok(Box::new(v8_engine::V8Runtime::new()?) as Box<dyn Engine>),
+            EngineKind::V8 => {
+                let rt = v8_engine::V8Runtime::new()?;
+                Ok::<Box<dyn Engine>, String>(Box::new(rt))
+            }
             #[cfg(feature = "hermes-engine")]
-            EngineKind::Hermes => Ok(Box::new(hermes::HermesRuntime::new()?) as Box<dyn Engine>),
+            EngineKind::Hermes => {
+                let rt = hermes::HermesRuntime::new()?;
+                Ok(Box::new(rt) as Box<dyn Engine>)
+            }
         }?;
         Ok(Runtime { engine, kind })
     }
