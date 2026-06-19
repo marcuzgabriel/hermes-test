@@ -622,7 +622,7 @@ fn html_escape(s: &str) -> String {
 
 // --- Coverage collection ---
 
-pub fn collect_coverage(rt:&crate::hermes::Runtime,map_path:Option<&std::path::Path>)->Option<String>{
+pub fn collect_coverage(rt:&crate::engine::Runtime,map_path:Option<&std::path::Path>)->Option<String>{
     let js=r#"(function(){var c=globalThis.__coverage__;if(!c)return'null';return JSON.stringify(c)})()"#;
     let raw=rt.eval(js,"coverage-collect").ok()?;
     let json_str:String=serde_json::from_str(&raw).unwrap_or(raw.clone());

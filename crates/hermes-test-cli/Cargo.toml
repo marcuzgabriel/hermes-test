@@ -7,6 +7,11 @@ edition = "2021"
 name = "hermes-test"
 path = "src/main.rs"
 
+[features]
+default = ["v8-engine"]
+v8-engine = ["dep:v8"]
+hermes-engine = []
+
 [dependencies]
 clap = { version = "4", features = ["derive"] }
 serde_json = "1"
@@ -16,6 +21,7 @@ regex = "1"
 oxc = { version = "0.132", features = ["semantic"] }
 libc = "0.2"
 sourcemap = "9"
+v8 = { version = "130", optional = true }
 
 [build-dependencies]
 cc = "1"

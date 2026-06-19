@@ -417,7 +417,7 @@ pub fn compile_to_bytecode(code: &str, _context_path: &Path) -> Option<Vec<u8>> 
         return None;
     }
 
-    match crate::hermes::compile_bytecode(code, "bundle.js") {
+    match crate::engine::compile_bytecode_if_hermes(code, "bundle.js") {
         Ok(bytecode) => Some(bytecode),
         Err(e) => {
             eprintln!("WARNING: hermesc bytecode compilation failed: {e}");
@@ -453,7 +453,7 @@ pub fn compile_to_bytecode_cached(
     }
 
     // Cache miss — compile and save
-    match crate::hermes::compile_bytecode(code, "bundle.js") {
+    match crate::engine::compile_bytecode_if_hermes(code, "bundle.js") {
         Ok(bytecode) => {
             let _ = std::fs::create_dir_all(&cache_dir);
             // Clean old cache files for this prefix

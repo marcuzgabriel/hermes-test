@@ -1,4 +1,6 @@
+#[cfg(feature = "hermes-engine")]
 mod hermes;
+mod engine;
 mod bundler;
 mod coverage;
 
@@ -8,10 +10,9 @@ use std::path::PathBuf;
 use std::sync::mpsc;
 use std::time::{Duration, Instant};
 
-/// Suppress Hermes's internal "[hermes-compile]" debug output by redirecting
-/// stderr to /dev/null during bytecode compilation. Console.log from tests
-/// is collected via JSI host functions and stored in a buffer, not via stderr.
-fn suppress_hermes_stderr<F, R>(f: F) -> R
+/// Suppress stderr noise during engine initialization.
+/// Hermes emits "[hermes-compile]" debug output; V8 is clean.
+fn suppress_stderr<F, R>(f: F) -> R
 where F: FnOnce() -> R {
     use std::os::unix::io::AsRawFd;
     let dev_null = match std::fs::File::open("/dev/null") {
@@ -65,6 +66,10 @@ struct Cli {
     #[arg(long, alias = "update-snapshots")]
     update_snapshots: bool,
 
+    /// JavaScript engine to use: v8 (default, cross-platform) or hermes (RN engine parity)
+    #[arg(long, default_value = "v8")]
+    engine: String,
+
     #[command(subcommand)]
     command: Option<Commands>,
 }
@@ -91,6 +96,11 @@ enum Commands {
 fn main() {
     let cli = Cli::parse();
 
+    let engine_kind: engine::EngineKind = cli.engine.parse().unwrap_or_else(|e| {
+        eprintln!("Error: {e}");
+        std::process::exit(1);
+    });
+
     // Legacy subcommands still work
     if let Some(cmd) = cli.command {
         match cmd {
@@ -105,14 +115,14 @@ fn main() {
                 files,
                 root,
             } => {
-                watch_tests(&files, &root);
+                watch_tests(&files, &root, engine_kind);
             }
         }
         return;
     }
 
     if let Some(ref path) = cli.eval {
-        eval_file(path);
+        eval_file(path, engine_kind);
         return;
     }
 
@@ -128,9 +138,9 @@ fn main() {
     }
 
     if cli.watch {
-        watch_tests(&files, &root);
+        watch_tests(&files, &root, engine_kind);
     } else {
-        run_tests(&files, &root, cli.no_bundle, false, cli.coverage, cli.update_snapshots);
+        run_tests(&files, &root, cli.no_bundle, false, cli.coverage, cli.update_snapshots, engine_kind);
     }
 }
 
@@ -198,8 +208,8 @@ fn resolve_test_files(args: &[String], root: &PathBuf) -> Vec<PathBuf> {
     resolved
 }
 
-fn eval_file(path: &str) {
-    let rt = hermes::Runtime::new().unwrap_or_else(|e| {
+fn eval_file(path: &str, engine_kind: engine::EngineKind) {
+    let rt = engine::Runtime::new(engine_kind).unwrap_or_else(|e| {
         eprintln!("Error: {e}");
         std::process::exit(1);
     });
@@ -218,7 +228,7 @@ fn eval_file(path: &str) {
     }
 }
 
-fn run_tests(files: &[PathBuf], root: &PathBuf, no_bundle: bool, force_split: bool, coverage: bool, update_snapshots: bool) {
+fn run_tests(files: &[PathBuf], root: &PathBuf, no_bundle: bool, force_split: bool, coverage: bool, update_snapshots: bool, engine_kind: engine::EngineKind) {
     let root = std::fs::canonicalize(root).unwrap_or_else(|e| {
         eprintln!("Invalid root directory: {e}");
         std::process::exit(1);
@@ -248,14 +258,14 @@ fn run_tests(files: &[PathBuf], root: &PathBuf, no_bundle: bool, force_split: bo
     eprintln!(" \x1b[1mhermes-test\x1b[0m \x1b[2mv{}\x1b[0m", env!("CARGO_PKG_VERSION"));
     eprintln!();
 
-    let rt = hermes::Runtime::new().unwrap_or_else(|e| {
+    let rt = engine::Runtime::new(engine_kind).unwrap_or_else(|e| {
         eprintln!("Error: {e}");
         std::process::exit(1);
     });
 
     // Inject the harness via source eval. The minified harness has no ES6 class
     // syntax, so bytecode compilation is unnecessary overhead (~90ms per invocation).
-    suppress_hermes_stderr(|| {
+    suppress_stderr(|| {
         rt.eval(HARNESS_JS, "hermes-test/harness.js").unwrap_or_else(|e| {
             eprintln!("Failed to load harness: {e}");
             std::process::exit(1);
@@ -345,7 +355,7 @@ JSON.stringify({
 
 /// Single-bundle path: generates one entry, bundles everything together.
 fn run_tests_single(
-    rt: &hermes::Runtime,
+    rt: &engine::Runtime,
     test_files: &[PathBuf],
     root: &PathBuf,
     mock_modules: &[String],
@@ -506,13 +516,13 @@ fn run_tests_single(
         if coverage {
             // Coverage: compile to bytecode first (Hermes handles instrumented code
             // differently in raw JS eval vs bytecode — bytecode is needed for correctness)
-            match crate::hermes::compile_bytecode(js, "bundle.js") {
+            match rt.compile_bytecode(js, "bundle.js") {
                 Ok(bytecode) => rt.eval_bytes(&bytecode, "bundle.hbc"),
                 Err(_) => rt.eval(js, "bundle.js"),
             }
         } else {
             // Try to compile to bytecode and cache it
-            match crate::hermes::compile_bytecode(js, "bundle.js") {
+            match rt.compile_bytecode(js, "bundle.js") {
                 Ok(bytecode) => {
                     let _ = std::fs::write(&bytecode_path, &bytecode);
                     rt.eval_bytes(&bytecode, "bundle.hbc")
@@ -586,7 +596,7 @@ fn run_tests_single(
 /// only its own mocks externalized. Prevents mock interference across files.
 /// The Hermes runtime is reused across files for speed.
 fn run_tests_per_file(
-    _rt: &hermes::Runtime,
+    _rt: &engine::Runtime,
     test_files: &[PathBuf],
     root: &PathBuf,
     cfg: &bundler::BundleConfig,
@@ -646,18 +656,18 @@ fn run_tests_per_file(
             }
         };
 
-        let rt = match hermes::Runtime::new() {
+        let rt = match engine::Runtime::new(engine_kind) {
             Ok(r) => r,
             Err(e) => { eprintln!("Runtime error: {e}"); any_failed = true; continue; }
         };
-        suppress_hermes_stderr(|| {
+        suppress_stderr(|| {
             if let Err(e) = rt.eval(HARNESS_JS, "hermes-test/harness.js") {
                 eprintln!("Failed to load harness: {e}");
             }
         });
 
         let dummy_path = file.with_extension("js");
-        if let Err(e) = suppress_hermes_stderr(|| {
+        if let Err(e) = suppress_stderr(|| {
             if let Some(bytecode) = bundler::compile_to_bytecode(bundle, &dummy_path) {
                 rt.eval_bytes(&bytecode, "bundle.hbc")
             } else {
@@ -725,7 +735,7 @@ fn run_tests_per_file(
 /// Split-bundle path: vendor (node_modules) + group bundles (local code).
 /// Avoids Hermes super-linear scaling with large bundles.
 fn run_tests_split(
-    rt: &hermes::Runtime,
+    rt: &engine::Runtime,
     test_files: &[PathBuf],
     root: &PathBuf,
     mock_modules: &[String],
@@ -841,7 +851,7 @@ fn watch_tests(files: &[PathBuf], root: &PathBuf) {
     eprintln!("\x1b[2m[watch]\x1b[0m Press Ctrl+C to stop\n");
 
     // Persistent runtime — created once, reused across watch cycles
-    let rt = hermes::Runtime::new().unwrap_or_else(|e| {
+    let rt = engine::Runtime::new(engine_kind).unwrap_or_else(|e| {
         eprintln!("Hermes error: {e}");
         std::process::exit(1);
     });
@@ -955,11 +965,11 @@ fn watch_tests(files: &[PathBuf], root: &PathBuf) {
                 };
 
                 // Fresh runtime + full single-bundle for correct results
-                let watch_rt = match hermes::Runtime::new() {
+                let watch_rt = match engine::Runtime::new(engine_kind) {
                     Ok(r) => r,
                     Err(e) => { eprintln!("Hermes error: {e}"); continue; }
                 };
-                suppress_hermes_stderr(|| {
+                suppress_stderr(|| {
                     let _ = watch_rt.eval(HARNESS_JS, "hermes-test/harness.js");
                 });
                 let alias_names: Vec<String> = cfg.aliases.iter().map(|(a, _)| a.clone()).collect();
@@ -997,7 +1007,7 @@ fn watch_tests(files: &[PathBuf], root: &PathBuf) {
 
                 match bundle_result {
                     Ok(bundle) => {
-                        let eval_result = match crate::hermes::compile_bytecode(&bundle, "bundle.js") {
+                        let eval_result = match rt.compile_bytecode(&bundle, "bundle.js") {
                             Ok(bc) => watch_rt.eval_bytes(&bc, "bundle.hbc"),
                             Err(_) => watch_rt.eval(&bundle, "bundle.js"),
                         };
@@ -1028,7 +1038,7 @@ fn watch_tests(files: &[PathBuf], root: &PathBuf) {
 /// Run a test cycle on a persistent runtime. On first_run, loads vendor/setup.
 /// On reruns, resets registry and only re-evals the test group bundle.
 fn run_persistent_cycle(
-    rt: &hermes::Runtime,
+    rt: &engine::Runtime,
     test_files: &[PathBuf],
     root: &PathBuf,
     cfg: &bundler::BundleConfig,
@@ -1216,7 +1226,7 @@ globalThis.__HT_results = JSON.stringify({
 
 
 /// Print console.log/warn/error output that was collected during test execution.
-fn print_console_logs(rt: &hermes::Runtime) {
+fn print_console_logs(rt: &engine::Runtime) {
     let logs_js = r#"(function() {
         var logs = globalThis.__HT_logs;
         if (!logs || !logs.length) return '[]';

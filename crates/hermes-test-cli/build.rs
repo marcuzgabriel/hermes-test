@@ -2,6 +2,14 @@ use std::env;
 use std::path::PathBuf;
 
 fn main() {
+    // Hermes C++ bridge is only needed when the hermes-engine feature is enabled.
+    // V8 engine uses rusty_v8 crate (pure Rust bindings, no C++ bridge needed).
+    if env::var("CARGO_FEATURE_HERMES_ENGINE").is_ok() {
+        build_hermes_bridge();
+    }
+}
+
+fn build_hermes_bridge() {
     let manifest_dir = PathBuf::from(env::var("CARGO_MANIFEST_DIR").unwrap());
     let repo_root = manifest_dir.parent().unwrap().parent().unwrap();
     let hermes_dir = repo_root.join("vendor/hermes");
@@ -53,11 +61,10 @@ fn main() {
         .flag("-frtti")
         .compile("hermes_vm_eval");
 
-    // Compile hermes_compile.cpp — in-process bytecode compilation (replaces hermesc subprocess)
+    // Compile hermes_compile.cpp — in-process bytecode compilation
     let mut compile_build = cc::Build::new();
     compile_build.cpp(true).std("c++17").file(bridge_dir.join("src/hermes_compile.cpp"));
     for inc in &common_includes { compile_build.include(inc); }
-    // Also need hermes/lib for internal headers
     compile_build.include(hermes_dir.join("lib"));
     compile_build
         .flag("-Wno-non-virtual-dtor")
@@ -65,7 +72,7 @@ fn main() {
         .flag("-frtti")
         .compile("hermes_compile");
 
-    // Link Hermes static libraries (order matters for static linking)
+    // Link Hermes static libraries
     let lib_dirs = [
         hermes_build.join("API/hermes"),
         hermes_build.join("lib/VM"),
@@ -97,10 +104,6 @@ fn main() {
         println!("cargo:rustc-link-search=native={}", dir.display());
     }
 
-    // Link order matters: dependents before dependencies.
-    // Hermes V1 (rn/0.84): libhermesvm replaces libhermes.
-    // On Linux (GNU ld), circular deps need libs listed twice.
-    // macOS ld64 handles circular deps automatically.
     let libs = [
         "hermesvm",
         "hermesVMRuntime",
@@ -128,32 +131,10 @@ fn main() {
         "dtoa",
         "LLVHSupport",
         "LLVHDemangle",
-        // Repeat for GNU ld circular dependency resolution
-        "hermesVMRuntime",
-        "hermesFrontend",
-        "hermesOptimizer",
-        "hermesHBCBackend",
-        "hermesBackend",
-        "hermesParser",
-        "hermesAST",
-        "hermesSupport",
-        "hermesADT",
-        "LLVHSupport",
     ];
-
-    // On Linux, GNU ld is strict about link order and discards unused symbols
-    // on first pass. Hermes libs have circular dependencies, so we need
-    // --start-group/--end-group to resolve them.
-    if cfg!(not(target_os = "macos")) {
-        println!("cargo:rustc-link-arg=-Wl,--start-group");
-    }
 
     for lib in &libs {
         println!("cargo:rustc-link-lib=static={lib}");
-    }
-
-    if cfg!(not(target_os = "macos")) {
-        println!("cargo:rustc-link-arg=-Wl,--end-group");
     }
 
     // System libraries
@@ -166,7 +147,6 @@ fn main() {
         println!("cargo:rustc-link-lib=stdc++");
         println!("cargo:rustc-link-lib=m");
         println!("cargo:rustc-link-lib=pthread");
-        // Hermes uses ICU for Intl + Unicode on Linux
         println!("cargo:rustc-link-lib=icuuc");
         println!("cargo:rustc-link-lib=icui18n");
         println!("cargo:rustc-link-lib=icudata");
