@@ -22,13 +22,10 @@ impl V8Runtime {
                 Deno.core.print(msg + '\n', false);
             };
             // __HT_drain flushes the microtask/promise queue synchronously.
-            // __HT_drain: the polyfills.js wrapper replaces this with its own version
-            // that flushes setImmediate/setTimeout queues AND calls this as nativeDrain.
-            // On V8, we do a simple microtask flush. The polyfills.js wrapper handles the rest.
-            // V8 auto-flushes microtasks between script executions, so this is mainly
-            // needed during synchronous act() loops inside a single execution.
+            // __HT_drain: called by polyfills.js wrapper as nativeDrain().
+            // polyfills.js has its own recursion guard to prevent re-entrant loops.
             globalThis.__HT_drain = function() {
-                // Simple V8 microtask flush — the polyfills.js wrapper adds queue flushing
+                Deno.core.runMicrotasks();
             };
         "#.to_string());
         runtime.execute_script("[v8-setup]", setup)

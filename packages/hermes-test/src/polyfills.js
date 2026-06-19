@@ -92,29 +92,38 @@ if (typeof globalThis.MessageChannel === 'undefined') {
     };
   }
 
-  // Flush all async work: Hermes microtask queue (promises) + our polyfill queues (timers).
-  // The C++ bridge installs a native __HT_drain that calls Hermes's drainMicrotasks().
+  // Flush all async work: microtask queue (promises) + our polyfill queues (timers).
+  // The engine installs a native __HT_drain:
+  //   - Hermes: calls drainMicrotasks() (non-reentrant C++ function)
+  //   - V8/Deno: calls Deno.core.runMicrotasks() (can trigger callbacks)
   // We wrap it to also flush our setImmediate/setTimeout polyfill queues.
   var nativeDrain = globalThis.__HT_drain || function () {};
+  var __draining = false;
   globalThis.__HT_drain = function () {
-    // 1. Drain Hermes's internal promise/microtask queue
-    nativeDrain();
-    // 2. Flush our setImmediate queue
-    var limit = 1000;
-    while (queue.length > 0 && limit-- > 0) {
-      queue.shift()();
-    }
-    // 3. Flush pending timers
-    var ids = Object.keys(timers);
-    for (var i = 0; i < ids.length; i++) {
-      var t = timers[ids[i]];
-      if (t) {
-        delete timers[ids[i]];
-        t();
+    if (__draining) return; // Prevent re-entrant infinite loop (V8 callbacks trigger drain)
+    __draining = true;
+    try {
+      // 1. Drain engine's internal promise/microtask queue
+      nativeDrain();
+      // 2. Flush our setImmediate queue
+      var limit = 1000;
+      while (queue.length > 0 && limit-- > 0) {
+        queue.shift()();
       }
+      // 3. Flush pending timers
+      var ids = Object.keys(timers);
+      for (var i = 0; i < ids.length; i++) {
+        var t = timers[ids[i]];
+        if (t) {
+          delete timers[ids[i]];
+          t();
+        }
+      }
+      // 4. Drain again (timer callbacks may have queued more microtasks)
+      nativeDrain();
+    } finally {
+      __draining = false;
     }
-    // 4. Drain again (timer callbacks may have queued more microtasks)
-    nativeDrain();
   };
 
   if (typeof globalThis.setTimeout === 'undefined') {
