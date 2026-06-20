@@ -839,6 +839,7 @@ fn watch_tests(files: &[PathBuf], root: &PathBuf) {
 
     eprintln!("\x1b[2m[watch]\x1b[0m Watching for changes in {}", root.display());
     eprintln!("\x1b[2m[watch]\x1b[0m Press Ctrl+C to stop\n");
+    let watch_all = std::env::var("HT_WATCH_ALL").is_ok();
 
     // Persistent runtime — created once, reused across watch cycles
     let rt = hermes::Runtime::new().unwrap_or_else(|e| {
@@ -926,7 +927,17 @@ fn watch_tests(files: &[PathBuf], root: &PathBuf) {
                 }
 
                 // Determine which tests to run
-                let rerun_files = if affected.is_empty() {
+                let rerun_files = if watch_all {
+                    let all = if files.is_empty() {
+                        bundler::find_test_files(&root)
+                    } else {
+                        files.to_vec()
+                    };
+                    eprintln!(
+                        "\x1b[2m[watch]\x1b[0m HT_WATCH_ALL=1 set, running full suite"
+                    );
+                    all
+                } else if affected.is_empty() {
                     let all = if files.is_empty() {
                         bundler::find_test_files(&root)
                     } else {
@@ -963,13 +974,14 @@ fn watch_tests(files: &[PathBuf], root: &PathBuf) {
                     let _ = watch_rt.eval(HARNESS_JS, "hermes-test/harness.js");
                 });
                 let alias_names: Vec<String> = cfg.aliases.iter().map(|(a, _)| a.clone()).collect();
-                let mock_modules = bundler::find_mock_modules_with_aliases(&rerun_files, &alias_names);
+                let alias_pairs: Vec<(String, String)> = cfg.aliases.clone();
+                let mock_modules = bundler::find_mock_modules_with_alias_pairs(&rerun_files, &alias_names, &alias_pairs);
                 let rerun_start = Instant::now();
 
                 // Scan shallow auto-mocks
                 let mut watch_shallow: Vec<(String, Vec<String>, Vec<String>)> = Vec::new();
                 for f in &rerun_files {
-                    for s in bundler::scan_shallow_auto_mocks(f, &alias_names) {
+                    for s in bundler::scan_shallow_auto_mocks_with_pairs(f, &alias_names, &alias_pairs) {
                         if let Some((_, ej, eo)) = watch_shallow.iter_mut().find(|(p, _, _)| p == &s.0) {
                             for name in s.1 { if !ej.contains(&name) { ej.push(name); } }
                             for name in s.2 { if !eo.contains(&name) { eo.push(name); } }
@@ -1037,12 +1049,13 @@ fn run_persistent_cycle(
     let start = Instant::now();
 
     let alias_names: Vec<String> = cfg.aliases.iter().map(|(a, _)| a.clone()).collect();
-    let mock_modules = bundler::find_mock_modules_with_aliases(test_files, &alias_names);
+    let alias_pairs: Vec<(String, String)> = cfg.aliases.clone();
+    let mock_modules = bundler::find_mock_modules_with_alias_pairs(test_files, &alias_names, &alias_pairs);
 
     // Scan shallow auto-mocks
     let mut shallow_mocks: Vec<(String, Vec<String>, Vec<String>)> = Vec::new();
     for f in test_files {
-        for s in bundler::scan_shallow_auto_mocks(f, &alias_names) {
+        for s in bundler::scan_shallow_auto_mocks_with_pairs(f, &alias_names, &alias_pairs) {
             if let Some((_, ej, eo)) = shallow_mocks.iter_mut().find(|(p, _, _)| p == &s.0) {
                 for name in s.1 { if !ej.contains(&name) { ej.push(name); } }
                 for name in s.2 { if !eo.contains(&name) { eo.push(name); } }
@@ -1137,9 +1150,10 @@ globalThis.__HT_results = JSON.stringify({
         // Bundle affected test files as a group (--packages=external if vendor loaded)
         // Scan shallow auto-mocks for persistent watch first-run
         let alias_watch: Vec<String> = cfg.aliases.iter().map(|(a, _)| a.clone()).collect();
+        let alias_watch_pairs: Vec<(String, String)> = cfg.aliases.clone();
         let mut persist_shallow: Vec<(String, Vec<String>, Vec<String>)> = Vec::new();
         for f in test_files {
-            for s in bundler::scan_shallow_auto_mocks(f, &alias_watch) {
+            for s in bundler::scan_shallow_auto_mocks_with_pairs(f, &alias_watch, &alias_watch_pairs) {
                 if let Some((_, ej, eo)) = persist_shallow.iter_mut().find(|(p, _, _)| p == &s.0) {
                     for name in s.1 { if !ej.contains(&name) { ej.push(name); } }
                     for name in s.2 { if !eo.contains(&name) { eo.push(name); } }
