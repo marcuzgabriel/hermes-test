@@ -418,6 +418,26 @@ afterEach(() => {
 - Script mirrors CI/release steps: clone+patch Hermes, build Hermes, bundle harness, build CLI, run Topdanmark.
 - Topdanmark install defaults to `bun install --ignore-scripts` to avoid monorepo `postinstall` (`bob build`/codegen) failures in container-only test runs.
 
+### Docker workflow (internal reference)
+- Build image:
+  ```bash
+  docker build -t hermes-test-linux docker/topdanmark-linux
+  ```
+- Run full Linux validation with coverage:
+  ```bash
+  docker run --rm -it \
+    -v ~/Documents/hermes-test:/work/hermes-test \
+    -v ~/Documents/mobile-insurance-app-expo:/work/mobile-insurance-app-expo \
+    -e SKIP_INSTALL=0 \
+    hermes-test-linux \
+    bash /work/hermes-test/docker/topdanmark-linux/run-topdanmark.sh --coverage
+  ```
+- Useful env vars:
+  - `SKIP_INSTALL=1` → skip monorepo install
+  - `TOPDANMARK_IGNORE_SCRIPTS=1` (default) → avoid monorepo postinstall codegen path in container
+  - `HERMES_COMMIT` (default `fd0e1d3ed`)
+  - `HERMES_BUILD_JOBS` (default `4`)
+
 ### Challenge: Linux static linking failed with many undefined Hermes symbols
 - Symptom: `error: linking with cc failed` on Linux ARM Docker despite successful Hermes build.
 - Root cause: static archive resolution on GNU ld dropped cross-archive symbols in the previous link strategy.

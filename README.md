@@ -293,40 +293,6 @@ hermes-test runs on the **Hermes JavaScript engine**, the same engine that power
 
 Linux CI is supported. macOS remains the reference environment for closest parity with iOS app behavior.
 
-### Run Topdanmark tests in Linux (Docker)
-
-If you have both repos locally:
-- `~/Documents/hermes-test`
-- `~/Documents/mobile-insurance-app-expo`
-
-Build the Linux test image once:
-
-```bash
-cd ~/Documents/hermes-test
-docker build -f docker/topdanmark-linux/Dockerfile -t hermes-test-linux .
-```
-
-Run Topdanmark with local `hermes-test` source + Linux runtime:
-
-```bash
-docker run --rm -it \
-  -v ~/Documents/hermes-test:/work/hermes-test \
-  -v ~/Documents/mobile-insurance-app-expo:/work/mobile-insurance-app-expo \
-  -e SKIP_INSTALL=1 \
-  hermes-test-linux \
-  bash /work/hermes-test/docker/topdanmark-linux/run-topdanmark.sh
-```
-
-Notes:
-- Set `SKIP_INSTALL=0` if you want the container to run `bun install` before tests.
-- You can pass test filters after the script path (they are forwarded to `hermes-test`).
-- The script mirrors CI/release build steps (Hermes clone/patch/build + harness bundle flow).
-- Optional env vars: `HERMES_COMMIT` (default `fd0e1d3ed`), `HERMES_BUILD_JOBS` (default `4`).
-- Docker install defaults to `--ignore-scripts` for Topdanmark to avoid monorepo postinstall (`bob build`/codegen) failures. Set `TOPDANMARK_IGNORE_SCRIPTS=0` to re-enable scripts.
-- Files:
-  - `docker/topdanmark-linux/Dockerfile`
-  - `docker/topdanmark-linux/run-topdanmark.sh`
-
 ### Linux Intl fallback behavior
 
 On Linux, hermes-test applies small runtime fallbacks only when native behavior is clearly broken:
@@ -344,7 +310,7 @@ If you want to improve locale behavior:
 
 1. Update `packages/hermes-test/src/polyfills.js` (fallback detection + formatting behavior).
 2. Add/extend tests in `examples/expo-app/src/examples/intl-locale.test.ts`.
-3. Validate on Linux with the Docker flow above.
+3. Validate on Linux (CI or local Linux container).
 4. Keep fallbacks deterministic and gated by runtime checks so working native Intl (macOS/Android) remains untouched.
 
 <details>
