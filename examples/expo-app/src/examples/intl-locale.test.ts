@@ -52,5 +52,20 @@ group('Intl locale formatting', () => {
       // Danish: "1.234,56" vs English: "1,234.56"
       expect(da).not.toBe(en);
     });
+
+    test('Intl.NumberFormat works with and without new', () => {
+      const a = new Intl.NumberFormat('en-US');
+      const b = Intl.NumberFormat('en-US');
+      expect(typeof a.format).toBe('function');
+      expect(typeof b.format).toBe('function');
+      expect(a.format(1234.56)).toBe(b.format(1234.56));
+    });
+
+    test('Intl.NumberFormat supportedLocalesOf returns array', () => {
+      const locales = Intl.NumberFormat.supportedLocalesOf(['da-DK', 'en-US']);
+      expect(Array.isArray(locales)).toBe(true);
+      expect(locales).toContain('da-DK');
+      expect(locales).toContain('en-US');
+    });
   });
 });
