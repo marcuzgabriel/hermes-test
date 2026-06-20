@@ -332,21 +332,21 @@ See also: [Hermes IntlAPIs documentation](https://github.com/facebook/hermes/blo
 ## How it works
 
 ```
-┌──────────────┐     ┌─────────┐     ┌────────────┐
-│  .test.ts    │────▶│ esbuild │────▶│   Hermes   │
-│  files       │     │ bundle  │     │   VM eval  │
-└──────────────┘     └─────────┘     └────────────┘
-       │                  │                 │
-  mockModule()      <100ms bundle     native execution
-  spy/expect        path aliases      drainMicrotasks
-  renderHook        mock hoisting      real React tree
+┌────────────────────────────┐   ┌──────────────┐   ┌──────────────────────┐
+│ .hermes-test-entry         │──▶│ esbuild      │──▶│ Hermes runtime       │
+│ (selected test files)      │   │ single bundle│   │ 1) eval harness      │
+└────────────────────────────┘   └──────────────┘   │ 2) eval test bundle  │
+         │                            │             └──────────────────────┘
+   run all / filtered / changed   path aliases
+   + full source dependency graph mock hoisting
 ```
 
-1. **esbuild** bundles your test + source into a single IIFE (~100ms)
-2. Rust CLI applies **mock hoisting** and injects the require shim for native modules
-3. **Bytecode compilation** — cached .hbc for instant loading on subsequent runs
-4. **Hermes VM** evaluates the bytecode — same engine as your app
-5. Results printed to terminal — single process, no workers, no IPC
+1. CLI creates an entry that imports the selected test files for this run (all, filtered, or changed in watch mode).
+2. **esbuild** bundles that entry and its full dependency graph into one bundle.
+3. Rust CLI applies **mock hoisting** and native-module require shims.
+4. Hermes evaluates `harness.bundle.js` first to install `test/expect/mock/renderHook` and per-file mock routing.
+5. Hermes evaluates the test bundle, runs tests in one process, and prints results.
+6. **Bytecode cache** (`.hbc`) is reused on subsequent runs for faster startup.
 
 ### Three-tier cache
 
