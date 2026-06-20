@@ -8,7 +8,10 @@ on:
 
 jobs:
   test:
-    runs-on: macos-14
+    strategy:
+      matrix:
+        os: [macos-14, ubuntu-latest]
+    runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
 
@@ -31,8 +34,13 @@ jobs:
         with: { node-version: '22' }
       - uses: oven-sh/setup-bun@v2
 
-      - name: Install deps
+      - name: Install deps (macOS)
+        if: runner.os == 'macOS'
         run: brew install cmake ninja
+
+      - name: Install deps (Linux)
+        if: runner.os == 'Linux'
+        run: sudo apt-get update && sudo apt-get install -y cmake ninja-build libicu-dev
 
       - name: Build Hermes
         run: |
@@ -61,3 +69,9 @@ jobs:
           cd examples/expo-app
           bun install --no-save
           ../../target/release/hermes-test src/examples/*.test.ts src/bench/pure-10.test.ts
+
+      - name: Run example tests with coverage (Linux)
+        if: runner.os == 'Linux'
+        run: |
+          cd examples/expo-app
+          ../../target/release/hermes-test --coverage src/examples/*.test.ts src/bench/pure-10.test.ts
