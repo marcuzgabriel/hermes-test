@@ -68,4 +68,11 @@ group('Intl locale formatting', () => {
       expect(locales).toContain('en-US');
     });
   });
+
+  group('String locale casing', () => {
+    test('toLocaleLowerCase and toLocaleUpperCase transform ASCII text', () => {
+      expect('AbC'.toLocaleLowerCase()).toBe('abc');
+      expect('aBc'.toLocaleUpperCase()).toBe('ABC');
+    });
+  });
 });

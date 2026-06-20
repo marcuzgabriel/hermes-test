@@ -101,7 +101,7 @@ fn main() {
     // Hermes V1 (rn/0.84): libhermesvm replaces libhermes.
     // On Linux (GNU ld), circular deps need libs listed twice.
     // macOS ld64 handles circular deps automatically.
-    let libs = [
+    let base_libs = [
         "hermesvm",
         "hermesVMRuntime",
         "hermesFrontend",
@@ -128,32 +128,17 @@ fn main() {
         "dtoa",
         "LLVHSupport",
         "LLVHDemangle",
-        // Repeat for GNU ld circular dependency resolution
-        "hermesVMRuntime",
-        "hermesFrontend",
-        "hermesOptimizer",
-        "hermesHBCBackend",
-        "hermesBackend",
-        "hermesParser",
-        "hermesAST",
-        "hermesSupport",
-        "hermesADT",
-        "LLVHSupport",
     ];
 
-    // On Linux, GNU ld is strict about link order and discards unused symbols
-    // on first pass. Hermes libs have circular dependencies, so we need
-    // --start-group/--end-group to resolve them.
-    if cfg!(not(target_os = "macos")) {
-        println!("cargo:rustc-link-arg=-Wl,--start-group");
-    }
-
-    for lib in &libs {
-        println!("cargo:rustc-link-lib=static={lib}");
-    }
-
-    if cfg!(not(target_os = "macos")) {
-        println!("cargo:rustc-link-arg=-Wl,--end-group");
+    // GNU ld on Linux is strict about archive ordering and can miss symbols
+    // across Hermes' circular static dependencies. whole-archive avoids that.
+    let hermes_link_kind = if cfg!(target_os = "macos") {
+        "static"
+    } else {
+        "static:+whole-archive"
+    };
+    for lib in &base_libs {
+        println!("cargo:rustc-link-lib={hermes_link_kind}={lib}");
     }
 
     // System libraries

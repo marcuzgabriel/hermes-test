@@ -408,3 +408,30 @@ afterEach(() => {
     until a smarter heuristic (import-graph analysis or runtime error detection) is available.
 20. **`JSON.parse(JSON.stringify(x))` destroys Date objects** — converts them to ISO strings.
     Use destructuring with rest operator when you need to omit fields from mock objects.
+
+## Day 22: Linux Docker validation + Intl fallback hardening
+
+### Challenge: Running Topdanmark from Linux against local hermes-test source
+- Added Docker flow in this repo:
+  - `docker/topdanmark-linux/Dockerfile`
+  - `docker/topdanmark-linux/run-topdanmark.sh`
+- Script mirrors CI/release steps: clone+patch Hermes, build Hermes, bundle harness, build CLI, run Topdanmark.
+- Topdanmark install defaults to `bun install --ignore-scripts` to avoid monorepo `postinstall` (`bob build`/codegen) failures in container-only test runs.
+
+### Challenge: Linux static linking failed with many undefined Hermes symbols
+- Symptom: `error: linking with cc failed` on Linux ARM Docker despite successful Hermes build.
+- Root cause: static archive resolution on GNU ld dropped cross-archive symbols in the previous link strategy.
+- Fix: link Hermes static libs with `whole-archive` on Linux in `crates/hermes-test-cli/build.rs` (macOS keeps normal static linking).
+
+### Challenge: One Linux-only failing test from locale casing behavior
+- Failing test expected `"Migration to Guidewire".toLocaleLowerCase()` to return lowercased text.
+- On Linux Hermes ICU stub, `toLocaleLowerCase()` returned placeholder output (`"lowered"`).
+- Fix in `packages/hermes-test/src/polyfills.js`:
+  - Add runtime-gated fallback for `String.prototype.toLocaleLowerCase/toLocaleUpperCase`.
+  - Activation check is generic (`'AbC' -> 'abc'`, `'aBc' -> 'ABC'`), no project-specific strings.
+  - Preserve native behavior on platforms where locale casing already works.
+
+### Guardrails for future Intl work
+- Keep polyfills **runtime-detected**, not platform-forced.
+- Keep scope narrow (patch only broken surfaces, avoid full CLDR reimplementation).
+- Add/update regression tests in `examples/expo-app/src/examples/intl-locale.test.ts`.

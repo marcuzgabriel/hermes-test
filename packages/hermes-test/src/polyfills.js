@@ -193,6 +193,40 @@ if (typeof Object.fromEntries === 'undefined') {
   };
 })();
 
+// Intl String locale casing fallback for Linux Hermes ICU stub behavior.
+// Some Linux builds return placeholder values (e.g. "lowered"/"UPPERED")
+// instead of transformed text. Keep native behavior when it works.
+(function () {
+  function isBrokenIntlStringCasing() {
+    try {
+      var lower = 'AbC'.toLocaleLowerCase();
+      var upper = 'aBc'.toLocaleUpperCase();
+      if (typeof lower !== 'string' || typeof upper !== 'string') return true;
+      return lower !== 'abc' || upper !== 'ABC';
+    } catch (_e) {
+      return true;
+    }
+  }
+
+  if (!isBrokenIntlStringCasing()) return;
+
+  Object.defineProperty(String.prototype, 'toLocaleLowerCase', {
+    configurable: true,
+    writable: true,
+    value: function () {
+      return String(this).toLowerCase();
+    },
+  });
+
+  Object.defineProperty(String.prototype, 'toLocaleUpperCase', {
+    configurable: true,
+    writable: true,
+    value: function () {
+      return String(this).toUpperCase();
+    },
+  });
+})();
+
 // crypto.getRandomValues — needed by uuid and other crypto-dependent libs
 if (typeof globalThis.crypto === 'undefined') {
   globalThis.crypto = {};
