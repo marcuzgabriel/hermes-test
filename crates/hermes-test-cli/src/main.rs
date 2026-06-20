@@ -841,22 +841,81 @@ fn watch_tests(files: &[PathBuf], root: &PathBuf) {
     eprintln!("\x1b[2m[watch]\x1b[0m Press Ctrl+C to stop\n");
     let watch_all = std::env::var("HT_WATCH_ALL").is_ok();
 
-    // Persistent runtime — created once, reused across watch cycles
-    let rt = hermes::Runtime::new().unwrap_or_else(|e| {
+    let cfg = bundler::read_config(&root);
+
+    // Initial run: use the same fresh-runtime + single-bundle path as watch reruns.
+    // This keeps watch startup behavior aligned with normal test runs.
+    let initial_rt = hermes::Runtime::new().unwrap_or_else(|e| {
         eprintln!("Hermes error: {e}");
         std::process::exit(1);
     });
+    suppress_hermes_stderr(|| {
+        let _ = initial_rt.eval(HARNESS_JS, "hermes-test/harness.js");
+    });
+    let alias_names: Vec<String> = cfg.aliases.iter().map(|(a, _)| a.clone()).collect();
+    let alias_pairs: Vec<(String, String)> = cfg.aliases.clone();
+    let mock_modules = bundler::find_mock_modules_with_alias_pairs(&all_test_files, &alias_names, &alias_pairs);
+    let initial_start = Instant::now();
 
-    // Load harness once
-    if rt.eval(HARNESS_JS, "harness.js").is_err() {
-        eprintln!("Failed to load harness");
-        std::process::exit(1);
+    let mut initial_shallow: Vec<(String, Vec<String>, Vec<String>)> = Vec::new();
+    for f in &all_test_files {
+        for s in bundler::scan_shallow_auto_mocks_with_pairs(f, &alias_names, &alias_pairs) {
+            if let Some((_, ej, eo)) = initial_shallow.iter_mut().find(|(p, _, _)| p == &s.0) {
+                for name in s.1 { if !ej.contains(&name) { ej.push(name); } }
+                for name in s.2 { if !eo.contains(&name) { eo.push(name); } }
+            } else { initial_shallow.push(s); }
+        }
     }
 
-    let cfg = bundler::read_config(&root);
+    let (wrapper_cfg, wrapper_shim_dir) = bundler::create_wrapper_shims(&root, &cfg);
+    let (shadow_cfg, shadow_dirs) = bundler::create_shadow_wrappers(&root, &mock_modules, &wrapper_cfg);
+    let non_aliased: Vec<String> = mock_modules.iter().filter(|m| {
+        !cfg.aliases.iter().any(|(a, _)| *m == a || m.starts_with(&format!("{a}/")))
+    }).cloned().collect();
+    let (shim_cfg, shim_dir, remaining) =
+        bundler::create_package_shims(&root, &non_aliased, &shadow_cfg);
+    let entry = bundler::generate_entry_with_shallow(&all_test_files, None, &mock_modules, &shim_cfg, &[], Some(&root), &initial_shallow);
+    let entry_path = root.join(".hermes-test-watch-initial-entry.js");
+    let _ = std::fs::write(&entry_path, &entry);
 
-    // Initial run — full bundle to build dep graph + load vendor
-    let depgraph = run_persistent_cycle(&rt, &all_test_files, &root, &cfg, true);
+    let bundle_result = bundler::bundle_auto_with_config(&entry_path, &root, &remaining, &shim_cfg);
+    let _ = std::fs::remove_file(&entry_path);
+    for dir in &shadow_dirs { let _ = std::fs::remove_dir_all(dir); }
+    if let Some(ref d) = shim_dir { let _ = std::fs::remove_dir_all(d); }
+    if let Some(ref d) = wrapper_shim_dir { let _ = std::fs::remove_dir_all(d); }
+
+    match bundle_result {
+        Ok(bundle) => {
+            let eval_result = match crate::hermes::compile_bytecode(&bundle, "bundle.js") {
+                Ok(bc) => initial_rt.eval_bytes(&bc, "bundle.hbc"),
+                Err(_) => initial_rt.eval(&bundle, "bundle.js"),
+            };
+            if let Err(e) = eval_result {
+                eprintln!("\x1b[31mInitial watch execution failed: {e}\x1b[0m");
+            } else {
+                print_console_logs(&initial_rt);
+                let elapsed = initial_start.elapsed();
+                if let Ok(json) = initial_rt.eval("globalThis.__HT_results", "results") {
+                    let _ = print_summary_with_time(&json, elapsed.as_millis(), all_test_files.len());
+                }
+            }
+        }
+        Err(e) => eprintln!("\x1b[31mInitial watch bundle failed: {e}\x1b[0m"),
+    }
+
+    // Build dep graph for affected-file watch reruns.
+    let depgraph_entry = bundler::generate_entry(&all_test_files, None, &mock_modules, &cfg, &[], Some(&root));
+    let depgraph_entry_path = root.join(".hermes-test-entry.js");
+    let depgraph = if std::fs::write(&depgraph_entry_path, &depgraph_entry).is_ok() {
+        let dg = match bundler::bundle_with_depgraph(&depgraph_entry_path, &root, &all_test_files, &mock_modules) {
+            Ok((_, d)) => d,
+            Err(_) => std::collections::HashMap::new(),
+        };
+        let _ = std::fs::remove_file(&depgraph_entry_path);
+        dg
+    } else {
+        std::collections::HashMap::new()
+    };
 
     // Watch loop
     let mut current_depgraph = depgraph;
