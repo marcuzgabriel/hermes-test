@@ -331,15 +331,16 @@ See also: [Hermes IntlAPIs documentation](https://github.com/facebook/hermes/blo
 
 ## How it works
 
-`selected tests -> .hermes-test-entry -> esbuild (single bundle) -> Hermes (eval harness, then eval test bundle)`
+Hermes is the JavaScript engine. The harness is the test runtime layer on top of Hermes.
 
-Hermes is the JavaScript engine. The harness is the test runtime layer (`test`, `expect`, `mock`, `renderHook`, orchestration, and result collection). Execution is always harness-first, then test bundle.
-
-1. CLI builds an entry file from the tests selected for this run (all, filtered, or changed in watch mode).
-2. **esbuild** bundles that entry and the full dependency graph into one bundle.
-3. Rust CLI applies **mock hoisting** and native-module require shims.
-4. Hermes evaluates `harness.bundle.js` first (`test/expect/mock/renderHook`, per-file mock routing), then evaluates the test bundle and prints results.
-5. **Bytecode cache** (`.hbc`) is reused on later runs for faster startup.
+| Step | What happens |
+|---|---|
+| 1 | The CLI picks the test files for this run (all, filtered, or changed in watch mode). |
+| 2 | The CLI generates one entry file (`.hermes-test-entry`) from those tests. |
+| 3 | esbuild bundles that entry and app code into one JavaScript bundle. |
+| 4 | Hermes starts and evaluates `harness.bundle.js` first (this provides `test`, `expect`, `mock`, `renderHook`, and test orchestration). |
+| 5 | Hermes evaluates the test bundle, runs tests, and returns results to the CLI. |
+| 6 | Bytecode cache (`.hbc`) is reused on later runs for faster startup. |
 
 ### Three-tier cache
 
