@@ -2,6 +2,17 @@ use std::path::{Path, PathBuf};
 
 use super::config::BundleConfig;
 
+fn hermes_temp_root(project_root: &Path) -> PathBuf {
+    use std::hash::{Hash, Hasher};
+    let mut hasher = std::collections::hash_map::DefaultHasher::new();
+    project_root.to_string_lossy().hash(&mut hasher);
+    let project_hash = hasher.finish();
+    let pid = std::process::id();
+    let root = std::env::temp_dir().join(format!("hermes-test-work-{project_hash:x}-{pid}"));
+    let _ = std::fs::create_dir_all(&root);
+    root
+}
+
 /// Create shadow wrapper directories for aliased mock paths.
 ///
 /// For each alias that has mocked sub-paths, creates a shadow directory tree:
@@ -33,10 +44,11 @@ pub fn create_shadow_wrappers(
         return (new_cfg, shadow_dirs);
     }
 
+    let temp_root = hermes_temp_root(project_root);
     for (alias, mocked_paths) in &alias_mocks {
         let Some((_alias_name, target)) = cfg.aliases.iter().find(|(a, _)| a == alias) else { continue };
 
-        let shadow_dir = project_root.join(format!(".hermes-test-shadow-{}", alias.replace('/', "-").replace('@', "")));
+        let shadow_dir = temp_root.join(format!("shadow-{}", alias.replace('/', "-").replace('@', "")));
         shadow_dirs.push(shadow_dir.clone());
 
         // Remove old shadow dir if exists, create fresh
@@ -105,7 +117,7 @@ pub fn create_package_shims(
         return (new_cfg, None, remaining);
     }
 
-    let shim_dir = project_root.join(".hermes-test-pkg-shims");
+    let shim_dir = hermes_temp_root(project_root).join("pkg-shims");
     let _ = std::fs::remove_dir_all(&shim_dir);
     let _ = std::fs::create_dir_all(&shim_dir);
 
@@ -195,7 +207,7 @@ pub fn create_wrapper_shims(
     // Find all candidate shims directories (node_modules, monorepo root, dev source).
     let shims_dirs = find_hermes_test_shims_dirs(project_root, cfg);
 
-    let shim_dir = project_root.join(".hermes-test-wrapper-shims");
+    let shim_dir = hermes_temp_root(project_root).join("wrapper-shims");
     let _ = std::fs::remove_dir_all(&shim_dir);
     let _ = std::fs::create_dir_all(&shim_dir);
 
