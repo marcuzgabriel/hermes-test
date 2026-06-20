@@ -41,6 +41,192 @@ if (typeof Object.fromEntries === 'undefined') {
   };
 }
 
+// Intl NumberFormat fallback for Linux Hermes builds where locale is ignored.
+// Detect broken behavior first so macOS/Android native Intl remains untouched.
+(function () {
+  function pickLocale(locales) {
+    if (Array.isArray(locales) && locales.length > 0) return String(locales[0] || 'en-US');
+    if (typeof locales === 'string' && locales) return locales;
+    return 'en-US';
+  }
+
+  function normalizeDigits(style, options) {
+    var minDefault = 0;
+    var maxDefault = 3;
+    if (style === 'currency') {
+      minDefault = 2;
+      maxDefault = 2;
+    } else if (style === 'percent') {
+      minDefault = 0;
+      maxDefault = 0;
+    }
+    var minDigits = typeof options.minimumFractionDigits === 'number' ? options.minimumFractionDigits : minDefault;
+    var maxDigits = typeof options.maximumFractionDigits === 'number' ? options.maximumFractionDigits : maxDefault;
+    if (maxDigits < minDigits) maxDigits = minDigits;
+    return { min: minDigits, max: maxDigits };
+  }
+
+  function separatorsForLocale(locale) {
+    var lc = String(locale || 'en-US').toLowerCase();
+    if (lc.indexOf('da') === 0) return { group: '.', decimal: ',' };
+    if (lc.indexOf('de') === 0) return { group: '.', decimal: ',' };
+    if (lc.indexOf('fr') === 0) return { group: ' ', decimal: ',' };
+    return { group: ',', decimal: '.' };
+  }
+
+  function addGrouping(intPart, group) {
+    var out = '';
+    var count = 0;
+    for (var i = intPart.length - 1; i >= 0; i--) {
+      out = intPart[i] + out;
+      count++;
+      if (i > 0 && count % 3 === 0) out = group + out;
+    }
+    return out;
+  }
+
+  function trimFraction(fracPart, minDigits) {
+    while (fracPart.length > minDigits && fracPart[fracPart.length - 1] === '0') {
+      fracPart = fracPart.slice(0, -1);
+    }
+    return fracPart;
+  }
+
+  function formatNumberValue(value, locales, options) {
+    var num = Number(value);
+    if (!isFinite(num)) return String(num);
+    options = options || {};
+
+    var locale = pickLocale(locales);
+    var style = options.style || 'decimal';
+    var useGrouping = options.useGrouping !== false;
+    var digits = normalizeDigits(style, options);
+    var minDigits = digits.min;
+    var maxDigits = digits.max;
+
+    if (style === 'percent') num = num * 100;
+    var sign = num < 0 ? '-' : '';
+    var abs = Math.abs(num);
+
+    var fixed = abs.toFixed(maxDigits);
+    var parts = fixed.split('.');
+    var intPart = parts[0];
+    var fracPart = parts[1] || '';
+
+    if (maxDigits > minDigits) fracPart = trimFraction(fracPart, minDigits);
+
+    var sep = separatorsForLocale(locale);
+    if (useGrouping) intPart = addGrouping(intPart, sep.group);
+
+    var formatted = sign + intPart + (fracPart ? sep.decimal + fracPart : '');
+
+    if (style === 'percent') return formatted + '%';
+    if (style === 'currency' && options.currency) {
+      if (String(locale).toLowerCase().indexOf('en') === 0) return options.currency + ' ' + formatted;
+      return formatted + ' ' + options.currency;
+    }
+    return formatted;
+  }
+
+  function isBrokenIntlNumberFormatting() {
+    try {
+      var da = (1234.56).toLocaleString('da-DK');
+      var en = (1234.56).toLocaleString('en-US');
+      if (typeof da !== 'string' || typeof en !== 'string') return true;
+      if (da === en) return true;
+      if (da.indexOf('560000') !== -1 || en.indexOf('560000') !== -1) return true;
+      return false;
+    } catch (_e) {
+      return true;
+    }
+  }
+
+  if (!isBrokenIntlNumberFormatting()) return;
+
+  if (typeof globalThis.Intl === 'undefined') globalThis.Intl = {};
+
+  function NumberFormat(locales, options) {
+    if (!(this instanceof NumberFormat)) return new NumberFormat(locales, options);
+    this._locales = locales;
+    this._options = options || {};
+    this._boundFormat = null;
+  }
+  NumberFormat.supportedLocalesOf = function (locales) {
+    if (Array.isArray(locales)) return locales.map(String);
+    if (typeof locales === 'string') return [locales];
+    return [];
+  };
+  NumberFormat.prototype.format = function (value) {
+    return formatNumberValue(value, this._locales, this._options);
+  };
+  function getBoundFormat(instance) {
+    if (!instance._boundFormat) {
+      var self = instance;
+      instance._boundFormat = function (value) {
+        return formatNumberValue(value, self._locales, self._options);
+      };
+    }
+    return instance._boundFormat;
+  }
+  Object.defineProperty(NumberFormat.prototype, 'format', {
+    configurable: true,
+    enumerable: false,
+    get: function () {
+      return getBoundFormat(this);
+    },
+  });
+  NumberFormat.prototype.resolvedOptions = function () {
+    var style = this._options.style || 'decimal';
+    var digits = normalizeDigits(style, this._options);
+    return {
+      locale: pickLocale(this._locales),
+      style: style,
+      useGrouping: this._options.useGrouping !== false,
+      minimumFractionDigits: digits.min,
+      maximumFractionDigits: digits.max,
+    };
+  };
+
+  globalThis.Intl.NumberFormat = NumberFormat;
+  Number.prototype.toLocaleString = function (locales, options) {
+    return formatNumberValue(Number(this), locales, options);
+  };
+})();
+
+// Intl String locale casing fallback for Linux Hermes ICU stub behavior.
+// Some Linux builds return placeholder values (e.g. "lowered"/"UPPERED")
+// instead of transformed text. Keep native behavior when it works.
+(function () {
+  function isBrokenIntlStringCasing() {
+    try {
+      var lower = 'AbC'.toLocaleLowerCase();
+      var upper = 'aBc'.toLocaleUpperCase();
+      if (typeof lower !== 'string' || typeof upper !== 'string') return true;
+      return lower !== 'abc' || upper !== 'ABC';
+    } catch (_e) {
+      return true;
+    }
+  }
+
+  if (!isBrokenIntlStringCasing()) return;
+
+  Object.defineProperty(String.prototype, 'toLocaleLowerCase', {
+    configurable: true,
+    writable: true,
+    value: function () {
+      return String(this).toLowerCase();
+    },
+  });
+
+  Object.defineProperty(String.prototype, 'toLocaleUpperCase', {
+    configurable: true,
+    writable: true,
+    value: function () {
+      return String(this).toUpperCase();
+    },
+  });
+})();
+
 // crypto.getRandomValues — needed by uuid and other crypto-dependent libs
 if (typeof globalThis.crypto === 'undefined') {
   globalThis.crypto = {};

@@ -283,15 +283,69 @@ useRealTimers();
 | Platform | Status | Notes |
 |----------|--------|-------|
 | **macOS (Apple Silicon / Intel)** | ✅ Fully supported | Recommended for CI/CD |
-| **Linux** | ⚠️ Partial | Intl/locale formatting incomplete — see below |
+| **Linux** | ✅ Supported | Includes NumberFormat fallback for Hermes ICU stub |
 
 hermes-test runs on the **Hermes JavaScript engine**, the same engine that powers React Native on iOS and Android. Hermes's Intl (internationalization) support varies by platform:
 
 - **macOS**: Full Intl support via Apple's Foundation framework (`toLocaleDateString`, `toLocaleString` etc. work correctly with any locale)
 - **Android** (device): Full Intl support via Java ICU
-- **Linux** (desktop/CI): Hermes's Linux Intl implementation (`PlatformIntlICU.cpp`) is incomplete — `Intl.NumberFormat` is a stub that ignores the locale parameter. `Intl.DateTimeFormat` works via ICU but `NumberFormat` produces raw C-style output (e.g. `"1234.560000"` instead of `"1.234,56"`)
+- **Linux** (desktop/CI): Hermes's Linux Intl implementation (`PlatformIntlICU.cpp`) has an incomplete `Intl.NumberFormat`. hermes-test patches this at runtime with a deterministic fallback so locale-aware number formatting works in tests.
 
-**For CI/CD, use a macOS runner** to ensure locale-dependent tests produce correct results. Linux runner support is planned for a future release.
+Linux CI is supported. macOS remains the reference environment for closest parity with iOS app behavior.
+
+### Run Topdanmark tests in Linux (Docker)
+
+If you have both repos locally:
+- `~/Documents/hermes-test`
+- `~/Documents/mobile-insurance-app-expo`
+
+Build the Linux test image once:
+
+```bash
+cd ~/Documents/hermes-test
+docker build -f docker/topdanmark-linux/Dockerfile -t hermes-test-linux .
+```
+
+Run Topdanmark with local `hermes-test` source + Linux runtime:
+
+```bash
+docker run --rm -it \
+  -v ~/Documents/hermes-test:/work/hermes-test \
+  -v ~/Documents/mobile-insurance-app-expo:/work/mobile-insurance-app-expo \
+  -e SKIP_INSTALL=1 \
+  hermes-test-linux \
+  bash /work/hermes-test/docker/topdanmark-linux/run-topdanmark.sh
+```
+
+Notes:
+- Set `SKIP_INSTALL=0` if you want the container to run `bun install` before tests.
+- You can pass test filters after the script path (they are forwarded to `hermes-test`).
+- The script mirrors CI/release build steps (Hermes clone/patch/build + harness bundle flow).
+- Optional env vars: `HERMES_COMMIT` (default `fd0e1d3ed`), `HERMES_BUILD_JOBS` (default `4`).
+- Docker install defaults to `--ignore-scripts` for Topdanmark to avoid monorepo postinstall (`bob build`/codegen) failures. Set `TOPDANMARK_IGNORE_SCRIPTS=0` to re-enable scripts.
+- Files:
+  - `docker/topdanmark-linux/Dockerfile`
+  - `docker/topdanmark-linux/run-topdanmark.sh`
+
+### Linux Intl fallback behavior
+
+On Linux, hermes-test applies small runtime fallbacks only when native behavior is clearly broken:
+
+- `Intl.NumberFormat` + `Number.prototype.toLocaleString` (locale-sensitive numeric formatting)
+- `String.prototype.toLocaleLowerCase` / `toLocaleUpperCase` (guards against ICU stub placeholders)
+
+This is intentionally scoped. It is **not** a full CLDR implementation and does not aim to perfectly replicate every locale edge case.
+
+If a locale isn't explicitly mapped in the number fallback, hermes-test falls back to safe defaults (`en-US`-style separators).
+
+### Contributing Intl improvements
+
+If you want to improve locale behavior:
+
+1. Update `packages/hermes-test/src/polyfills.js` (fallback detection + formatting behavior).
+2. Add/extend tests in `examples/expo-app/src/examples/intl-locale.test.ts`.
+3. Validate on Linux with the Docker flow above.
+4. Keep fallbacks deterministic and gated by runtime checks so working native Intl (macOS/Android) remains untouched.
 
 <details>
 <summary>Why is Linux Intl incomplete?</summary>
