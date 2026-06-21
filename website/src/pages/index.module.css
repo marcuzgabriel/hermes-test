@@ -1,0 +1,117 @@
+.hero {
+  padding: 3rem 0 2rem;
+}
+
+.kicker {
+  font-weight: 700;
+  color: var(--ifm-color-primary);
+  margin-bottom: 0.25rem;
+}
+
+.title {
+  margin-bottom: 0.5rem;
+}
+
+.subtitle {
+  font-size: 1.1rem;
+  margin-bottom: 0.75rem;
+}
+
+.buttons {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+  align-items: center;
+  margin-bottom: 1rem;
+}
+
+.ghostButton {
+  border: 1px solid var(--ifm-color-emphasis-400);
+  background: transparent;
+  color: var(--ifm-font-color-base);
+}
+
+.ghostButton:hover {
+  border-color: var(--ifm-color-primary);
+  color: var(--ifm-color-primary);
+  text-decoration: none;
+}
+
+.stats {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.75rem;
+  margin-bottom: 1rem;
+}
+
+.stats span {
+  background: var(--ifm-color-emphasis-200);
+  border-radius: 999px;
+  padding: 0.25rem 0.75rem;
+  font-size: 0.9rem;
+}
+
+.featureBadges {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.75rem;
+  margin-bottom: 1rem;
+}
+
+.badge {
+  position: relative;
+  background: var(--ifm-color-emphasis-200);
+  border: none;
+  border-radius: 999px;
+  padding: 0.25rem 0.75rem;
+  font-size: 0.9rem;
+  cursor: help;
+}
+
+.badge::after {
+  content: attr(data-tip);
+  position: absolute;
+  left: 0;
+  bottom: calc(100% + 8px);
+  min-width: 230px;
+  max-width: 320px;
+  background: var(--ifm-font-color-base);
+  color: var(--ifm-background-color);
+  border-radius: 8px;
+  padding: 0.5rem 0.6rem;
+  font-size: 0.75rem;
+  line-height: 1.35;
+  opacity: 0;
+  transform: translateY(4px);
+  pointer-events: none;
+  transition: opacity 0.12s ease, transform 0.12s ease;
+  z-index: 20;
+}
+
+.badge:hover::after {
+  opacity: 1;
+  transform: translateY(0);
+}
+
+.demoWrap {
+  border: 1px solid var(--ifm-color-emphasis-300);
+  border-radius: 12px;
+  overflow: hidden;
+}
+
+.demo {
+  width: 100%;
+  display: block;
+}
+
+.section {
+  padding: 1.5rem 0 2.5rem;
+}
+
+.card {
+  height: 100%;
+  border: 1px solid var(--ifm-color-emphasis-300);
+  border-radius: 12px;
+  padding: 1rem;
+  background: var(--ifm-background-surface-color);
+}

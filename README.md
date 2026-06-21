@@ -89,6 +89,22 @@ hermes-test              # run all tests
 hermes-test --watch      # watch mode
 ```
 
+## Documentation site
+
+This repo includes a Docusaurus docs site in `website/`.
+
+Live docs:
+
+https://marcuzgabriel.github.io/hermes-test/
+
+```bash
+cd website
+npm install
+npm start
+```
+
+GitHub Pages deployment is handled by `.github/workflows/docs.yml`.
+
 ## API
 
 ### Test structure
