@@ -278,24 +278,69 @@ expect(fired).toBe(true);
 useRealTimers();
 ```
 
+## Platform requirements
+
+| Platform | Status | Notes |
+|----------|--------|-------|
+| **macOS (Apple Silicon / Intel)** | ✅ Fully supported | Recommended for CI/CD |
+| **Linux** | ✅ Supported | Includes NumberFormat fallback for Hermes ICU stub |
+
+hermes-test runs on the **Hermes JavaScript engine**, the same engine that powers React Native on iOS and Android. Hermes's Intl (internationalization) support varies by platform:
+
+- **macOS**: Full Intl support via Apple's Foundation framework (`toLocaleDateString`, `toLocaleString` etc. work correctly with any locale)
+- **Android** (device): Full Intl support via Java ICU
+- **Linux** (desktop/CI): Hermes's Linux Intl implementation (`PlatformIntlICU.cpp`) has an incomplete `Intl.NumberFormat`. hermes-test patches this at runtime with a deterministic fallback so locale-aware number formatting works in tests.
+
+Linux CI is supported. macOS remains the reference environment for closest parity with iOS app behavior.
+
+### Linux Intl fallback behavior
+
+On Linux, hermes-test applies small runtime fallbacks only when native behavior is clearly broken:
+
+- `Intl.NumberFormat` + `Number.prototype.toLocaleString` (locale-sensitive numeric formatting)
+- `String.prototype.toLocaleLowerCase` / `toLocaleUpperCase` (guards against ICU stub placeholders)
+
+This is intentionally scoped. It is **not** a full CLDR implementation and does not aim to perfectly replicate every locale edge case.
+
+If a locale isn't explicitly mapped in the number fallback, hermes-test falls back to safe defaults (`en-US`-style separators).
+
+### Contributing Intl improvements
+
+If you want to improve locale behavior:
+
+1. Update `packages/hermes-test/src/polyfills.js` (fallback detection + formatting behavior).
+2. Add/extend tests in `examples/expo-app/src/examples/intl-locale.test.ts`.
+3. Validate on Linux (CI or local Linux container).
+4. Keep fallbacks deterministic and gated by runtime checks so working native Intl (macOS/Android) remains untouched.
+
+<details>
+<summary>Why is Linux Intl incomplete?</summary>
+
+Hermes has three platform-specific Intl backends ([source](https://github.com/facebook/hermes/blob/main/lib/Platform/Intl/CMakeLists.txt)):
+
+- **Apple** → `PlatformIntlApple.mm` — delegates to Foundation's `NSDateFormatter`/`NSNumberFormatter` (full CLDR locale data)
+- **Android** → `PlatformIntlAndroid.cpp` — delegates to Java's `android.icu` via JNI
+- **Linux/other** → `PlatformIntlICU.cpp` — intended to use ICU4C directly, but `NumberFormat` was never implemented. The [source code](https://github.com/facebook/hermes/blob/fd0e1d3ed/lib/Platform/Intl/PlatformIntlICU.cpp) contains a stub with the comment: *"This isn't right, but I didn't want to do more work for a stub."*
+
+The Hermes team has acknowledged this is a work-in-progress ([discussion #1211](https://github.com/facebook/hermes/discussions/1211), [issue #23](https://github.com/facebook/hermes/issues/23)). Since Hermes is optimized for mobile (iOS/Android), desktop Linux has been lower priority.
+
+See also: [Hermes IntlAPIs documentation](https://github.com/facebook/hermes/blob/main/doc/IntlAPIs.md)
+</details>
+
+---
+
 ## How it works
 
-```
-┌──────────────┐     ┌─────────┐     ┌────────────┐
-│  .test.ts    │────▶│ esbuild │────▶│   Hermes   │
-│  files       │     │ bundle  │     │   VM eval  │
-└──────────────┘     └─────────┘     └────────────┘
-       │                  │                 │
-  mockModule()      <100ms bundle     native execution
-  spy/expect        path aliases      drainMicrotasks
-  renderHook        Hermes patches     real React tree
-```
+Hermes is the JavaScript engine. The harness is the test runtime layer on top of Hermes.
 
-1. **esbuild** bundles your test + source into a single IIFE (~100ms)
-2. Rust CLI applies **Hermes patches** (class-extends, for-let-of)
-3. **Bytecode compilation** — cached .hbc for instant loading on subsequent runs
-4. **Hermes VM** evaluates the bytecode — same engine as your app
-5. Results printed to terminal — single process, no workers, no IPC
+| Step | What happens |
+|---|---|
+| 1 | The CLI picks the test files for this run (all, filtered, or changed in watch mode). |
+| 2 | The CLI generates one entry file (`.hermes-test-entry`) from those tests. |
+| 3 | esbuild bundles that entry and app code into one JavaScript bundle. |
+| 4 | Hermes starts and evaluates `harness.bundle.js` first (this provides `test`, `expect`, `mock`, `renderHook`, and test orchestration). |
+| 5 | Hermes evaluates the test bundle, runs tests, and returns results to the CLI. |
+| 6 | Bytecode cache (`.hbc`) is reused on later runs for faster startup. |
 
 ### Three-tier cache
 
