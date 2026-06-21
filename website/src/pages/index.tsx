@@ -32,9 +32,9 @@ export default function Home(): ReactNode {
               </Link>
             </div>
             <div className={styles.stats}>
-              <span>23x faster full suite</span>
-              <span>64x faster cached run</span>
-              <span>~350ms watch reruns</span>
+              <span>23x faster than Jest (full suite)</span>
+              <span>64x faster than Jest (cached)</span>
+              <span>~350ms watch reruns (Jest ~3s)</span>
             </div>
             <div className={styles.featureBadges}>
               <span

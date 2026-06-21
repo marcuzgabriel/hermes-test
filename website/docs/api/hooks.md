@@ -32,8 +32,10 @@ await act(async () => {
 ```ts
 import {waitFor} from 'hermes-test';
 
-waitFor(() => result.current.ready, {timeout: 3000, interval: 25});
+waitFor(() => result.current.ready, {timeout: 3000});
 ```
+
+`waitFor` supports `timeout`. The `interval` option is currently accepted in types but not used by the current runtime loop.
 
 ## `flushAsync`
 

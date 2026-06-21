@@ -15,11 +15,11 @@ What you get out of the box:
 - Built-in shims, plus custom shim support when needed
 - Typed API surface for hooks, render, store helpers, and timers
 
-## Performance at a glance
+## Performance at a glance (vs Jest)
 
-- **23x faster** full-suite runs (5s vs 116s)
-- **64x faster** cached runs (0.84s vs 54s)
-- **~350ms** watch reruns on real projects
+- **23x faster than Jest** full-suite runs (5s vs 116s)
+- **64x faster than Jest** cached runs (0.84s vs 54s)
+- **~350ms watch reruns** (Jest baseline ~3s in this workload)
 
 ## Start here
 
@@ -42,6 +42,11 @@ What you get out of the box:
 
 - [How auto-detection works](./architecture/auto-detection)
 - [What shims are](./architecture/shims)
+
+## Issues & platform notes
+
+- [Intl observations](./issues/intl-observations)
+- [Linux support](./issues/linux-support)
 
 ## References
 

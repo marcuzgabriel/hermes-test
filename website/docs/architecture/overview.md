@@ -50,6 +50,8 @@ See also:
 
 - [Auto-detection](./auto-detection)
 - [Shims](./shims)
+- [Intl observations](../issues/intl-observations)
+- [Linux support](../issues/linux-support)
 - [References index](../references)
 
 For deeper architecture notes, see the repository root docs folder:

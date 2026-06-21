@@ -23,4 +23,5 @@ This section is based on the runtime harness and published type surface.
 
 - `ht.mock(path, factory)`
 - `ht.mock.fetch(...)`
+- `ht.shallow(path)`
 - `ht.unmock(path)`

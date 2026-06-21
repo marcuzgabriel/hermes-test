@@ -30,7 +30,7 @@ Traditional RN Jest setups often become slow and fragile:
 
 ## Real-world impact
 
-- Full suites in seconds instead of minutes
+- Full suites in seconds instead of minutes (compared to common Jest-based RN setups)
 - Fast reruns for tight feedback loops
 - Less configuration maintenance over time
 

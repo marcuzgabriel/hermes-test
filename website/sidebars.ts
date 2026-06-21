@@ -55,6 +55,11 @@ const sidebars: SidebarsConfig = {
     },
     {
       type: 'category',
+      label: 'Issues & platform notes',
+      items: ['issues/intl-observations', 'issues/linux-support'],
+    },
+    {
+      type: 'category',
       label: 'References',
       items: [
         'references/index',
