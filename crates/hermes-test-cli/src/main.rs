@@ -468,7 +468,7 @@ fn run_tests_single(
                 let pm = bundler::create_plugin_mock_wrappers(test_files, root, &shim_cfg, mock_modules);
                 let r = bundler::bundle_via_plugin_with_config(
                     &entry_path, root, &pm.external_mocks, &shim_cfg,
-                    &pm.file_wrappers, &pm.pkg_wrappers,
+                    &pm.file_wrappers, &pm.text_wrappers,
                 );
                 let _ = std::fs::remove_dir_all(&pm.dir);
                 r

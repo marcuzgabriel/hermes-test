@@ -57,8 +57,7 @@ for (const a of cfg.args) {
 // aliases: [name, targetDir] pairs (longest-prefix matched here, in case esbuild
 // hands the hook the pre-substitution specifier).
 const wrappers = cfg.wrappers;
-const pkgWrappers = cfg.pkgWrappers || {};
-const aliases = cfg.aliases || [];
+const textWrappers = cfg.textWrappers || {};
 const EXTS = ['.tsx', '.ts', '.jsx', '.js'];
 
 // Given a lexically-resolved base path (usually extensionless), find the wrapper
@@ -76,18 +75,6 @@ function wrapperFor(base) {
     if (wrappers[c]) return wrappers[c];
   }
   return undefined;
-}
-
-function aliasBase(spec) {
-  let best;
-  for (const [name, target] of aliases) {
-    if (spec === name || spec.startsWith(name + '/')) {
-      if (!best || name.length > best[0].length) best = [name, target];
-    }
-  }
-  if (!best) return undefined;
-  const rem = spec.slice(best[0].length).replace(/^\//, '');
-  return rem ? path.join(best[1], rem) : best[1];
 }
 
 const mockPlugin = {
@@ -109,24 +96,21 @@ const mockPlugin = {
     // Candidate imports only (cfg.filter pre-screens by mocked basenames and
     // package names on the Go side).
     build.onResolve({ filter: new RegExp(cfg.filter) }, (args) => {
+      if (process.env.HT_DEBUG_RESOLVE) {
+        console.error(`[ht-resolve] path=${args.path} importer=${args.importer}`);
+      }
       if (args.pluginData === 'ht-real') return undefined;
-      // Bare package mock — exact specifier match.
-      if (pkgWrappers[args.path]) return { path: pkgWrappers[args.path] };
-      // Relative import — resolve against the importer.
+      // Text-matched mocks (alias specifiers, packages, barrel ancestors):
+      // EXACT import-text match — the legacy shadow-tree/package-shim boundary.
+      // Differently-spelled routes to the same file (production-internal
+      // relative imports) intentionally get the real module, so module-level
+      // init-time reads can't capture another test file's mocks.
+      if (textWrappers[args.path]) return { path: textWrappers[args.path] };
+      // Relative-mock targets: identity matching — resolve against the importer
+      // so the mock applies however the consumer spells the path.
       if (args.path[0] === '.') {
         if (!args.importer) return undefined;
         const base = path.resolve(path.dirname(args.importer), args.path);
-        const hit = wrapperFor(base);
-        return hit ? { path: hit } : undefined;
-      }
-      // Absolute path (e.g. after esbuild alias substitution).
-      if (args.path[0] === '/') {
-        const hit = wrapperFor(args.path);
-        return hit ? { path: hit } : undefined;
-      }
-      // Alias-prefixed bare specifier (pre-substitution).
-      const base = aliasBase(args.path);
-      if (base) {
         const hit = wrapperFor(base);
         return hit ? { path: hit } : undefined;
       }
@@ -138,7 +122,7 @@ const mockPlugin = {
 // No mocked targets → no interception needed → skip the plugin entirely so no
 // import pays a Go→JS round trip.
 opts.plugins =
-  Object.keys(wrappers).length > 0 || Object.keys(pkgWrappers).length > 0 ? [mockPlugin] : [];
+  Object.keys(wrappers).length > 0 || Object.keys(textWrappers).length > 0 ? [mockPlugin] : [];
 
 esbuild
   .build(opts)

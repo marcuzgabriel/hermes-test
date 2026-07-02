@@ -202,12 +202,24 @@ serving as the correctness bridge.
   of which ~0.5s is JS-API service overhead and only ~0.15s is filtered
   round-trips); warm 1.04s == legacy. if-session 31/31; examples 24 suites
   parity (one pre-existing flake).
-- ⚠️ OPEN: two consecutive early topdanmark plugin runs failed 87 tests
-  (26 suites, "pass alone fail in suite" signatures: date-comparison flips,
-  selectors returning undefined, empty renders) — then 8+ consecutive clean
-  runs under every reconstructed condition (fresh cache, fresh rebuild,
-  explicit vs discovered file lists). Unreproduced and unexplained. MUST be
-  understood before plugin mode can become the default. Suspects to rule out
-  next: esbuild service resolution races under first-run cold FS caches,
-  wrapper `_fnCache`/`_loaded` interactions with fake timers, non-determinism
-  in mock-key collection order.
+- ~~OPEN: 87-test "nondeterminism"~~ **RESOLVED — was never nondeterministic.**
+  Post-mortem: (a) the "passing" verification runs used `2>/dev/null | grep -c
+  FAIL`, discarding the stream carrying suite lines → false passes; (b) the
+  bisect harness appended the victim file LAST, which genuinely changes the
+  outcome. Reality: a DETERMINISTIC, order-dependent failure.
+  Root cause: phase 2's identity matching intercepted EVERY import route to an
+  alias-mocked module — including production-internal relative imports that
+  legacy shadow trees never intercept (symlink bypass, Day 19). Modules doing
+  module-level init-time reads (e.g. allPayments reading constants/environment)
+  initialize once, under whichever test file triggered the first import — an
+  alphabetically-earlier Claims test that MOCKS constants/environment — freezing
+  mocked values into module state for every later test (gwUtil et al).
+  Found by ordered bisect: 3 Claims tests + gwUtil = minimal repro.
+  Fix: alias and package mocks now match by IMPORT-SPECIFIER TEXT (exact), with
+  barrel-ancestor wrappers doing prefix delegation — the legacy boundary,
+  faithfully ported (esbuild runs plugin onResolve BEFORE alias substitution,
+  verified empirically, so the pre-substitution text is visible). Only phase-1
+  relative-mock targets keep identity matching (that is their purpose).
+  After fix: topdanmark 1793/1793 plugin mode, 3× stable, warm 1.08s.
+  Lesson recorded: never count failures through a discarded stream; never bisect
+  with a harness that changes test order.

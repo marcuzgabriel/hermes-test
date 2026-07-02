@@ -402,7 +402,8 @@ fn regex_escape(s: &str) -> String {
 
 /// Bundle via esbuild's JS API with the ht-mocks onResolve plugin (HT_RESOLVER=plugin).
 /// `file_wrappers` maps resolved absolute target paths (relative + alias mocks) and
-/// `pkg_wrappers` bare package specifiers to their generated wrapper files.
+/// `text_wrappers` import-specifier texts (alias mocks, package mocks, barrel
+/// ancestors) to their generated wrapper files.
 /// Flags are assembled by the same function as CLI mode; the build script parses
 /// those exact strings, so flag behavior cannot drift between modes.
 pub fn bundle_via_plugin_with_config(
@@ -411,13 +412,13 @@ pub fn bundle_via_plugin_with_config(
     external_modules: &[String],
     cfg: &BundleConfig,
     file_wrappers: &[(String, String)],
-    pkg_wrappers: &[(String, String)],
+    text_wrappers: &[(String, String)],
 ) -> Result<String, String> {
     // Nothing to intercept → the JS API detour buys nothing. Use the CLI path:
     // byte-identical behavior and no JS-runtime spawn for suites without mocks
     // needing wrappers. HT_PLUGIN_FORCE=1 disables the shortcut for benchmarking
     // the JS API service overhead in isolation.
-    if file_wrappers.is_empty() && pkg_wrappers.is_empty() && std::env::var("HT_PLUGIN_FORCE").is_err() {
+    if file_wrappers.is_empty() && text_wrappers.is_empty() && std::env::var("HT_PLUGIN_FORCE").is_err() {
         return bundle_auto_with_config(entry_file, project_root, external_modules, cfg);
     }
 
@@ -447,14 +448,14 @@ pub fn bundle_via_plugin_with_config(
             parts.push(regex_escape(&stem));
         }
     }
-    let mut pkg_parts: Vec<String> = Vec::new();
-    for (pkg, _) in pkg_wrappers {
-        pkg_parts.push(regex_escape(pkg));
+    let mut text_parts: Vec<String> = Vec::new();
+    for (spec, _) in text_wrappers {
+        text_parts.push(regex_escape(spec));
     }
     parts.sort();
     parts.dedup();
-    pkg_parts.sort();
-    pkg_parts.dedup();
+    text_parts.sort();
+    text_parts.dedup();
     let mut alts: Vec<String> = Vec::new();
     if !parts.is_empty() {
         alts.push(format!(
@@ -462,8 +463,8 @@ pub fn bundle_via_plugin_with_config(
             parts.join("|")
         ));
     }
-    if !pkg_parts.is_empty() {
-        alts.push(format!("^(?:{})$", pkg_parts.join("|")));
+    if !text_parts.is_empty() {
+        alts.push(format!("^(?:{})$", text_parts.join("|")));
     }
     let filter = alts.join("|");
 
@@ -471,7 +472,7 @@ pub fn bundle_via_plugin_with_config(
         .iter()
         .map(|(t, w)| (t.clone(), serde_json::Value::String(w.clone())))
         .collect();
-    let pkg_wrapper_map: serde_json::Map<String, serde_json::Value> = pkg_wrappers
+    let text_wrapper_map: serde_json::Map<String, serde_json::Value> = text_wrappers
         .iter()
         .map(|(t, w)| (t.clone(), serde_json::Value::String(w.clone())))
         .collect();
@@ -499,7 +500,7 @@ pub fn bundle_via_plugin_with_config(
         "args": args,
         "nodePaths": node_paths,
         "wrappers": wrapper_map,
-        "pkgWrappers": pkg_wrapper_map,
+        "textWrappers": text_wrapper_map,
         "aliases": alias_pairs,
         "resolveDir": entry_file.parent().unwrap_or(project_root).to_string_lossy(),
         "filter": filter,
@@ -522,6 +523,9 @@ pub fn bundle_via_plugin_with_config(
         .output()
         .map_err(|e| format!("failed to run JS runtime '{runtime}': {e}"))?;
 
+    if std::env::var("HT_DEBUG_RESOLVE").is_ok() {
+        eprint!("{}", String::from_utf8_lossy(&output.stderr));
+    }
     let result = if !output.status.success() {
         Err(format!(
             "plugin bundling failed: {}",
