@@ -218,6 +218,33 @@ fn eval_file(path: &str) {
     }
 }
 
+/// Expand positional args into test files. Directories expand to the test files
+/// they contain (respecting the configured testMatch pattern). A path that does
+/// not exist, or a directory containing no test files, is a HARD ERROR — the
+/// runner must never exit 0 having run nothing the user explicitly pointed at.
+fn expand_file_args(files: &[PathBuf], root: &std::path::Path) -> Vec<PathBuf> {
+    let cfg = bundler::read_config(root);
+    let mut out = Vec::new();
+    for f in files {
+        if f.is_dir() {
+            let found = bundler::find_test_files_with_pattern(f, cfg.test_match.as_deref());
+            if found.is_empty() {
+                let suffix = cfg.test_match.as_deref().unwrap_or(".test.ts");
+                eprintln!("\x1b[31mNo test files found in directory:\x1b[0m {}", f.display());
+                eprintln!("  Looking for files matching \x1b[1m*{suffix}\x1b[0m");
+                std::process::exit(1);
+            }
+            out.extend(found);
+        } else if f.is_file() {
+            out.push(f.clone());
+        } else {
+            eprintln!("\x1b[31mNo such file or directory:\x1b[0m {}", f.display());
+            std::process::exit(1);
+        }
+    }
+    out
+}
+
 fn run_tests(files: &[PathBuf], root: &PathBuf, no_bundle: bool, coverage: bool, update_snapshots: bool) {
     let root = std::fs::canonicalize(root).unwrap_or_else(|e| {
         eprintln!("Invalid root directory: {e}");
@@ -228,7 +255,7 @@ fn run_tests(files: &[PathBuf], root: &PathBuf, no_bundle: bool, coverage: bool,
     let test_files = if files.is_empty() {
         bundler::find_test_files(&root)
     } else {
-        files.to_vec()
+        expand_file_args(files, &root)
     };
 
     if test_files.is_empty() {
@@ -967,7 +994,7 @@ fn watch_tests(files: &[PathBuf], root: &PathBuf) {
     let all_test_files = if files.is_empty() {
         bundler::find_test_files(&root)
     } else {
-        files.to_vec()
+        expand_file_args(files, &root)
     };
 
     if all_test_files.is_empty() {

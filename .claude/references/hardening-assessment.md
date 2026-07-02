@@ -75,10 +75,10 @@ Both issues found in the review were silent-green:
 
 ## Prioritized enhancement plan
 
-1. **Fix directory-arg silent zero-run** (small, do before next release): expand
-   directory positional args to their contained test files (reuse find_test_files
-   scoped to the dir), or error loudly when an arg is a directory. Never exit 0
-   having run nothing the user pointed at.
+1. **Fix directory-arg silent zero-run**: DONE (feat/plugin-resolver, pre-1.2.0).
+   expand_file_args() expands directory args via find_test_files_with_pattern
+   (respecting testMatch) and HARD-ERRORS on nonexistent paths and on directories
+   containing no test files. Wired into both run and watch entry points.
 2. **Fixture tests for patches.rs transforms** (small): golden-file tests running
    representative class-extends shapes (with/without constructor, 2- and 3-level
    chains, Array subclass, `this.constructor.name` pattern) through
