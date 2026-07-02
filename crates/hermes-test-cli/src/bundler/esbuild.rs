@@ -414,12 +414,55 @@ pub fn bundle_via_plugin_with_config(
     file_wrappers: &[(String, String)],
     text_wrappers: &[(String, String)],
 ) -> Result<String, String> {
+    bundle_via_plugin_inner(entry_file, project_root, external_modules, cfg, file_wrappers, text_wrappers, false, false)
+}
+
+/// Plugin bundling with inline source map for coverage — mirrors
+/// bundle_esbuild_with_sourcemap: raw bundle, extract map, then patches with
+/// line-delta tracking.
+pub fn bundle_via_plugin_with_sourcemap(
+    entry_file: &Path,
+    project_root: &Path,
+    external_modules: &[String],
+    cfg: &BundleConfig,
+    file_wrappers: &[(String, String)],
+    text_wrappers: &[(String, String)],
+) -> Result<BundleResult, String> {
+    let raw = bundle_via_plugin_inner(entry_file, project_root, external_modules, cfg, file_wrappers, text_wrappers, true, true)?;
+    let (code, sm) = extract_inline_sourcemap(&raw);
+    let pre_patch_line_count = code.lines().count() as u32;
+    let mut code = code;
+    code = patch_esbuild_for_hermes(&code);
+    let has_externals = !external_modules.is_empty() || !cfg.externals.is_empty()
+        || code.contains("Dynamic require of");
+    if has_externals {
+        code = inject_mock_require_shim(&code);
+    }
+    code = hoist_mock_modules(&code);
+    Ok(BundleResult { code, source_map: sm, pre_patch_line_count })
+}
+
+#[allow(clippy::too_many_arguments)]
+fn bundle_via_plugin_inner(
+    entry_file: &Path,
+    project_root: &Path,
+    external_modules: &[String],
+    cfg: &BundleConfig,
+    file_wrappers: &[(String, String)],
+    text_wrappers: &[(String, String)],
+    sourcemap_inline: bool,
+    skip_patches: bool,
+) -> Result<String, String> {
     // Nothing to intercept → the JS API detour buys nothing. Use the CLI path:
     // byte-identical behavior and no JS-runtime spawn for suites without mocks
     // needing wrappers. HT_PLUGIN_FORCE=1 disables the shortcut for benchmarking
     // the JS API service overhead in isolation.
     if file_wrappers.is_empty() && text_wrappers.is_empty() && std::env::var("HT_PLUGIN_FORCE").is_err() {
-        return bundle_auto_with_config(entry_file, project_root, external_modules, cfg);
+        return bundle_esbuild_with_config_inner(
+            entry_file,
+            &find_esbuild(project_root).map_err(|_| "esbuild not found. Install it: bun add -d esbuild".to_string())?,
+            external_modules, cfg, false, sourcemap_inline, skip_patches,
+        );
     }
 
     let esbuild_bin = find_esbuild(project_root)
@@ -430,7 +473,7 @@ pub fn bundle_via_plugin_with_config(
         .ok_or_else(|| "no JS runtime found for plugin bundling (need bun or node)".to_string())?;
 
     let (args, node_path_env) =
-        assemble_esbuild_args(entry_file, external_modules, cfg, false, false);
+        assemble_esbuild_args(entry_file, external_modules, cfg, false, sourcemap_inline);
 
     // Go-side pre-screen: only imports whose last segment matches a mocked
     // target's basename (or a mocked package's name) cross the Go→JS pipe.
@@ -539,6 +582,10 @@ pub fn bundle_via_plugin_with_config(
     let _ = std::fs::remove_file(&config_path);
     let _ = std::fs::remove_file(&out_path);
     let code = result?;
+
+    if skip_patches {
+        return Ok(code);
+    }
 
     // Same patch pipeline as the CLI path.
     let mut code = patch_esbuild_for_hermes(&code);

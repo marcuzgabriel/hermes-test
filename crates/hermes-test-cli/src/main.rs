@@ -306,13 +306,11 @@ JSON.stringify({
         let alias_names: Vec<String> = cfg.aliases.iter().map(|(a, _)| a.clone()).collect();
         let alias_pairs: Vec<(String, String)> = cfg.aliases.clone();
 
-        // Files whose ht.mock() uses a test-file-relative specifier resolving to a real
-        // file run in their own bundles (see run_isolated_relative_mock_files) — unless
-        // plugin-resolver mode is active, where an esbuild onResolve hook serves mock
-        // wrappers (with real-module fallback) inside the single shared bundle.
-        // Coverage still uses the legacy path (sourcemap bundling is CLI-only for now).
-        let plugin_resolver = std::env::var("HT_RESOLVER").map(|v| v == "plugin").unwrap_or(false)
-            && !coverage;
+        // Mock delivery: the plugin resolver (esbuild JS API onResolve hook) is the
+        // DEFAULT — one bundle, one VM, all mock kinds. HT_RESOLVER=legacy restores
+        // the previous pipeline (shadow trees, package shims, isolated bundles for
+        // relative mocks) as an escape hatch for one release cycle.
+        let plugin_resolver = std::env::var("HT_RESOLVER").map(|v| v != "legacy").unwrap_or(true);
         let (isolated_files, batch_files): (Vec<PathBuf>, Vec<PathBuf>) = if plugin_resolver {
             (Vec::new(), test_files.clone())
         } else {
@@ -441,7 +439,18 @@ fn run_tests_single(
                     std::process::exit(1);
                 }
             };
-            match bundler::bundle_esbuild_with_sourcemap(&entry_path, &esbuild_path, &remaining_externals, &shim_cfg) {
+            let sm_result = if plugin_resolver {
+                let pm = bundler::create_plugin_mock_wrappers(test_files, root, &shim_cfg, mock_modules);
+                let r = bundler::bundle_via_plugin_with_sourcemap(
+                    &entry_path, root, &pm.external_mocks, &shim_cfg,
+                    &pm.file_wrappers, &pm.text_wrappers,
+                );
+                let _ = std::fs::remove_dir_all(&pm.dir);
+                r
+            } else {
+                bundler::bundle_esbuild_with_sourcemap(&entry_path, &esbuild_path, &remaining_externals, &shim_cfg)
+            };
+            match sm_result {
                 Ok(result) => {
                     let patched_lines = result.code.lines().count() as u32;
                     let line_delta = patched_lines.saturating_sub(result.pre_patch_line_count);
@@ -1081,9 +1090,14 @@ fn watch_tests(files: &[PathBuf], root: &PathBuf) {
     });
     let alias_names: Vec<String> = cfg.aliases.iter().map(|(a, _)| a.clone()).collect();
     let alias_pairs: Vec<(String, String)> = cfg.aliases.clone();
-    // Relative-mock files bundle in isolation (see run_isolated_relative_mock_files).
-    let (initial_isolated, initial_batch): (Vec<PathBuf>, Vec<PathBuf>) = all_test_files
-        .iter().cloned().partition(|f| bundler::has_relative_mock_targets(f));
+    let plugin_resolver = std::env::var("HT_RESOLVER").map(|v| v != "legacy").unwrap_or(true);
+    // Legacy only: relative-mock files bundle in isolation. Plugin mode keeps
+    // everything in the single bundle (onResolve wrappers).
+    let (initial_isolated, initial_batch): (Vec<PathBuf>, Vec<PathBuf>) = if plugin_resolver {
+        (Vec::new(), all_test_files.clone())
+    } else {
+        all_test_files.iter().cloned().partition(|f| bundler::has_relative_mock_targets(f))
+    };
     let mock_modules = bundler::find_mock_modules_with_alias_pairs(&initial_batch, &alias_names, &alias_pairs);
     let initial_start = Instant::now();
 
@@ -1098,18 +1112,33 @@ fn watch_tests(files: &[PathBuf], root: &PathBuf) {
     }
 
     let (wrapper_cfg, wrapper_shim_dir) = bundler::create_wrapper_shims(&root, &cfg);
-    let (shadow_cfg, shadow_dirs) = bundler::create_shadow_wrappers(&root, &mock_modules, &wrapper_cfg);
+    let (shadow_cfg, shadow_dirs) = if plugin_resolver {
+        (wrapper_cfg.clone(), Vec::new())
+    } else {
+        bundler::create_shadow_wrappers(&root, &mock_modules, &wrapper_cfg)
+    };
     let non_aliased: Vec<String> = mock_modules.iter().filter(|m| {
         !cfg.aliases.iter().any(|(a, _)| *m == a || m.starts_with(&format!("{a}/")))
     }).cloned().collect();
-    let (shim_cfg, shim_dir, remaining) =
-        bundler::create_package_shims(&root, &non_aliased, &shadow_cfg);
+    let (shim_cfg, shim_dir, remaining) = if plugin_resolver {
+        (shadow_cfg.clone(), None, Vec::new())
+    } else {
+        bundler::create_package_shims(&root, &non_aliased, &shadow_cfg)
+    };
     let entry = bundler::generate_entry_with_shallow(&initial_batch, None, &mock_modules, &shim_cfg, &[], Some(&root), &initial_shallow);
     let entry_path = root.join(".hermes-test-watch-initial-entry.js");
     let _ = std::fs::write(&entry_path, &entry);
 
     let bundle_result = if initial_batch.is_empty() {
         Ok(String::new())
+    } else if plugin_resolver {
+        let pm = bundler::create_plugin_mock_wrappers(&initial_batch, &root, &shim_cfg, &mock_modules);
+        let r = bundler::bundle_via_plugin_with_config(
+            &entry_path, &root, &pm.external_mocks, &shim_cfg,
+            &pm.file_wrappers, &pm.text_wrappers,
+        );
+        let _ = std::fs::remove_dir_all(&pm.dir);
+        r
     } else {
         bundler::bundle_auto_with_config(&entry_path, &root, &remaining, &shim_cfg)
     };
@@ -1279,9 +1308,13 @@ fn watch_tests(files: &[PathBuf], root: &PathBuf) {
                 });
                 let alias_names: Vec<String> = cfg.aliases.iter().map(|(a, _)| a.clone()).collect();
                 let alias_pairs: Vec<(String, String)> = cfg.aliases.clone();
-                // Relative-mock files bundle in isolation (see run_isolated_relative_mock_files).
-                let (rerun_isolated, rerun_batch): (Vec<PathBuf>, Vec<PathBuf>) = rerun_files
-                    .iter().cloned().partition(|f| bundler::has_relative_mock_targets(f));
+                let plugin_resolver = std::env::var("HT_RESOLVER").map(|v| v != "legacy").unwrap_or(true);
+                // Legacy only: relative-mock files bundle in isolation.
+                let (rerun_isolated, rerun_batch): (Vec<PathBuf>, Vec<PathBuf>) = if plugin_resolver {
+                    (Vec::new(), rerun_files.clone())
+                } else {
+                    rerun_files.iter().cloned().partition(|f| bundler::has_relative_mock_targets(f))
+                };
                 let mock_modules = bundler::find_mock_modules_with_alias_pairs(&rerun_batch, &alias_names, &alias_pairs);
                 let rerun_start = Instant::now();
 
@@ -1298,18 +1331,33 @@ fn watch_tests(files: &[PathBuf], root: &PathBuf) {
 
                 // Build single bundle
                 let (wrapper_cfg, wrapper_shim_dir) = bundler::create_wrapper_shims(&root, &cfg);
-                let (shadow_cfg, shadow_dirs) = bundler::create_shadow_wrappers(&root, &mock_modules, &wrapper_cfg);
+                let (shadow_cfg, shadow_dirs) = if plugin_resolver {
+                    (wrapper_cfg.clone(), Vec::new())
+                } else {
+                    bundler::create_shadow_wrappers(&root, &mock_modules, &wrapper_cfg)
+                };
                 let non_aliased: Vec<String> = mock_modules.iter().filter(|m| {
                     !cfg.aliases.iter().any(|(a, _)| *m == a || m.starts_with(&format!("{a}/")))
                 }).cloned().collect();
-                let (shim_cfg, shim_dir, remaining) =
-                    bundler::create_package_shims(&root, &non_aliased, &shadow_cfg);
+                let (shim_cfg, shim_dir, remaining) = if plugin_resolver {
+                    (shadow_cfg.clone(), None, Vec::new())
+                } else {
+                    bundler::create_package_shims(&root, &non_aliased, &shadow_cfg)
+                };
                 let entry = bundler::generate_entry_with_shallow(&rerun_batch, None, &mock_modules, &shim_cfg, &[], Some(&root), &watch_shallow);
                 let entry_path = root.join(".hermes-test-watch-entry.js");
                 let _ = std::fs::write(&entry_path, &entry);
 
                 let bundle_result = if rerun_batch.is_empty() {
                     Ok(String::new())
+                } else if plugin_resolver {
+                    let pm = bundler::create_plugin_mock_wrappers(&rerun_batch, &root, &shim_cfg, &mock_modules);
+                    let r = bundler::bundle_via_plugin_with_config(
+                        &entry_path, &root, &pm.external_mocks, &shim_cfg,
+                        &pm.file_wrappers, &pm.text_wrappers,
+                    );
+                    let _ = std::fs::remove_dir_all(&pm.dir);
+                    r
                 } else {
                     bundler::bundle_auto_with_config(&entry_path, &root, &remaining, &shim_cfg)
                 };

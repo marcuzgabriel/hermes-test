@@ -162,6 +162,24 @@ Payoff: one bundle, one VM always; three delivery subsystems deleted; relative /
 alias / package mocks become one code path; Day 24's iso machinery retires after
 serving as the correctness bridge.
 
+### Phase 3 results (feat/plugin-resolver, measured)
+- Plugin resolver is now the DEFAULT; `HT_RESOLVER=legacy` restores the old
+  pipeline (escape hatch for one release cycle — do not delete legacy until a
+  release has soaked in prod).
+- Coverage: bundle_via_plugin_with_sourcemap mirrors the CLI sourcemap path;
+  if-session and Topdanmark coverage runs green in default mode. NOTE: coverage
+  totals differ from legacy because mocked modules' real code now stays in the
+  instrumented bundle (legacy externalized/isolated them out of the
+  denominator) — more files measured, arguably more honest.
+- Watch: both initial run and reruns bundle via the plugin; verified with a
+  mixed relative+alias watch session (initial + source-change rerun).
+- Default-mode gauntlet: examples 24 suites parity, if-session 31/31
+  (plugin-* cache), Topdanmark 1793/1793 ×3 stable; legacy flag verified
+  (single-* cache, 1793/1793).
+- Phase 4 (deletion of shadow trees, package shims, iso runner, and the
+  HT_RESOLVER flag itself) is deliberately deferred until the flipped default
+  has shipped in a release and soaked in Topdanmark CI.
+
 ## Operational guardrails for prod consumers (Topdanmark et al.)
 
 - Pin esbuild and hermes versions; treat esbuild bumps as risky changes needing a

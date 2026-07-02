@@ -414,6 +414,13 @@ monorepo/
 }
 ```
 
+### Mock resolver
+
+Mocks are delivered through an esbuild `onResolve` plugin (one bundle, one
+Hermes VM, all mock kinds). Set `HT_RESOLVER=legacy` to restore the previous
+delivery pipeline (shadow trees, package shims, isolated bundles) — kept as an
+escape hatch for one release cycle.
+
 ### hermes-test.config.json
 
 | Key | Description | Required |
