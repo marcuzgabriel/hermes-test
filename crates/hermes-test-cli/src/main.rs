@@ -307,11 +307,20 @@ JSON.stringify({
         let alias_pairs: Vec<(String, String)> = cfg.aliases.clone();
 
         // Files whose ht.mock() uses a test-file-relative specifier resolving to a real
-        // file run in their own bundles (see run_isolated_relative_mock_files).
-        let (isolated_files, batch_files): (Vec<PathBuf>, Vec<PathBuf>) = test_files
-            .iter()
-            .cloned()
-            .partition(|f| bundler::has_relative_mock_targets(f));
+        // file run in their own bundles (see run_isolated_relative_mock_files) — unless
+        // plugin-resolver mode is active, where an esbuild onResolve hook serves mock
+        // wrappers (with real-module fallback) inside the single shared bundle.
+        // Coverage still uses the legacy path (sourcemap bundling is CLI-only for now).
+        let plugin_resolver = std::env::var("HT_RESOLVER").map(|v| v == "plugin").unwrap_or(false)
+            && !coverage;
+        let (isolated_files, batch_files): (Vec<PathBuf>, Vec<PathBuf>) = if plugin_resolver {
+            (Vec::new(), test_files.clone())
+        } else {
+            test_files
+                .iter()
+                .cloned()
+                .partition(|f| bundler::has_relative_mock_targets(f))
+        };
 
         let all_mocks = bundler::find_mock_modules_with_alias_pairs(&batch_files, &alias_names, &alias_pairs);
 
@@ -353,7 +362,7 @@ JSON.stringify({
         } else {
             // split mode is blocked in config.rs validation
             {
-                run_tests_single(&rt, &batch_files, &root, &all_mocks, &cfg, start, &[], coverage, update_snapshots, &shallow_auto_mocks, &isolated_files);
+                run_tests_single(&rt, &batch_files, &root, &all_mocks, &cfg, start, &[], coverage, update_snapshots, &shallow_auto_mocks, &isolated_files, plugin_resolver);
             }
         }
     }
@@ -374,12 +383,15 @@ fn run_tests_single(
     update_snapshots: bool,
     shallow_auto_mocks: &[(String, Vec<String>, Vec<String>)],
     isolated_files: &[PathBuf],
+    plugin_resolver: bool,
 ) {
     // Check single-bundle cache FIRST — skip shadow wrapper/shim setup if cached.
+    // Plugin-resolver bundles differ in content, so they get their own cache family.
+    let cache_prefix = if plugin_resolver { "plugin" } else { "single" };
     let cache_key = bundler::compute_single_bundle_cache_key(test_files, root, mock_modules, cfg);
     let cache_dir = root.join(".hermes-test-cache");
-    let cache_path = cache_dir.join(format!("single-{cache_key}.js"));
-    let bytecode_path = cache_dir.join(format!("single-{cache_key}.hbc"));
+    let cache_path = cache_dir.join(format!("{cache_prefix}-{cache_key}.js"));
+    let bytecode_path = cache_dir.join(format!("{cache_prefix}-{cache_key}.hbc"));
 
     // Try bytecode cache first (fastest), then JS cache, then fresh bundle.
     // When coverage is enabled, we need source maps so always do a fresh bundle.
@@ -440,7 +452,34 @@ fn run_tests_single(
                 }
             }
         } else {
-            match bundler::bundle_auto_with_config(&entry_path, root, &remaining_externals, &shim_cfg) {
+            let bundle_result = if plugin_resolver {
+                // Plugin-resolver mode: relative mocks are served as onResolve
+                // wrapper redirects (real module stays in the bundle), so their
+                // specifiers must NOT also be externalized.
+                let relative_wrappers = bundler::create_relative_mock_wrappers(test_files, root);
+                let resolved_specs: std::collections::HashSet<String> = test_files
+                    .iter()
+                    .flat_map(|f| bundler::find_relative_mock_targets(f))
+                    .map(|(spec, _)| spec)
+                    .collect();
+                let plugin_externals: Vec<String> = remaining_externals
+                    .iter()
+                    .filter(|m| !resolved_specs.contains(*m))
+                    .cloned()
+                    .collect();
+                let (wrappers, wrapper_dir) = match relative_wrappers {
+                    Some((w, d)) => (w, Some(d)),
+                    None => (Vec::new(), None),
+                };
+                let r = bundler::bundle_via_plugin_with_config(
+                    &entry_path, root, &plugin_externals, &shim_cfg, &wrappers,
+                );
+                if let Some(d) = wrapper_dir { let _ = std::fs::remove_dir_all(&d); }
+                r
+            } else {
+                bundler::bundle_auto_with_config(&entry_path, root, &remaining_externals, &shim_cfg)
+            };
+            match bundle_result {
                 Ok(b) => b,
                 Err(e) => {
                     let _ = std::fs::remove_file(&entry_path);
@@ -467,7 +506,7 @@ fn run_tests_single(
             if let Ok(entries) = std::fs::read_dir(&cache_dir) {
                 for entry in entries.flatten() {
                     let n = entry.file_name(); let n = n.to_string_lossy();
-                    if n.starts_with("single-") && !n.contains(&cache_key) { let _ = std::fs::remove_file(entry.path()); }
+                    if n.starts_with(&format!("{cache_prefix}-")) && !n.contains(&cache_key) { let _ = std::fs::remove_file(entry.path()); }
                 }
             }
             let _ = std::fs::write(&cache_path, &b);

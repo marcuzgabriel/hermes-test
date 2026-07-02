@@ -413,8 +413,9 @@ pub fn bundle_via_plugin_with_config(
 ) -> Result<String, String> {
     // Nothing to intercept → the JS API detour buys nothing. Use the CLI path:
     // byte-identical behavior and no JS-runtime spawn for suites without
-    // relative mocks (e.g. Topdanmark).
-    if wrappers.is_empty() {
+    // relative mocks (e.g. Topdanmark). HT_PLUGIN_FORCE=1 disables the
+    // shortcut for benchmarking the JS API service overhead in isolation.
+    if wrappers.is_empty() && std::env::var("HT_PLUGIN_FORCE").is_err() {
         return bundle_auto_with_config(entry_file, project_root, external_modules, cfg);
     }
 

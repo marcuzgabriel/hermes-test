@@ -168,3 +168,18 @@ serving as the correctness bridge.
   full-suite validation run.
 - Consider a CI guard asserting total test count doesn't drop unexpectedly between
   runs — the cheap defense against any future silent-skip regression.
+
+### Phase 1 results (feat/plugin-resolver, measured)
+- HT_RESOLVER=plugin ships behind a flag: relative mocks run in the SINGLE bundle
+  / single VM via onResolve wrappers with real-module fallback. Parity gauntlet
+  green: examples 20 suites (plugin == legacy), if-session 31/31 both spellings
+  (warm 0.01s, one bundle), Topdanmark 288/1793 both modes.
+- Zero-wrapper builds delegate to the CLI path (byte-identical) — suites without
+  relative mocks pay nothing.
+- Measured JS-API service overhead (HT_PLUGIN_FORCE=1, zero round trips,
+  min-of-3 on Topdanmark): CLI 5.27s vs JS API 5.74s cold → **≈ +0.5s (~9%)**
+  per wrapper-carrying cold bundle of that size. Warm runs: 0 (bytecode cache).
+- Phase 2 decision input: unifying alias/package mocks onto the plugin would
+  make big suites wrapper-carrying, i.e. buy "delete shadow trees + shims + iso"
+  at ~+0.5s cold / 0 warm. Shave candidates before defaulting: stdout instead of
+  outfile+read, persistent build service (watch), profile bun vs node service.
