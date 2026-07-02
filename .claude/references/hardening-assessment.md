@@ -183,3 +183,31 @@ serving as the correctness bridge.
   make big suites wrapper-carrying, i.e. buy "delete shadow trees + shims + iso"
   at ~+0.5s cold / 0 warm. Shave candidates before defaulting: stdout instead of
   outfile+read, persistent build service (watch), profile bun vs node service.
+
+### Phase 2 results (feat/plugin-resolver, measured)
+- Plugin mode now delivers ALL mock kinds through onResolve: relative + alias
+  mocks as identity-keyed file wrappers, package mocks as pkg wrappers
+  (?ht-real resolved via build.resolve with a pluginData re-entry guard);
+  natives/shimmed/unresolvable keep legacy externalization. Shadow trees and
+  package shims are fully bypassed in plugin mode. Barrel sub-path delegation
+  falls out of identity matching for free (no special barrel Proxy needed).
+- Fixtures: alias-mock, pkg-mock, relative-mock pairs (each with an unmocked
+  sibling needing the real module) — green in BOTH modes, one bundle, one VM.
+- Fixture-writing found + fixed a PRE-EXISTING legacy bug (repro on published
+  1.1.6): mocking a CJS default-export package (moment) broke `default` access
+  to the REAL module for non-mocking files. Fixed in the package-shim template
+  and inherited by plugin wrappers (default = module itself when !__esModule).
+- Topdanmark (288 suites / 1793 tests, ~70 alias mocks now wrapper-delivered):
+  min-of-3 interleaved — legacy cold 5.04s, plugin cold 5.69s (**+0.65s ≈ 13%**,
+  of which ~0.5s is JS-API service overhead and only ~0.15s is filtered
+  round-trips); warm 1.04s == legacy. if-session 31/31; examples 24 suites
+  parity (one pre-existing flake).
+- ⚠️ OPEN: two consecutive early topdanmark plugin runs failed 87 tests
+  (26 suites, "pass alone fail in suite" signatures: date-comparison flips,
+  selectors returning undefined, empty renders) — then 8+ consecutive clean
+  runs under every reconstructed condition (fresh cache, fresh rebuild,
+  explicit vs discovered file lists). Unreproduced and unexplained. MUST be
+  understood before plugin mode can become the default. Suspects to rule out
+  next: esbuild service resolution races under first-run cold FS caches,
+  wrapper `_fnCache`/`_loaded` interactions with fake timers, non-determinism
+  in mock-key collection order.

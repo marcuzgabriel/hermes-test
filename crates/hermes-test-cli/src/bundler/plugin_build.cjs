@@ -53,7 +53,12 @@ for (const a of cfg.args) {
 }
 
 // wrappers: resolved absolute target path (with extension) -> wrapper file path.
+// pkgWrappers: bare package specifier -> wrapper file path.
+// aliases: [name, targetDir] pairs (longest-prefix matched here, in case esbuild
+// hands the hook the pre-substitution specifier).
 const wrappers = cfg.wrappers;
+const pkgWrappers = cfg.pkgWrappers || {};
+const aliases = cfg.aliases || [];
 const EXTS = ['.tsx', '.ts', '.jsx', '.js'];
 
 // Given a lexically-resolved base path (usually extensionless), find the wrapper
@@ -73,28 +78,67 @@ function wrapperFor(base) {
   return undefined;
 }
 
+function aliasBase(spec) {
+  let best;
+  for (const [name, target] of aliases) {
+    if (spec === name || spec.startsWith(name + '/')) {
+      if (!best || name.length > best[0].length) best = [name, target];
+    }
+  }
+  if (!best) return undefined;
+  const rem = spec.slice(best[0].length).replace(/^\//, '');
+  return rem ? path.join(best[1], rem) : best[1];
+}
+
 const mockPlugin = {
   name: 'ht-mocks',
   setup(build) {
-    // Pass-through marker: the wrapper itself imports the real module as
-    // "<abs>?ht-real"; strip the marker so esbuild bundles the real file.
-    build.onResolve({ filter: /\?ht-real$/ }, (args) => ({
-      path: args.path.slice(0, -'?ht-real'.length),
-    }));
+    // Pass-through marker: wrappers import the real module as "<spec>?ht-real".
+    // Absolute paths load directly; bare package specifiers go through esbuild's
+    // own resolver (pluginData guards against re-entering this plugin).
+    build.onResolve({ filter: /\?ht-real$/ }, (args) => {
+      const stripped = args.path.slice(0, -'?ht-real'.length);
+      if (stripped[0] === '/') return { path: stripped };
+      return build.resolve(stripped, {
+        kind: 'require-call',
+        resolveDir: cfg.resolveDir,
+        pluginData: 'ht-real',
+      });
+    });
 
-    // Candidate imports only (cfg.filter pre-screens by mocked basenames in Go).
+    // Candidate imports only (cfg.filter pre-screens by mocked basenames and
+    // package names on the Go side).
     build.onResolve({ filter: new RegExp(cfg.filter) }, (args) => {
-      if (!args.importer || args.path[0] !== '.') return undefined;
-      const base = path.resolve(path.dirname(args.importer), args.path);
-      const hit = wrapperFor(base);
-      return hit ? { path: hit } : undefined;
+      if (args.pluginData === 'ht-real') return undefined;
+      // Bare package mock — exact specifier match.
+      if (pkgWrappers[args.path]) return { path: pkgWrappers[args.path] };
+      // Relative import — resolve against the importer.
+      if (args.path[0] === '.') {
+        if (!args.importer) return undefined;
+        const base = path.resolve(path.dirname(args.importer), args.path);
+        const hit = wrapperFor(base);
+        return hit ? { path: hit } : undefined;
+      }
+      // Absolute path (e.g. after esbuild alias substitution).
+      if (args.path[0] === '/') {
+        const hit = wrapperFor(args.path);
+        return hit ? { path: hit } : undefined;
+      }
+      // Alias-prefixed bare specifier (pre-substitution).
+      const base = aliasBase(args.path);
+      if (base) {
+        const hit = wrapperFor(base);
+        return hit ? { path: hit } : undefined;
+      }
+      return undefined;
     });
   },
 };
 
 // No mocked targets → no interception needed → skip the plugin entirely so no
 // import pays a Go→JS round trip.
-opts.plugins = Object.keys(wrappers).length > 0 ? [mockPlugin] : [];
+opts.plugins =
+  Object.keys(wrappers).length > 0 || Object.keys(pkgWrappers).length > 0 ? [mockPlugin] : [];
 
 esbuild
   .build(opts)

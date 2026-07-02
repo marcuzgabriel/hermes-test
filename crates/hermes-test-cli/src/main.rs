@@ -404,14 +404,23 @@ fn run_tests_single(
         // JS cache hit — patched bundle, skip shadow setup + esbuild
         Some(std::fs::read_to_string(&cache_path).unwrap_or_default())
     } else {
-        // Cache miss (or coverage mode) — full pipeline
+        // Cache miss (or coverage mode) — full pipeline.
+        // Plugin-resolver mode delivers ALL mocks (relative, alias, package) via
+        // the onResolve hook — shadow trees and package shims are skipped entirely.
         let (wrapper_cfg, wrapper_shim_dir) = bundler::create_wrapper_shims(root, cfg);
-        let (shadow_cfg, shadow_dirs) = bundler::create_shadow_wrappers(root, mock_modules, &wrapper_cfg);
+        let (shadow_cfg, shadow_dirs) = if plugin_resolver {
+            (wrapper_cfg.clone(), Vec::new())
+        } else {
+            bundler::create_shadow_wrappers(root, mock_modules, &wrapper_cfg)
+        };
         let non_aliased_mocks: Vec<String> = mock_modules.iter().filter(|m| {
             !cfg.aliases.iter().any(|(alias, _)| *m == alias || m.starts_with(&format!("{alias}/")))
         }).cloned().collect();
-        let (shim_cfg, shim_dir, remaining_externals) =
-            bundler::create_package_shims(root, &non_aliased_mocks, &shadow_cfg);
+        let (shim_cfg, shim_dir, remaining_externals) = if plugin_resolver {
+            (shadow_cfg.clone(), None, Vec::new())
+        } else {
+            bundler::create_package_shims(root, &non_aliased_mocks, &shadow_cfg)
+        };
         let entry_content = bundler::generate_entry_with_shallow(test_files, None, mock_modules, &shim_cfg, transforms, Some(root), shallow_auto_mocks);
         let entry_path = root.join(".hermes-test-entry.js");
         std::fs::write(&entry_path, &entry_content).unwrap_or_else(|e| {
@@ -453,28 +462,15 @@ fn run_tests_single(
             }
         } else {
             let bundle_result = if plugin_resolver {
-                // Plugin-resolver mode: relative mocks are served as onResolve
-                // wrapper redirects (real module stays in the bundle), so their
-                // specifiers must NOT also be externalized.
-                let relative_wrappers = bundler::create_relative_mock_wrappers(test_files, root);
-                let resolved_specs: std::collections::HashSet<String> = test_files
-                    .iter()
-                    .flat_map(|f| bundler::find_relative_mock_targets(f))
-                    .map(|(spec, _)| spec)
-                    .collect();
-                let plugin_externals: Vec<String> = remaining_externals
-                    .iter()
-                    .filter(|m| !resolved_specs.contains(*m))
-                    .cloned()
-                    .collect();
-                let (wrappers, wrapper_dir) = match relative_wrappers {
-                    Some((w, d)) => (w, Some(d)),
-                    None => (Vec::new(), None),
-                };
+                // Classify every mock and generate onResolve wrappers; only mocks
+                // with no bundleable real module (natives, shims, unresolvable
+                // specifiers) remain text-externalized.
+                let pm = bundler::create_plugin_mock_wrappers(test_files, root, &shim_cfg, mock_modules);
                 let r = bundler::bundle_via_plugin_with_config(
-                    &entry_path, root, &plugin_externals, &shim_cfg, &wrappers,
+                    &entry_path, root, &pm.external_mocks, &shim_cfg,
+                    &pm.file_wrappers, &pm.pkg_wrappers,
                 );
-                if let Some(d) = wrapper_dir { let _ = std::fs::remove_dir_all(&d); }
+                let _ = std::fs::remove_dir_all(&pm.dir);
                 r
             } else {
                 bundler::bundle_auto_with_config(&entry_path, root, &remaining_externals, &shim_cfg)

@@ -140,6 +140,11 @@ var _h = {{
     var mocks = fm && f && fm[f];
     var m = mocks && mocks['{pkg}'];
     if (m && p in m) return m[p];
+    if (p === 'default') {{
+      // CJS packages without __esModule: their default IS the module itself.
+      var r0 = _getReal();
+      return r0 && r0.__esModule ? r0['default'] : r0;
+    }}
     var real = _getReal()[p];
     if (typeof real === 'function' && !_fnCache[p]) {{
       _fnCache[p] = new Proxy(real, {{ apply: function(target, thisArg, args) {{

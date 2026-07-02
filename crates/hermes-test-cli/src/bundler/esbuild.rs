@@ -401,7 +401,8 @@ fn regex_escape(s: &str) -> String {
 }
 
 /// Bundle via esbuild's JS API with the ht-mocks onResolve plugin (HT_RESOLVER=plugin).
-/// `wrappers` maps resolved absolute target paths to their generated wrapper files.
+/// `file_wrappers` maps resolved absolute target paths (relative + alias mocks) and
+/// `pkg_wrappers` bare package specifiers to their generated wrapper files.
 /// Flags are assembled by the same function as CLI mode; the build script parses
 /// those exact strings, so flag behavior cannot drift between modes.
 pub fn bundle_via_plugin_with_config(
@@ -409,13 +410,14 @@ pub fn bundle_via_plugin_with_config(
     project_root: &Path,
     external_modules: &[String],
     cfg: &BundleConfig,
-    wrappers: &[(String, String)],
+    file_wrappers: &[(String, String)],
+    pkg_wrappers: &[(String, String)],
 ) -> Result<String, String> {
     // Nothing to intercept → the JS API detour buys nothing. Use the CLI path:
-    // byte-identical behavior and no JS-runtime spawn for suites without
-    // relative mocks (e.g. Topdanmark). HT_PLUGIN_FORCE=1 disables the
-    // shortcut for benchmarking the JS API service overhead in isolation.
-    if wrappers.is_empty() && std::env::var("HT_PLUGIN_FORCE").is_err() {
+    // byte-identical behavior and no JS-runtime spawn for suites without mocks
+    // needing wrappers. HT_PLUGIN_FORCE=1 disables the shortcut for benchmarking
+    // the JS API service overhead in isolation.
+    if file_wrappers.is_empty() && pkg_wrappers.is_empty() && std::env::var("HT_PLUGIN_FORCE").is_err() {
         return bundle_auto_with_config(entry_file, project_root, external_modules, cfg);
     }
 
@@ -430,21 +432,53 @@ pub fn bundle_via_plugin_with_config(
         assemble_esbuild_args(entry_file, external_modules, cfg, false, false);
 
     // Go-side pre-screen: only imports whose last segment matches a mocked
-    // target's basename cross the Go→JS pipe.
-    let mut stems: Vec<String> = wrappers
-        .iter()
-        .filter_map(|(t, _)| Path::new(t).file_stem().map(|s| regex_escape(&s.to_string_lossy())))
-        .collect();
-    stems.sort();
-    stems.dedup();
-    let filter = format!(
-        "(?:^|[/\\\\])(?:{})(?:\\.(?:tsx|ts|jsx|js))?$",
-        stems.join("|")
-    );
+    // target's basename (or a mocked package's name) cross the Go→JS pipe.
+    // Directory-resolved targets (index files) also contribute their dir name,
+    // since imports of them end with the directory segment.
+    let mut parts: Vec<String> = Vec::new();
+    for (t, _) in file_wrappers {
+        let p = Path::new(t);
+        if let Some(stem) = p.file_stem().map(|s| s.to_string_lossy().to_string()) {
+            if stem == "index" {
+                if let Some(dir_name) = p.parent().and_then(|d| d.file_name()) {
+                    parts.push(regex_escape(&dir_name.to_string_lossy()));
+                }
+            }
+            parts.push(regex_escape(&stem));
+        }
+    }
+    let mut pkg_parts: Vec<String> = Vec::new();
+    for (pkg, _) in pkg_wrappers {
+        pkg_parts.push(regex_escape(pkg));
+    }
+    parts.sort();
+    parts.dedup();
+    pkg_parts.sort();
+    pkg_parts.dedup();
+    let mut alts: Vec<String> = Vec::new();
+    if !parts.is_empty() {
+        alts.push(format!(
+            "(?:^|[/\\\\])(?:{})(?:\\.(?:tsx|ts|jsx|js))?$",
+            parts.join("|")
+        ));
+    }
+    if !pkg_parts.is_empty() {
+        alts.push(format!("^(?:{})$", pkg_parts.join("|")));
+    }
+    let filter = alts.join("|");
 
-    let wrapper_map: serde_json::Map<String, serde_json::Value> = wrappers
+    let wrapper_map: serde_json::Map<String, serde_json::Value> = file_wrappers
         .iter()
         .map(|(t, w)| (t.clone(), serde_json::Value::String(w.clone())))
+        .collect();
+    let pkg_wrapper_map: serde_json::Map<String, serde_json::Value> = pkg_wrappers
+        .iter()
+        .map(|(t, w)| (t.clone(), serde_json::Value::String(w.clone())))
+        .collect();
+    let alias_pairs: Vec<serde_json::Value> = cfg
+        .aliases
+        .iter()
+        .map(|(a, t)| serde_json::json!([a, t]))
         .collect();
 
     let temp = super::shadow::hermes_temp_root(project_root);
@@ -465,6 +499,9 @@ pub fn bundle_via_plugin_with_config(
         "args": args,
         "nodePaths": node_paths,
         "wrappers": wrapper_map,
+        "pkgWrappers": pkg_wrapper_map,
+        "aliases": alias_pairs,
+        "resolveDir": entry_file.parent().unwrap_or(project_root).to_string_lossy(),
         "filter": filter,
     });
 
