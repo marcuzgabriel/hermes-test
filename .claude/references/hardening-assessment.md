@@ -98,6 +98,70 @@ Both issues found in the review were silent-green:
 6. **Comment-aware mock scanning** (nice-to-have): strip comments before the
    ht.mock regex pass, or move scanning to OXC once (3) lands.
 
+## The endgame: esbuild JS API + onResolve plugin (unify all mock delivery)
+
+Every mock-delivery mechanism in the codebase — shadow trees, package shims,
+absolute-path externals + iso bundles (Day 24) — is a workaround for one missing
+primitive: a resolver hook in esbuild's CLI. The JS API has it. `onResolve` sees
+every import WITH its importer's path and may answer "use this file instead".
+With it, all three delivery mechanisms collapse into one rule:
+
+    resolves to a mocked file? → serve its wrapper file
+    otherwise                  → resolve normally
+
+Key separation to preserve — the shadow-wrapper invention is TWO things:
+1. **The wrapper file (the revolution, keep byte-for-byte)**: Proxy that checks
+   `__HT_file_mocks[__currentTestFile]` at ACCESS time and falls back to
+   `_getReal()`. Per-file isolation, mock-or-real decided at runtime, barrel
+   sub-path delegation. This is validated by 1793 prod tests. Do not touch.
+2. **The delivery trick (replace)**: shadow directory forests, alias re-pointing,
+   symlink/copy heuristics, package-shim aliases, absolute externals + iso
+   bundles. All of it exists only to smuggle (1) past a hookless resolver.
+
+Division of labor after the port: `onResolve` = installer (bundle time, which
+FILE sits at this import site — always the wrapper); `get()` = brain (run time,
+which VALUE comes out — mock for the current test file, else real). Neither can
+do the other's job: mock-or-real is per-running-test (unknowable at bundle time);
+interception requires the wrapper to BE what the import resolves to (impossible
+without a resolution-time hook).
+
+### Implementation sketch
+- Rust CLI (cache miss): write `.hermes-test-build.mjs` + a JSON config (entry,
+  resolved mocked-file map, wrapper paths, native externals, aliases), spawn the
+  JS runtime, read the bundle back. Pipeline downstream (patches → .hbc → Hermes)
+  unchanged — tests still execute in Hermes; the JS runtime only drives bundling.
+- Runtime selection: `bin/hermes-test.js` passes `process.execPath` down (env
+  var) — reuse whatever Node/Bun is already executing the launcher. Zero new
+  install requirement (a JS runtime is guaranteed present by construction; a JS
+  runtime already boots on every run for the bin shim). Bun ≈ 10–20ms boot,
+  Node ≈ 50–100ms, cold bundles only — warm runs read .hbc and never bundle.
+- Wrapper's own import of the real module: mark it (query suffix or importer
+  check) so onResolve passes it through — same role `@__ht_real*` plays today.
+- Native-module externalization is NOT mock delivery — it stays (can't bundle
+  Swift/Kotlin-backed packages regardless of resolver).
+
+### Risks (respect the graveyard — Attempts 2 and 3 also looked obviously right)
+- **Round-trip cost**: `filter: /.*/` pings Go→JS for every import (tens of
+  thousands in Topdanmark). Build targeted filter regexes (mocked basenames +
+  alias prefixes) so the Go side pre-screens and only candidates cross the pipe.
+- **The Day 19 tail**: barrels, index resolution, destructuring-at-init patching
+  must be re-proven under the new delivery, not assumed.
+- **Patches still regex-match esbuild output**: bundle shape changes slightly
+  (wrappers in-bundle instead of external stumps) — re-validate patterns.
+
+### Migration plan (parity-gated, deletion last)
+1. Implement behind `HT_RESOLVER=plugin`; legacy path untouched.
+2. Parity gauntlet on BOTH modes: examples suite, if-session 31/31 under both
+   mock spellings, Topdanmark 288/1793, coverage mode, watch mode.
+3. Run dual-mode in CI for a period; compare counts and timing.
+4. Only then delete: shadow trees, package shims, iso partition +
+   run_isolated_relative_mock_files, multi-VM path. Deletion is the trophy at
+   the end, not the move itself.
+
+Payoff: one bundle, one VM always; three delivery subsystems deleted; relative /
+alias / package mocks become one code path; Day 24's iso machinery retires after
+serving as the correctness bridge.
+
 ## Operational guardrails for prod consumers (Topdanmark et al.)
 
 - Pin esbuild and hermes versions; treat esbuild bumps as risky changes needing a
