@@ -25,7 +25,7 @@ Proxy wrappers allow runtime interception for:
 - late mock registration (`ht.mock(...)`)
 - fallback to real modules when no override exists
 
-This is the basis for shadow wrappers and package shims.
+This is the basis for the mock wrapper files served by the onResolve plugin (see [Mock resolution](./mock-resolution.md)); the same pattern previously powered shadow wrappers and package shims.
 
 ## Why this combo
 
