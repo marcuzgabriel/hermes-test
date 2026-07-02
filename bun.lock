@@ -31,7 +31,7 @@
     },
     "packages/hermes-test": {
       "name": "hermes-test",
-      "version": "0.2.4",
+      "version": "1.1.5",
       "bin": {
         "hermes-test": "bin/hermes-test.js",
       },
@@ -45,9 +45,9 @@
         "typescript": "^5.4.0",
       },
       "optionalDependencies": {
-        "@hermes-test/darwin-arm64": "0.2.4",
-        "@hermes-test/darwin-x64": "0.2.4",
-        "@hermes-test/linux-x64": "0.2.4",
+        "@hermes-test/darwin-arm64": "1.1.5",
+        "@hermes-test/darwin-x64": "1.1.5",
+        "@hermes-test/linux-x64": "1.1.5",
       },
       "peerDependencies": {
         "react": ">=18",
@@ -143,9 +143,9 @@
 
     "@esbuild/win32-x64": ["@esbuild/win32-x64@0.25.12", "", { "os": "win32", "cpu": "x64" }, "sha512-alJC0uCZpTFrSL0CCDjcgleBXPnCrEAhTBILpeAp7M/OFgoqtAetfBzX0xM00MUsVVPpVjlPuMbREqnZCXaTnA=="],
 
-    "@hermes-test/darwin-arm64": ["@hermes-test/darwin-arm64@0.2.4", "", { "os": "darwin", "cpu": "arm64" }, "sha512-bgNjENMon3m6xlpBpsbMb/bJQWKjumSTudWs+dnq4qoXKcQ0hrI01lLeWdgoHMl0vBwn4od2mmEggG+Blpvxiw=="],
+    "@hermes-test/darwin-arm64": ["@hermes-test/darwin-arm64@1.1.5", "", { "os": "darwin", "cpu": "arm64" }, "sha512-0Pis1T6Dmg9xDAj/vbd7klTkD+SJE7sY/wbhVGxWeYwS5T/MiiZq1PtC/MDqON/rjjbvGdDYveiumm3fINOXqg=="],
 
-    "@hermes-test/linux-x64": ["@hermes-test/linux-x64@0.2.4", "", { "os": "linux", "cpu": "x64" }, "sha512-T31ETdSwKJTctH+I6ECJXa2WwWTueh+/qeUqdOKblbYm/l8z47+/b1TBDUXzoaEtI8qXm9pW6usC+aVnxKcmKg=="],
+    "@hermes-test/linux-x64": ["@hermes-test/linux-x64@1.1.5", "", { "os": "linux", "cpu": "x64" }, "sha512-2eiZe7b2TfCU7V0E43rJmTlatCKB1lwexNqL5tAPnMWEAiOxtsFBYYSnGpM135oh0Ib/bdOzRbxE5VDp9txZsA=="],
 
     "@jest/schemas": ["@jest/schemas@29.6.3", "", { "dependencies": { "@sinclair/typebox": "^0.27.8" } }, "sha512-mo5j5X+jIZmJQveBKeS/clAueipV7KgiX1vMgCxam1RNYiqE1w62n0/tJJnHtjW8ZHcQco5gY85jA3mi0L+nSA=="],
 

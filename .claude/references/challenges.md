@@ -494,3 +494,56 @@ afterEach(() => {
   diverged on this detail. Any future edit to one of `fix_all_class_extends`'s branches should
   check the sibling branch for the same invariant (`new.target || ClassName`, not bare
   `ClassName`).
+
+## Day 24: Test-file-relative ht.mock() paths (jest-style semantics)
+
+### Challenge: relative ht.mock() only matched the CONSUMER's import specifier text
+- `ht.mock('./x')` was forwarded verbatim to esbuild `--external:./x`, which
+  literal-matches each import statement's text. A test in `src/__tests__/` mocking
+  `../flows/foo` (relative to ITSELF, the intuitive jest semantic) matched nothing —
+  the mock silently didn't apply and the real module ran. It only "worked" when the
+  test author wrote the specifier exactly as the consumer file writes it
+  (`./flows/foo` from `src/`), which reads like a bug and gets "corrected" back to
+  the broken form by reviewers/AI tools. Found via if-session (mobile-insurance-app-expo).
+- Why not shadow wrappers: esbuild inlines relatively-imported module exports as
+  top-level vars (see Day 19) — no post-hoc Proxy interception point. Why not plain
+  absolute-path externals in the shared bundle: externalization is bundle-global, so
+  the real module would vanish for OTHER test files that need it (the exact problem
+  package shims solved for npm packages).
+- **Solution — isolate + externalize by absolute path + alias-map the require key:**
+  1. `find_relative_mock_targets()` (entry.rs): relative ht.mock() specifiers are
+     resolved against the TEST FILE's directory (extension probing like
+     resolve_relative_file, lexical normalization). Only specifiers that resolve to a
+     real file activate the new path — unresolvable ones (self-contained example
+     mocks) keep legacy literal-external behavior.
+  2. Files with resolvable relative mocks are partitioned out of the single bundle
+     and run via `run_isolated_relative_mock_files()` (main.rs): one bundle + one
+     Hermes runtime each, cached as `.hermes-test-cache/iso-<key>.js/.hbc`.
+  3. In the isolated bundle the target is externalized by ABSOLUTE path — esbuild
+     matches externals post-resolution too, so every importer is caught regardless
+     of specifier text.
+  4. esbuild emits `__require('<cwd-relative resolved path with extension>')` for
+     such externals. The entry registers `__HT_mock_aliases[<that key>] = '<original
+     specifier>'` so the require shim's existing alias lookup (patches.rs — read but
+     never written until now) finds the per-file mock registered under the string the
+     test passed to ht.mock(). No runtime shim changes needed.
+  5. Results merge into the normal summary (batch + isolated); watch mode partitions
+     the same way in both initial run and reruns.
+- TDD: examples/expo-app/src/examples/relative-mock/ — one test mocks
+  `../flows/greeting-flow` (test-file-relative), a sibling test imports the REAL
+  module unmocked in the same run. Both green; the pair is the regression guard for
+  both the DX fix and cross-bundle isolation.
+- Validated: examples suite, if-session 31/31 under BOTH specifier styles,
+  Topdanmark 288 suites / 1793 tests unchanged (zero relative mocks there — alias
+  mocks are unaffected), coverage mode (isolated files run uninstrumented, counts
+  merge).
+
+### Found along the way (pre-existing, NOT fixed here)
+- **Directory args run zero tests and exit 0**: `hermes-test src/some-dir` (documented
+  in the README) treats the directory path as a test file, runs nothing, and reports
+  success. In CI this could silently pass while running no tests. Reproduced on
+  published v1.1.5.
+- examples async-data-fetcher.test.ts "refetch reloads data" fails intermittently on
+  published v1.1.5 as well (timing-sensitive).
+- print_jest_summary prints "Test Suites: N passed, N total" using the file count for
+  both numbers even when suites failed (cosmetic).

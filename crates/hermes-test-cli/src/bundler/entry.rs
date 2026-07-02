@@ -302,6 +302,86 @@ fn resolve_relative_file(from_file: &Path, relative: &str) -> Option<PathBuf> {
     None
 }
 
+/// Resolve `.` and `..` components lexically (no filesystem access, symlinks untouched —
+/// esbuild's external matching compares lexically-resolved paths, not canonicalized ones).
+fn normalize_lexically(p: &Path) -> PathBuf {
+    let mut out = PathBuf::new();
+    for comp in p.components() {
+        match comp {
+            std::path::Component::CurDir => {}
+            std::path::Component::ParentDir => { out.pop(); }
+            other => out.push(other),
+        }
+    }
+    out
+}
+
+/// ht.mock() specifiers in `file` that are relative paths AND resolve to a real source
+/// file from the test file's own directory (jest-style semantics). Returns
+/// (original_specifier, resolved_absolute_path). Relative mocks that don't resolve
+/// (e.g. self-contained example mocks for nonexistent files) are excluded, preserving
+/// the legacy literal-external behavior for them.
+pub fn find_relative_mock_targets(file: &Path) -> Vec<(String, PathBuf)> {
+    let mut out = Vec::new();
+    let Ok(content) = std::fs::read_to_string(file) else { return out };
+    let Ok(re) = regex::Regex::new(r#"ht\.mock\(\s*['"]([^'"]+)['"]\s*,"#) else { return out };
+    let abs_file = if file.is_absolute() {
+        file.to_path_buf()
+    } else {
+        std::env::current_dir().map(|c| c.join(file)).unwrap_or_else(|_| file.to_path_buf())
+    };
+    for cap in re.captures_iter(&content) {
+        let spec = cap[1].to_string();
+        if !spec.starts_with('.') { continue; }
+        if let Some(resolved) = resolve_relative_file(&abs_file, &spec) {
+            let norm = normalize_lexically(&resolved);
+            if !out.iter().any(|(s, p): &(String, PathBuf)| *s == spec && *p == norm) {
+                out.push((spec, norm));
+            }
+        }
+    }
+    out
+}
+
+/// True if the file has at least one test-file-relative ht.mock() that resolves to a
+/// real file. Such files must be bundled in isolation: the mocked module is
+/// externalized by absolute path (catching every importer's specifier), which would
+/// otherwise take the real module away from other test files in a shared bundle.
+pub fn has_relative_mock_targets(file: &Path) -> bool {
+    !find_relative_mock_targets(file).is_empty()
+}
+
+/// esbuild --external args for resolved relative mocks: absolute paths match
+/// post-resolution, externalizing the module regardless of importer specifier text.
+pub fn relative_mock_externals(test_files: &[PathBuf]) -> Vec<String> {
+    let mut out = Vec::new();
+    for f in test_files {
+        for (_, abs) in find_relative_mock_targets(f) {
+            let s = abs.to_string_lossy().to_string();
+            if !out.contains(&s) { out.push(s); }
+        }
+    }
+    out
+}
+
+/// The specifier esbuild emits in `__require(...)` for an import externalized by
+/// absolute path: the resolved path relative to esbuild's cwd (inherited from this
+/// process), `./`-prefixed, with extension.
+fn require_key_for(abs: &Path) -> String {
+    let cwd = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
+    let cwd = normalize_lexically(&cwd);
+    if let Ok(rel) = abs.strip_prefix(&cwd) {
+        return format!("./{}", rel.to_string_lossy());
+    }
+    // Target above cwd: build ../-style relative path lexically.
+    let cwd_comps: Vec<_> = cwd.components().collect();
+    let abs_comps: Vec<_> = abs.components().collect();
+    let common = cwd_comps.iter().zip(abs_comps.iter()).take_while(|(a, b)| a == b).count();
+    let ups = "../".repeat(cwd_comps.len() - common);
+    let rest: PathBuf = abs_comps[common..].iter().collect();
+    format!("{ups}{}", rest.to_string_lossy())
+}
+
 /// Check if any test files (or their imports) need React.
 /// Scans file contents for react-related imports or harness hooks.
 pub fn needs_react(test_files: &[PathBuf]) -> bool {
@@ -392,6 +472,29 @@ pub fn generate_entry_with_shallow(
     // Register hermes-test as a mock so `import { test } from 'hermes-test'` resolves to __HT
     entry.push_str("globalThis.__HT_mocks = globalThis.__HT_mocks || {};\n");
     entry.push_str("globalThis.__HT_mocks['hermes-test'] = globalThis.__HT;\n");
+
+    // Map resolved require keys back to the test file's original ht.mock() specifier.
+    // Modules mocked via a test-file-relative path are externalized by absolute path,
+    // so esbuild emits __require('<cwd-relative resolved path>') at every import site.
+    // The require shim looks up __HT_mock_aliases[key] to find the specifier the mock
+    // was registered under in __HT_file_mocks.
+    {
+        let mut alias_lines = String::new();
+        for file in test_files {
+            for (orig, abs) in find_relative_mock_targets(file) {
+                let key = require_key_for(&abs);
+                alias_lines.push_str(&format!(
+                    "globalThis.__HT_mock_aliases['{}'] = '{}';\n",
+                    key.replace('\\', "\\\\").replace('\'', "\\'"),
+                    orig.replace('\\', "\\\\").replace('\'', "\\'"),
+                ));
+            }
+        }
+        if !alias_lines.is_empty() {
+            entry.push_str("globalThis.__HT_mock_aliases = globalThis.__HT_mock_aliases || {};\n");
+            entry.push_str(&alias_lines);
+        }
+    }
 
     // Load shims for native modules. User shims (from config) override built-in defaults.
     // Built-in shims are embedded in the hermes-test binary.
