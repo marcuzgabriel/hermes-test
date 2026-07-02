@@ -8,8 +8,11 @@
 
 ### Challenge: esbuild output incompatible with Hermes
 - Hermes previously had bugs with for-let-of closures, class-extends, etc.
-- **Update**: All esbuild patches removed — modern Hermes (RN 0.85+) handles these correctly
-- `patch_esbuild_for_hermes()` is now a no-op; mock hoisting and require shim remain
+- **Update**: The for-let-of and other minor esbuild patches were removed — modern Hermes
+  (RN 0.85+) handles those correctly. `fix_all_class_extends()` is NOT removed and is still
+  unconditionally applied (`patches.rs` Patch 4) — Hermes's `class X extends Y` bugs (TDZ
+  crash on local/parameter parents, native-`super()` discarding return value on Array
+  subclasses) are still present. See Day 23 for a real bug found in this patch itself.
 
 ## Day 4-6: Hooks, Mocks, React Integration
 ### Challenge: renderHook without React Testing Library
@@ -36,7 +39,8 @@
 ### Challenge: Zod v4 class-extends crash (RESOLVED)
 - Hermes TDZ bug: `class X extends Variable` crashed when Variable was local
 - Was worked around with `fix_all_class_extends()` regex transform
-- **Update**: Modern Hermes (RN 0.85+) has fixed these bugs natively — all patches removed
+- This patch is still active (see correction under Day 1-3 above, and Day 23 below) —
+  it was not removed, it's load-bearing.
 
 ### Challenge: Scoped lifecycle hooks
 - beforeEach from nested group contaminating sibling groups
@@ -455,3 +459,38 @@ afterEach(() => {
 - Keep polyfills **runtime-detected**, not platform-forced.
 - Keep scope narrow (patch only broken surfaces, avoid full CLDR reimplementation).
 - Add/update regression tests in `examples/expo-app/src/examples/intl-locale.test.ts`.
+
+## Day 23: fix_all_class_extends() dropped new.target through chained super() calls
+
+### Challenge: instanceof/constructor.name wrong for 2+ level class-extends chains
+- Found via a real consumer (mobile-insurance-app-expo, `if-session` package): a 4-class error
+  hierarchy (`TechnicalError`/`ConnectionError`/`UserCancelledError`/`BankIdAppNotFoundError`
+  all `extends IfSessionError`, `IfSessionError extends Error`) — `new TechnicalError(...)`
+  produced an object whose `.name` was `"IfSessionError"` and `instanceof TechnicalError` was
+  `false`. Minimal repro (no mocking, no async, nothing test-framework-specific):
+  ```ts
+  class Base extends Error {
+    constructor(m: string) { super(m); this.name = this.constructor.name; }
+  }
+  class Leaf extends Base {}
+  new Leaf('boom').name; // 'Base', should be 'Leaf'
+  ```
+- Root cause: `fix_all_class_extends()`'s downlevel for a class **with** its own constructor
+  rewrote `super(...args)` to `Reflect.construct(Parent, [args], ClassName)` — hardcoding the
+  literal class name as `newTarget` instead of `new.target || ClassName`. The no-constructor
+  default path already did this correctly (`Reflect.construct(Parent, args, new.target ||
+  ClassName)`). So a subclass with no constructor of its own (e.g. `Leaf`) correctly threads
+  `new.target` into its parent's call — but the moment that call lands inside a parent that
+  *does* have its own constructor (`Base`), the parent's own hardcoded `ClassName` silently
+  resets `newTarget` back to itself, discarding what was passed in. Only surfaces for chains
+  2+ levels deep where a non-leaf class has an explicit constructor — a single `class X
+  extends Error` never hits it, which is why this went unnoticed.
+- Fix (`patches.rs`, the two `format!("var _this = Reflect.construct(...)")` arms in the
+  has-constructor branch of `fix_all_class_extends`): add `new.target || ` before the class
+  name, matching the no-constructor branch. Verified fixed at arbitrary depth (tested 3
+  levels), not just 2 — the fix makes every generated constructor forward whatever `newTarget`
+  it was given instead of resetting it, so it composes correctly regardless of chain length.
+- Lesson: the no-constructor and has-constructor branches of the same transform had silently
+  diverged on this detail. Any future edit to one of `fix_all_class_extends`'s branches should
+  check the sibling branch for the same invariant (`new.target || ClassName`, not bare
+  `ClassName`).
