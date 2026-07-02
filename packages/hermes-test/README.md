@@ -159,7 +159,8 @@ clearAllMocks();
 
 ```ts
 // ht.mock() — works like jest.mock()
-ht.mock('./useRedux', () => ({
+// Relative paths resolve from the TEST FILE's directory (jest semantics):
+ht.mock('../hooks/useRedux', () => ({
   useAppSelector: (selector) => mockState,
 }));
 
@@ -171,6 +172,11 @@ ht.shallow('../MyComponent');
 ```
 
 Shadow wrappers check mocks at call time — `ht.mock` can appear before or after imports.
+
+Relative mock paths are resolved against the test file and apply at every import
+site of the resolved module, no matter how each importer spells its own relative
+specifier. Test files using relative mocks run in their own bundle, so other test
+files in the same run keep the real module.
 
 ### Hook testing
 

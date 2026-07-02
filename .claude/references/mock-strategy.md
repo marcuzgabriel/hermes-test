@@ -144,7 +144,11 @@ See `challenges.md` for the full day-by-day journey.
 ## Key Technical Insights
 
 1. esbuild's __toESM + __copyProps creates live getters that go through Proxy.
-2. esbuild ESM-to-ESM uses shared top-level vars — relative imports bypass mocking.
+2. esbuild ESM-to-ESM uses shared top-level vars — relative imports bypass mocking
+   INSIDE a shared bundle. **Update (Day 24)**: test-file-relative ht.mock() paths
+   that resolve to a real file now work — the test file gets its own bundle and the
+   target is externalized by absolute path (challenges.md Day 24). The
+   shared-top-level-vars limitation still holds for anything bundled together.
 3. esbuild follows symlinks by default (resolves to real path) — but this turned out
    NOT to be the cause of our issue.
 4. `patch_esbuild_for_hermes` has 4 patches including `fix_all_class_extends`. Only the

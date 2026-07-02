@@ -24,10 +24,15 @@ import {spy} from 'hermes-test';
 
 const track = spy();
 
-ht.mock('./analytics', () => ({
+ht.mock('../analytics', () => ({
   track,
 }));
 ```
+
+Relative paths resolve from the **test file's directory** (jest semantics) and apply
+at every import site of the resolved module, no matter how each importer spells its
+own relative specifier. A test file using relative mocks runs in its own bundle, so
+other test files in the same run keep the real module.
 
 ## Unmock directive
 
