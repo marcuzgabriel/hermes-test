@@ -84,13 +84,18 @@ Both issues found in the review were silent-green:
    chains, Array subclass, `this.constructor.name` pattern) through
    `fix_all_class_extends` + the other patches, asserting on output AND on executed
    behavior in Hermes. Same for `inject_mock_require_shim` and `hoist_mock_modules`.
-3. **Port class downleveling from regex to OXC** (the one real project): oxc is
-   already a dependency (0.132, semantic feature). An AST visit + codegen for
-   class-extends removes the single riskiest component. Note the SWC attempt was
-   rejected for real reasons (see esbuild.rs header comment: scoped thread-locals,
-   helper injection incompatible with Hermes, full re-emit breaks other patches) —
-   the OXC port must re-emit ONLY the class expressions, not the whole bundle, or
-   must come after the other regex patches are also AST-based.
+3. **Class downleveling: do NOT re-attempt an AST port.** SETTLED (July 2026,
+   maintainer decision). OXC/AST approaches were tried multiple times and failed;
+   the documented reasons (SWC: scoped thread-locals, helper injection incompatible
+   with Hermes; and for ANY full-AST tool: re-emitting the bundle changes
+   whitespace and breaks every other regex patch) apply to OXC as well — this is
+   a property of full re-emit, not of a specific library. The regex transform in
+   patches.rs stays. Hardening therefore comes from item (2): golden fixture tests
+   over the class-extends shapes, executed in Hermes, plus a pinned esbuild
+   version. If an AST approach is ever revisited, the ONLY admissible shape is
+   span-surgery (parse, replace exactly the class-extends byte ranges in the
+   original text, no re-emit) — and it needs a champion with time to burn, not a
+   drive-by refactor.
 4. **Prune dead code**: DONE (feat/plugin-resolver) — deleted 771 lines: split
    mode (bundle_split*, SplitBundle, group/vendor entry generators, split
    caching), run_tests_split, run_persistent_cycle, orphaned print helpers,
