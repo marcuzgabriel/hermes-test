@@ -3,7 +3,6 @@ mod patches;
 mod shadow;
 mod entry;
 mod esbuild;
-mod transform;
 
 pub use config::*;
 pub use shadow::*;

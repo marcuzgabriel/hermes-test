@@ -3,8 +3,6 @@ use std::process::{Command, Stdio};
 
 use super::config::{BundleConfig, read_config};
 use super::patches::{patch_esbuild_for_hermes, inject_mock_require_shim, hoist_mock_modules};
-use super::shadow::{create_shadow_wrappers, create_package_shims, create_wrapper_shims};
-use super::entry::{generate_group_entry_pub, compute_bundle_cache_key};
 
 // SWC class transform was evaluated but rejected:
 // - Requires 3 scoped thread-locals (GLOBALS, HANDLER, HELPERS)
@@ -187,42 +185,44 @@ pub fn bundle_esbuild_with_config(
     bundle_esbuild_with_config_inner(entry_file, esbuild_path, external_modules, cfg, packages_external, false, false)
 }
 
-fn bundle_esbuild_with_config_inner(
+/// Assemble the esbuild CLI args (everything after the entry path) and the
+/// NODE_PATH env value. Shared by the CLI invocation and the plugin bundler
+/// (which parses these exact flag strings into JS API options) so the two
+/// modes can never drift apart on flags.
+pub(crate) fn assemble_esbuild_args(
     entry_file: &Path,
-    esbuild_path: &Path,
     external_modules: &[String],
     cfg: &BundleConfig,
     packages_external: bool,
     sourcemap_inline: bool,
-    skip_patches: bool,
-) -> Result<String, String> {
-    let mut cmd = Command::new(esbuild_path);
-    cmd.arg(entry_file)
-        .arg("--bundle")
-        .arg("--format=iife")
-        .arg("--target=es2020")
+) -> (Vec<String>, Option<String>) {
+    let mut args: Vec<String> = vec![
+        "--bundle".into(),
+        "--format=iife".into(),
+        "--target=es2020".into(),
         // No --minify — our Hermes compat patches match unminified esbuild output patterns.
-        .arg("--supported:async-await=false")
-        .arg("--define:process.env.NODE_ENV=\"test\"")
-        .arg("--define:process.env.JEST_WORKER_ID=\"1\"")
-        .arg("--define:global=globalThis")
-        .arg("--jsx=automatic")
-        .arg("--loader:.js=jsx")
-        .arg("--loader:.png=empty")
-        .arg("--loader:.jpg=empty")
-        .arg("--loader:.gif=empty")
-        .arg("--loader:.svg=empty")
-        ; // console is a global in Hermes, not externalized
+        "--supported:async-await=false".into(),
+        "--define:process.env.NODE_ENV=\"test\"".into(),
+        "--define:process.env.JEST_WORKER_ID=\"1\"".into(),
+        "--define:global=globalThis".into(),
+        "--jsx=automatic".into(),
+        "--loader:.js=jsx".into(),
+        "--loader:.png=empty".into(),
+        "--loader:.jpg=empty".into(),
+        "--loader:.gif=empty".into(),
+        "--loader:.svg=empty".into(),
+    ]; // console is a global in Hermes, not externalized
 
     if sourcemap_inline {
-        cmd.arg("--sourcemap=inline");
+        args.push("--sourcemap=inline".into());
     }
 
     if packages_external {
-        cmd.arg("--packages=external");
+        args.push("--packages=external".into());
     }
 
     // Monorepo: add node_modules paths for resolution.
+    let mut node_path_env: Option<String> = None;
     {
         let mut node_paths = Vec::new();
         let project_nm = entry_file.parent().unwrap_or(Path::new(".")).join("node_modules");
@@ -236,7 +236,7 @@ fn bundle_esbuild_with_config_inner(
             }
         }
         if !node_paths.is_empty() {
-            cmd.env("NODE_PATH", node_paths.join(":"));
+            node_path_env = Some(node_paths.join(":"));
         }
     }
 
@@ -256,12 +256,12 @@ fn bundle_esbuild_with_config_inner(
             m == alias || m.starts_with(&format!("{alias}/"))
         });
         if !is_externalized && !has_mocked_subpath {
-            cmd.arg(format!("--alias:{alias}={target}"));
+            args.push(format!("--alias:{alias}={target}"));
         }
     }
 
     // Externalize hermes-test itself (thin re-export from __HT runtime)
-    cmd.arg("--external:hermes-test");
+    args.push("--external:hermes-test".into());
     // Alias hermes-test/store to the actual file so it gets BUNDLED (not externalized).
     // esbuild aliases run before external checks, so this resolves before the external match.
     {
@@ -270,14 +270,14 @@ fn bundle_esbuild_with_config_inner(
         ];
         for sp in &store_paths {
             if sp.exists() {
-                cmd.arg(format!("--alias:hermes-test/store={}", sp.to_string_lossy()));
+                args.push(format!("--alias:hermes-test/store={}", sp.to_string_lossy()));
                 break;
             }
         }
         if let Some(ref root) = cfg.root {
             let root_store = root.join("node_modules/hermes-test/src/store.ts");
             if root_store.exists() {
-                cmd.arg(format!("--alias:hermes-test/store={}", root_store.to_string_lossy()));
+                args.push(format!("--alias:hermes-test/store={}", root_store.to_string_lossy()));
             }
         }
     }
@@ -309,10 +309,10 @@ fn bundle_esbuild_with_config_inner(
             cfg.root.as_deref(),
             &test_files,
         ) {
-            cmd.arg(format!("--alias:react-reconciler={}", rec_path.to_string_lossy()));
+            args.push(format!("--alias:react-reconciler={}", rec_path.to_string_lossy()));
             let constants = rec_path.join("constants.js");
             if constants.exists() {
-                cmd.arg(format!("--alias:react-reconciler/constants={}", constants.to_string_lossy()));
+                args.push(format!("--alias:react-reconciler/constants={}", constants.to_string_lossy()));
             }
         }
     }
@@ -320,24 +320,302 @@ fn bundle_esbuild_with_config_inner(
     // react-native uses Flow syntax that esbuild can't parse — always external.
     // All other native packages are auto-detected or user-configured.
     for ext in &["react-native", "react-native/*"] {
-        cmd.arg(format!("--external:{ext}"));
+        args.push(format!("--external:{ext}"));
     }
 
     // Config externals — for wildcard patterns like `pkg/*`, also externalize `pkg` itself
     for ext in &cfg.externals {
-        cmd.arg(format!("--external:{ext}"));
+        args.push(format!("--external:{ext}"));
         if ext.ends_with("/*") {
             // Also externalize bare import: `@foo/bar/*` → also `@foo/bar`
             let base = &ext[..ext.len() - 2];
-            cmd.arg(format!("--external:{base}"));
+            args.push(format!("--external:{base}"));
         } else if !ext.ends_with('*') {
-            cmd.arg(format!("--external:{ext}/*"));
+            args.push(format!("--external:{ext}/*"));
         }
     }
 
     // Mock module externals
     for ext in external_modules {
-        cmd.arg(format!("--external:{ext}"));
+        args.push(format!("--external:{ext}"));
+    }
+
+    (args, node_path_env)
+}
+
+/// JS build script for plugin-resolver mode, embedded in the binary.
+const PLUGIN_BUILD_CJS: &str = include_str!("plugin_build.cjs");
+
+/// Locate esbuild's JS API entry (lib/main.js) — same search order as the binary.
+fn find_esbuild_lib(project_root: &Path) -> Option<PathBuf> {
+    let local = project_root.join("node_modules/esbuild/lib/main.js");
+    if local.exists() {
+        return Some(local);
+    }
+    let mut dir = project_root.parent();
+    while let Some(d) = dir {
+        let candidate = d.join("node_modules/esbuild/lib/main.js");
+        if candidate.exists() {
+            return Some(candidate);
+        }
+        dir = d.parent();
+    }
+    None
+}
+
+/// JS runtime for the plugin build script. Prefers the runtime already executing
+/// the bin launcher (HT_JS_RUNTIME = process.execPath, set by bin/hermes-test.js),
+/// then bun, then node.
+fn find_js_runtime() -> Option<String> {
+    if let Ok(rt) = std::env::var("HT_JS_RUNTIME") {
+        if !rt.is_empty() && Path::new(&rt).exists() {
+            return Some(rt);
+        }
+    }
+    for candidate in ["bun", "node"] {
+        if Command::new(candidate)
+            .arg("--version")
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .status()
+            .map(|s| s.success())
+            .unwrap_or(false)
+        {
+            return Some(candidate.to_string());
+        }
+    }
+    None
+}
+
+fn regex_escape(s: &str) -> String {
+    let mut out = String::with_capacity(s.len());
+    for c in s.chars() {
+        if "\\.+*?()|[]{}^$-".contains(c) {
+            out.push('\\');
+        }
+        out.push(c);
+    }
+    out
+}
+
+/// Bundle via esbuild's JS API with the ht-mocks onResolve plugin (HT_RESOLVER=plugin).
+/// `file_wrappers` maps resolved absolute target paths (relative + alias mocks) and
+/// `text_wrappers` import-specifier texts (alias mocks, package mocks, barrel
+/// ancestors) to their generated wrapper files.
+/// Flags are assembled by the same function as CLI mode; the build script parses
+/// those exact strings, so flag behavior cannot drift between modes.
+pub fn bundle_via_plugin_with_config(
+    entry_file: &Path,
+    project_root: &Path,
+    external_modules: &[String],
+    cfg: &BundleConfig,
+    file_wrappers: &[(String, String)],
+    text_wrappers: &[(String, String)],
+) -> Result<String, String> {
+    bundle_via_plugin_inner(entry_file, project_root, external_modules, cfg, file_wrappers, text_wrappers, false, false)
+}
+
+/// Plugin bundling with inline source map for coverage — mirrors
+/// bundle_esbuild_with_sourcemap: raw bundle, extract map, then patches with
+/// line-delta tracking.
+pub fn bundle_via_plugin_with_sourcemap(
+    entry_file: &Path,
+    project_root: &Path,
+    external_modules: &[String],
+    cfg: &BundleConfig,
+    file_wrappers: &[(String, String)],
+    text_wrappers: &[(String, String)],
+) -> Result<BundleResult, String> {
+    let raw = bundle_via_plugin_inner(entry_file, project_root, external_modules, cfg, file_wrappers, text_wrappers, true, true)?;
+    let (code, sm) = extract_inline_sourcemap(&raw);
+    let pre_patch_line_count = code.lines().count() as u32;
+    let mut code = code;
+    code = patch_esbuild_for_hermes(&code);
+    let has_externals = !external_modules.is_empty() || !cfg.externals.is_empty()
+        || code.contains("Dynamic require of");
+    if has_externals {
+        code = inject_mock_require_shim(&code);
+    }
+    code = hoist_mock_modules(&code);
+    Ok(BundleResult { code, source_map: sm, pre_patch_line_count })
+}
+
+#[allow(clippy::too_many_arguments)]
+fn bundle_via_plugin_inner(
+    entry_file: &Path,
+    project_root: &Path,
+    external_modules: &[String],
+    cfg: &BundleConfig,
+    file_wrappers: &[(String, String)],
+    text_wrappers: &[(String, String)],
+    sourcemap_inline: bool,
+    skip_patches: bool,
+) -> Result<String, String> {
+    // Nothing to intercept → the JS API detour buys nothing. Use the CLI path:
+    // byte-identical behavior and no JS-runtime spawn for suites without mocks
+    // needing wrappers. HT_PLUGIN_FORCE=1 disables the shortcut for benchmarking
+    // the JS API service overhead in isolation.
+    if file_wrappers.is_empty() && text_wrappers.is_empty() && std::env::var("HT_PLUGIN_FORCE").is_err() {
+        return bundle_esbuild_with_config_inner(
+            entry_file,
+            &find_esbuild(project_root).map_err(|_| "esbuild not found. Install it: bun add -d esbuild".to_string())?,
+            external_modules, cfg, false, sourcemap_inline, skip_patches,
+        );
+    }
+
+    let esbuild_bin = find_esbuild(project_root)
+        .map_err(|_| "esbuild not found. Install it: bun add -d esbuild".to_string())?;
+    let esbuild_lib = find_esbuild_lib(project_root)
+        .ok_or_else(|| "esbuild JS API (node_modules/esbuild/lib/main.js) not found".to_string())?;
+    let runtime = find_js_runtime()
+        .ok_or_else(|| "no JS runtime found for plugin bundling (need bun or node)".to_string())?;
+
+    let (args, node_path_env) =
+        assemble_esbuild_args(entry_file, external_modules, cfg, false, sourcemap_inline);
+
+    // Go-side pre-screen: only imports whose last segment matches a mocked
+    // target's basename (or a mocked package's name) cross the Go→JS pipe.
+    // Directory-resolved targets (index files) also contribute their dir name,
+    // since imports of them end with the directory segment.
+    let mut parts: Vec<String> = Vec::new();
+    for (t, _) in file_wrappers {
+        let p = Path::new(t);
+        if let Some(stem) = p.file_stem().map(|s| s.to_string_lossy().to_string()) {
+            if stem == "index" {
+                if let Some(dir_name) = p.parent().and_then(|d| d.file_name()) {
+                    parts.push(regex_escape(&dir_name.to_string_lossy()));
+                }
+            }
+            parts.push(regex_escape(&stem));
+        }
+    }
+    let mut text_parts: Vec<String> = Vec::new();
+    for (spec, _) in text_wrappers {
+        text_parts.push(regex_escape(spec));
+    }
+    parts.sort();
+    parts.dedup();
+    text_parts.sort();
+    text_parts.dedup();
+    let mut alts: Vec<String> = Vec::new();
+    if !parts.is_empty() {
+        alts.push(format!(
+            "(?:^|[/\\\\])(?:{})(?:\\.(?:tsx|ts|jsx|js))?$",
+            parts.join("|")
+        ));
+    }
+    if !text_parts.is_empty() {
+        alts.push(format!("^(?:{})$", text_parts.join("|")));
+    }
+    let filter = alts.join("|");
+
+    let wrapper_map: serde_json::Map<String, serde_json::Value> = file_wrappers
+        .iter()
+        .map(|(t, w)| (t.clone(), serde_json::Value::String(w.clone())))
+        .collect();
+    let text_wrapper_map: serde_json::Map<String, serde_json::Value> = text_wrappers
+        .iter()
+        .map(|(t, w)| (t.clone(), serde_json::Value::String(w.clone())))
+        .collect();
+    let alias_pairs: Vec<serde_json::Value> = cfg
+        .aliases
+        .iter()
+        .map(|(a, t)| serde_json::json!([a, t]))
+        .collect();
+
+    let temp = super::shadow::hermes_temp_root(project_root);
+    let out_path = temp.join("plugin-bundle-out.js");
+    let script_path = temp.join("plugin-build.cjs");
+    let config_path = temp.join("plugin-build-config.json");
+
+    // esbuild's JS API ignores the NODE_PATH env var (CLI-only) — pass explicitly.
+    let node_paths: Vec<String> = node_path_env
+        .as_deref()
+        .map(|np| np.split(':').map(|s| s.to_string()).collect())
+        .unwrap_or_default();
+
+    let config = serde_json::json!({
+        "entry": entry_file.to_string_lossy(),
+        "out": out_path.to_string_lossy(),
+        "esbuildLib": esbuild_lib.to_string_lossy(),
+        "args": args,
+        "nodePaths": node_paths,
+        "wrappers": wrapper_map,
+        "textWrappers": text_wrapper_map,
+        "aliases": alias_pairs,
+        "resolveDir": entry_file.parent().unwrap_or(project_root).to_string_lossy(),
+        "filter": filter,
+    });
+
+    std::fs::write(&script_path, PLUGIN_BUILD_CJS)
+        .map_err(|e| format!("failed to write plugin build script: {e}"))?;
+    std::fs::write(&config_path, config.to_string())
+        .map_err(|e| format!("failed to write plugin build config: {e}"))?;
+
+    let mut cmd = Command::new(&runtime);
+    cmd.arg(&script_path).arg(&config_path);
+    cmd.env("ESBUILD_BINARY_PATH", &esbuild_bin);
+    if let Some(np) = &node_path_env {
+        cmd.env("NODE_PATH", np);
+    }
+    let output = cmd
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .output()
+        .map_err(|e| format!("failed to run JS runtime '{runtime}': {e}"))?;
+
+    if std::env::var("HT_DEBUG_RESOLVE").is_ok() {
+        eprint!("{}", String::from_utf8_lossy(&output.stderr));
+    }
+    let result = if !output.status.success() {
+        Err(format!(
+            "plugin bundling failed: {}",
+            String::from_utf8_lossy(&output.stderr)
+        ))
+    } else {
+        std::fs::read_to_string(&out_path)
+            .map_err(|e| format!("failed to read plugin bundle output: {e}"))
+    };
+    let _ = std::fs::remove_file(&script_path);
+    let _ = std::fs::remove_file(&config_path);
+    let _ = std::fs::remove_file(&out_path);
+    let code = result?;
+
+    if skip_patches {
+        return Ok(code);
+    }
+
+    // Same patch pipeline as the CLI path.
+    let mut code = patch_esbuild_for_hermes(&code);
+    let has_externals = !external_modules.is_empty()
+        || !cfg.externals.is_empty()
+        || code.contains("Dynamic require of");
+    if has_externals {
+        code = inject_mock_require_shim(&code);
+    }
+    code = hoist_mock_modules(&code);
+    Ok(code)
+}
+
+fn bundle_esbuild_with_config_inner(
+    entry_file: &Path,
+    esbuild_path: &Path,
+    external_modules: &[String],
+    cfg: &BundleConfig,
+    packages_external: bool,
+    sourcemap_inline: bool,
+    skip_patches: bool,
+) -> Result<String, String> {
+    let (args, node_path_env) =
+        assemble_esbuild_args(entry_file, external_modules, cfg, packages_external, sourcemap_inline);
+
+    let mut cmd = Command::new(esbuild_path);
+    cmd.arg(entry_file);
+    for a in &args {
+        cmd.arg(a);
+    }
+    if let Some(np) = &node_path_env {
+        cmd.env("NODE_PATH", np);
     }
 
     let output = cmd
@@ -423,56 +701,6 @@ pub fn compile_to_bytecode(code: &str, _context_path: &Path) -> Option<Vec<u8>> 
             eprintln!("WARNING: hermesc bytecode compilation failed: {e}");
             None
         },
-    }
-}
-
-/// Compile to bytecode with disk cache. Returns (bytecode, cache_hit).
-/// Cache key: hash of JS source. Cache dir: project_root/.hermes-test-cache/
-pub fn compile_to_bytecode_cached(
-    code: &str,
-    project_root: &Path,
-    prefix: &str,
-) -> Option<(Vec<u8>, bool)> {
-    if !code.contains("= class ") && !code.contains("= class{") {
-        return None;
-    }
-
-    let hash = {
-        use std::hash::{Hash, Hasher};
-        let mut hasher = std::collections::hash_map::DefaultHasher::new();
-        code.hash(&mut hasher);
-        format!("{:016x}", hasher.finish())
-    };
-
-    let cache_dir = project_root.join(".hermes-test-cache");
-    let cache_path = cache_dir.join(format!("{prefix}-{hash}.hbc"));
-
-    // Try cache hit
-    if let Ok(bytecode) = std::fs::read(&cache_path) {
-        return Some((bytecode, true));
-    }
-
-    // Cache miss — compile and save
-    match crate::hermes::compile_bytecode(code, "bundle.js") {
-        Ok(bytecode) => {
-            let _ = std::fs::create_dir_all(&cache_dir);
-            // Clean old cache files for this prefix
-            if let Ok(entries) = std::fs::read_dir(&cache_dir) {
-                for entry in entries.flatten() {
-                    let name = entry.file_name();
-                    let name = name.to_string_lossy();
-                    if name.starts_with(prefix) && name.ends_with(".hbc") && name != cache_path.file_name().unwrap().to_string_lossy().as_ref() {
-                        let _ = std::fs::remove_file(entry.path());
-                    }
-                }
-            }
-            let _ = std::fs::write(&cache_path, &bytecode);
-            Some((bytecode, false))
-        }
-        Err(e) => {
-            eprintln!("WARNING: hermesc bytecode compilation failed: {e}");
-            None
-        }
     }
 }
 
@@ -609,304 +837,7 @@ fn parse_depgraph(
     graph
 }
 
-// --- Bundle splitting for large test suites ---
-
-pub struct SplitBundle {
-    pub vendor: String,
-    pub groups: Vec<String>,
-}
-
-fn load_cached_split(project_root: &Path, cache_key: &str) -> Option<SplitBundle> {
-    let cache_dir = project_root.join(".hermes-test-cache");
-    let vendor = std::fs::read_to_string(cache_dir.join(format!("split-vendor-{cache_key}.js"))).ok()?;
-    let manifest: Vec<String> = serde_json::from_str(
-        &std::fs::read_to_string(cache_dir.join(format!("split-manifest-{cache_key}.json"))).ok()?
-    ).ok()?;
-    let mut groups = Vec::new();
-    for name in &manifest {
-        groups.push(std::fs::read_to_string(cache_dir.join(name)).ok()?);
-    }
-    Some(SplitBundle { vendor, groups })
-}
-
-fn save_cached_split(project_root: &Path, cache_key: &str, split: &SplitBundle) {
-    let cache_dir = project_root.join(".hermes-test-cache");
-    let _ = std::fs::create_dir_all(&cache_dir);
-    // Clean old split cache files
-    if let Ok(entries) = std::fs::read_dir(&cache_dir) {
-        for entry in entries.flatten() {
-            let n = entry.file_name();
-            let n = n.to_string_lossy();
-            if n.starts_with("split-") && !n.contains(cache_key) {
-                let _ = std::fs::remove_file(entry.path());
-            }
-        }
-    }
-    let _ = std::fs::write(cache_dir.join(format!("split-vendor-{cache_key}.js")), &split.vendor);
-    let mut group_names = Vec::new();
-    for (i, group) in split.groups.iter().enumerate() {
-        let name = format!("split-group-{cache_key}-{i}.js");
-        let _ = std::fs::write(cache_dir.join(&name), group);
-        group_names.push(name);
-    }
-    let _ = std::fs::write(
-        cache_dir.join(format!("split-manifest-{cache_key}.json")),
-        serde_json::to_string(&group_names).unwrap_or_default(),
-    );
-}
-
-/// Bundle with vendor/group splitting to avoid Hermes super-linear scaling.
-/// Uses disk cache keyed on source file mtimes — skips esbuild when nothing changed.
-pub fn bundle_split(
-    test_files: &[PathBuf],
-    project_root: &Path,
-    mock_modules: &[String],
-    cfg: &BundleConfig,
-) -> Result<SplitBundle, String> {
-    bundle_split_with_shallow(test_files, project_root, mock_modules, cfg, &[])
-}
-
-pub fn bundle_split_with_shallow(
-    test_files: &[PathBuf],
-    project_root: &Path,
-    mock_modules: &[String],
-    cfg: &BundleConfig,
-    shallow_auto_mocks: &[(String, Vec<String>, Vec<String>)],
-) -> Result<SplitBundle, String> {
-    // Check esbuild output cache first
-    let cache_key = compute_bundle_cache_key(test_files, project_root, mock_modules, cfg);
-    if let Some(cached) = load_cached_split(project_root, &cache_key) {
-        return Ok(cached);
-    }
-
-    let esbuild_path = find_esbuild(project_root)
-        .map_err(|_| "esbuild not found. Install it: bun add -d esbuild".to_string())?;
-
-    let group_size = 10;
-    let mut group_bundles = Vec::new();
-    let mut all_packages = std::collections::HashSet::new();
-
-    // Modules excluded from vendor (shimmed, externalized, or handled by harness)
-    let excluded: std::collections::HashSet<&str> = {
-        let mut set = std::collections::HashSet::new();
-        set.insert("hermes-test");
-        set.insert("react-native");
-        set.insert("console");
-        for ext in &cfg.externals {
-            set.insert(ext.as_str());
-        }
-        set
-    };
-
-    // Create wrapper shims for built-in ecosystem shims (hermes-test/shims/*)
-    let (wrapper_cfg, wrapper_shim_dir) = create_wrapper_shims(project_root, cfg);
-    // Create shadow wrappers for aliased mock paths (same as single-bundle mode)
-    let (shadow_cfg, shadow_dirs) = create_shadow_wrappers(project_root, mock_modules, &wrapper_cfg);
-    // Filter out aliased mock paths — shadow wrappers handle them
-    let non_aliased_mocks: Vec<String> = mock_modules.iter().filter(|m| {
-        !cfg.aliases.iter().any(|(alias, _)| *m == alias || m.starts_with(&format!("{alias}/")))
-    }).cloned().collect();
-    // Create package shims for non-aliased mocks (same Proxy pattern as shadow wrappers)
-    let (shim_cfg, shim_dir, remaining_externals) =
-        create_package_shims(project_root, &non_aliased_mocks, &shadow_cfg);
-
-    // Set shallow auto-mocks for group entry generation
-    SHALLOW_AUTO_MOCKS.with(|cell| {
-        *cell.borrow_mut() = shallow_auto_mocks.to_vec();
-    });
-
-    // Step 1: Bundle each group with --packages=external (fast, local code only)
-    for (i, chunk) in test_files.chunks(group_size).enumerate() {
-        let entry = generate_group_entry_internal(chunk, mock_modules, Some(project_root));
-        let entry_path = project_root.join(format!(".hermes-test-group-{i}.js"));
-        std::fs::write(&entry_path, &entry)
-            .map_err(|e| format!("Failed to write group entry: {e}"))?;
-
-        let code = bundle_esbuild_with_config(
-            &entry_path, &esbuild_path, &remaining_externals, &shim_cfg, true,
-        )?;
-        let _ = std::fs::remove_file(&entry_path);
-
-        // Extract __require("...") calls to discover needed packages
-        // Skip relative paths (mock modules like ./useIsLoading) — those stay external
-        for pkg in extract_required_packages(&code) {
-            if pkg.starts_with('.') || pkg.starts_with('/') {
-                continue;
-            }
-            if !excluded.contains(pkg.as_str())
-                && !cfg.externals.iter().any(|e| pkg_matches_external(&pkg, e))
-            {
-                all_packages.insert(pkg);
-            }
-        }
-
-        group_bundles.push(code);
-    }
-
-    // Step 2: Build vendor bundle with all discovered packages
-    let setup = generate_setup_code(test_files, mock_modules, cfg);
-    let packages: Vec<String> = all_packages.into_iter().collect();
-
-    let mut packages = packages;
-    packages.sort(); // Deterministic order for cache stability
-
-    let vendor = if packages.is_empty() {
-        // No packages to vendor — just run setup code raw
-        setup
-    } else {
-        let vendor_entry = generate_vendor_entry(&packages, &setup);
-        let vendor_entry_path = project_root.join(".hermes-test-vendor.js");
-        std::fs::write(&vendor_entry_path, &vendor_entry)
-            .map_err(|e| format!("Failed to write vendor entry: {e}"))?;
-
-        // Vendor must NOT skip aliases — it needs to bundle the real source code
-        // so __HT_mocks has real implementations for aliased paths.
-        // Use empty mock_modules so aliases aren't skipped (line 326-328).
-        let vendor_code = bundle_esbuild_with_config(
-            &vendor_entry_path, &esbuild_path, &[], cfg, false,
-        )?;
-        let _ = std::fs::remove_file(&vendor_entry_path);
-        vendor_code
-    };
-
-    // Clean up shadow dirs, shim dirs, and wrapper shim dir
-    for dir in &shadow_dirs { let _ = std::fs::remove_dir_all(dir); }
-    if let Some(ref d) = shim_dir { let _ = std::fs::remove_dir_all(d); }
-    if let Some(ref d) = wrapper_shim_dir { let _ = std::fs::remove_dir_all(d); }
-
-    let result = SplitBundle { vendor, groups: group_bundles };
-    save_cached_split(project_root, &cache_key, &result);
-    Ok(result)
-}
-
-fn pkg_matches_external(pkg: &str, external: &str) -> bool {
-    if external.ends_with('*') {
-        pkg.starts_with(&external[..external.len() - 1])
-    } else {
-        pkg == external || pkg.starts_with(&format!("{external}/"))
-    }
-}
-
-/// Internal version of generate_group_entry used by bundle_split.
-/// shallow_auto_mocks are thread-local — set via SHALLOW_AUTO_MOCKS before calling bundle_split.
-fn generate_group_entry_internal(test_files: &[PathBuf], mock_modules: &[String], project_root: Option<&Path>) -> String {
-    SHALLOW_AUTO_MOCKS.with(|cell| {
-        let mocks = cell.borrow();
-        generate_group_entry_pub(test_files, mock_modules, project_root, &mocks)
-    })
-}
-
-use std::cell::RefCell;
-thread_local! {
-    static SHALLOW_AUTO_MOCKS: RefCell<Vec<(String, Vec<String>, Vec<String>)>> = RefCell::new(Vec::new());
-}
-
-/// Setup code eval'd before vendor: shims, mock placeholders, harness mocks.
-fn generate_setup_code(
-    _test_files: &[PathBuf],
-    mock_modules: &[String],
-    cfg: &BundleConfig,
-) -> String {
-    let mut code = String::new();
-
-    code.push_str("if (typeof globalThis.__DEV__ === 'undefined') globalThis.__DEV__ = false;\n");
-    code.push_str("globalThis.__HT_mocks = globalThis.__HT_mocks || {};\n");
-    code.push_str("globalThis.__HT_mocks['hermes-test'] = globalThis.__HT;\n");
-
-    // Built-in react-native shim (unless user provides custom one)
-    let user_shim_modules: Vec<&str> = cfg.shims.iter().map(|(k, _)| k.as_str()).collect();
-    if !user_shim_modules.contains(&"react-native") {
-        code.push_str(&format!(
-            "globalThis.__HT_mocks['react-native'] = (function() {{ var module = {{ exports: {{}} }}; {}; return module.exports; }})();\n",
-            include_str!("../../../../packages/hermes-test/src/shims/react-native.js")
-        ));
-    }
-
-    // Pre-register mock module placeholders as live Proxies
-    if !mock_modules.is_empty() {
-        for path in mock_modules {
-            code.push_str(&format!(
-                r#"globalThis.__HT_mocks['{path}'] = globalThis.__HT_mocks['{path}'] || (typeof Proxy !== 'undefined' ? new Proxy({{}}, {{
-  get: function(t, p) {{
-    if (p === '__esModule') return true;
-    if (typeof p === 'symbol') return void 0;
-    var fm = globalThis.__HT_file_mocks;
-    var f = globalThis.__currentTestFile;
-    var m = fm && f && fm[f] && fm[f]['{path}'];
-    if (m && p in m) return m[p];
-    return t[p];
-  }},
-  set: function(t, p, v) {{ t[p] = v; return true; }}
-}}) : {{}});
-"#,
-            ));
-        }
-    }
-
-    code
-}
-
-/// Vendor entry: requires all discovered packages and registers on __HT_mocks.
-fn generate_vendor_entry(packages: &[String], setup_code: &str) -> String {
-    let mut entry = String::new();
-
-    // Setup code runs first inside the vendor IIFE
-    entry.push_str(setup_code);
-    entry.push('\n');
-
-    // Register console as a mock so --packages=external group bundles can resolve __require("console").
-    // The harness already replaced globalThis.console with print()-based output.
-    entry.push_str("globalThis.__HT_mocks['console'] = globalThis.console;\n");
-
-    // React bootstrap — vendor bundles the real React
-    entry.push_str(
-        "try { var __htReact = require('react'); globalThis.__HT_React = __htReact; globalThis.__HT_mocks['react'] = __htReact; } catch(e) {}\n"
-    );
-    entry.push_str(
-        "try { globalThis.__HT_JsxRuntime = require('react/jsx-runtime'); } catch(e) {}\n"
-    );
-    entry.push_str(
-        "try { var __htRec = require('react-reconciler'); globalThis.__HT_Reconciler = typeof __htRec === 'function' ? __htRec : (__htRec.default || __htRec); var __htRecC = require('react-reconciler/constants'); globalThis.__HT_ReconcilerConstants = __htRecC.__esModule ? __htRecC : (__htRecC.default || __htRecC); } catch(e) {}\n"
-    );
-
-    // Require each discovered package and register on __HT_mocks
-    for pkg in packages {
-        if pkg == "react" {
-            continue; // Already handled above
-        }
-        entry.push_str(&format!(
-            "try {{ globalThis.__HT_mocks['{}'] = require('{}'); }} catch(e) {{}}\n",
-            pkg, pkg
-        ));
-    }
-
-    entry
-}
-
-/// Extract package names from __require("...") calls in bundled code.
-fn extract_required_packages(code: &str) -> Vec<String> {
-    let re = regex::Regex::new(r#"__require\("([^"]+)"\)"#).unwrap();
-    let mut packages = Vec::new();
-    for cap in re.captures_iter(code) {
-        let pkg = cap[1].to_string();
-        if !packages.contains(&pkg) {
-            packages.push(pkg);
-        }
-    }
-    packages
-}
-
 // Public wrappers for persistent watch mode
 pub fn find_esbuild_pub(project_root: &Path) -> Result<PathBuf, ()> {
     find_esbuild(project_root)
-}
-
-pub fn bundle_esbuild_with_config_pub(
-    entry_file: &Path,
-    esbuild_path: &Path,
-    external_modules: &[String],
-    cfg: &BundleConfig,
-    packages_external: bool,
-) -> Result<String, String> {
-    bundle_esbuild_with_config(entry_file, esbuild_path, external_modules, cfg, packages_external)
 }

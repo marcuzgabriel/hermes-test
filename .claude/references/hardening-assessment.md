@@ -75,24 +75,34 @@ Both issues found in the review were silent-green:
 
 ## Prioritized enhancement plan
 
-1. **Fix directory-arg silent zero-run** (small, do before next release): expand
-   directory positional args to their contained test files (reuse find_test_files
-   scoped to the dir), or error loudly when an arg is a directory. Never exit 0
-   having run nothing the user pointed at.
+1. **Fix directory-arg silent zero-run**: DONE (feat/plugin-resolver, pre-1.2.0).
+   expand_file_args() expands directory args via find_test_files_with_pattern
+   (respecting testMatch) and HARD-ERRORS on nonexistent paths and on directories
+   containing no test files. Wired into both run and watch entry points.
 2. **Fixture tests for patches.rs transforms** (small): golden-file tests running
    representative class-extends shapes (with/without constructor, 2- and 3-level
    chains, Array subclass, `this.constructor.name` pattern) through
    `fix_all_class_extends` + the other patches, asserting on output AND on executed
    behavior in Hermes. Same for `inject_mock_require_shim` and `hoist_mock_modules`.
-3. **Port class downleveling from regex to OXC** (the one real project): oxc is
-   already a dependency (0.132, semantic feature). An AST visit + codegen for
-   class-extends removes the single riskiest component. Note the SWC attempt was
-   rejected for real reasons (see esbuild.rs header comment: scoped thread-locals,
-   helper injection incompatible with Hermes, full re-emit breaks other patches) —
-   the OXC port must re-emit ONLY the class expressions, not the whole bundle, or
-   must come after the other regex patches are also AST-based.
-4. **Prune dead code**: split mode, run_persistent_cycle, and the never-used
-   esbuild.rs functions. Keep the history in git, not in the source tree.
+3. **Class downleveling: do NOT re-attempt an AST port.** SETTLED (July 2026,
+   maintainer decision). OXC/AST approaches were tried multiple times and failed;
+   the documented reasons (SWC: scoped thread-locals, helper injection incompatible
+   with Hermes; and for ANY full-AST tool: re-emitting the bundle changes
+   whitespace and breaks every other regex patch) apply to OXC as well — this is
+   a property of full re-emit, not of a specific library. The regex transform in
+   patches.rs stays. Hardening therefore comes from item (2): golden fixture tests
+   over the class-extends shapes, executed in Hermes, plus a pinned esbuild
+   version. If an AST approach is ever revisited, the ONLY admissible shape is
+   span-surgery (parse, replace exactly the class-extends byte ranges in the
+   original text, no re-emit) — and it needs a champion with time to burn, not a
+   drive-by refactor.
+4. **Prune dead code**: DONE (feat/plugin-resolver) — deleted 771 lines: split
+   mode (bundle_split*, SplitBundle, group/vendor entry generators, split
+   caching), run_tests_split, run_persistent_cycle, orphaned print helpers,
+   compile_to_bytecode_cached, coverage map builders. Zero rustc warnings from
+   crate code after prune; full gauntlet green in both resolver modes.
+   NOT deleted (deliberate): the legacy resolver path (shadow trees, package
+   shims, iso runner) behind HT_RESOLVER=legacy — phase 4, after release soak.
 5. **De-flake async-data-fetcher example** and fix the print_jest_summary suite
    line.
 6. **Comment-aware mock scanning** (nice-to-have): strip comments before the
@@ -162,9 +172,82 @@ Payoff: one bundle, one VM always; three delivery subsystems deleted; relative /
 alias / package mocks become one code path; Day 24's iso machinery retires after
 serving as the correctness bridge.
 
+### Phase 3 results (feat/plugin-resolver, measured)
+- Plugin resolver is now the DEFAULT; `HT_RESOLVER=legacy` restores the old
+  pipeline (escape hatch for one release cycle — do not delete legacy until a
+  release has soaked in prod).
+- Coverage: bundle_via_plugin_with_sourcemap mirrors the CLI sourcemap path;
+  if-session and Topdanmark coverage runs green in default mode. NOTE: coverage
+  totals differ from legacy because mocked modules' real code now stays in the
+  instrumented bundle (legacy externalized/isolated them out of the
+  denominator) — more files measured, arguably more honest.
+- Watch: both initial run and reruns bundle via the plugin; verified with a
+  mixed relative+alias watch session (initial + source-change rerun).
+- Default-mode gauntlet: examples 24 suites parity, if-session 31/31
+  (plugin-* cache), Topdanmark 1793/1793 ×3 stable; legacy flag verified
+  (single-* cache, 1793/1793).
+- Phase 4 (deletion of shadow trees, package shims, iso runner, and the
+  HT_RESOLVER flag itself) is deliberately deferred until the flipped default
+  has shipped in a release and soaked in Topdanmark CI.
+
 ## Operational guardrails for prod consumers (Topdanmark et al.)
 
 - Pin esbuild and hermes versions; treat esbuild bumps as risky changes needing a
   full-suite validation run.
 - Consider a CI guard asserting total test count doesn't drop unexpectedly between
   runs — the cheap defense against any future silent-skip regression.
+
+### Phase 1 results (feat/plugin-resolver, measured)
+- HT_RESOLVER=plugin ships behind a flag: relative mocks run in the SINGLE bundle
+  / single VM via onResolve wrappers with real-module fallback. Parity gauntlet
+  green: examples 20 suites (plugin == legacy), if-session 31/31 both spellings
+  (warm 0.01s, one bundle), Topdanmark 288/1793 both modes.
+- Zero-wrapper builds delegate to the CLI path (byte-identical) — suites without
+  relative mocks pay nothing.
+- Measured JS-API service overhead (HT_PLUGIN_FORCE=1, zero round trips,
+  min-of-3 on Topdanmark): CLI 5.27s vs JS API 5.74s cold → **≈ +0.5s (~9%)**
+  per wrapper-carrying cold bundle of that size. Warm runs: 0 (bytecode cache).
+- Phase 2 decision input: unifying alias/package mocks onto the plugin would
+  make big suites wrapper-carrying, i.e. buy "delete shadow trees + shims + iso"
+  at ~+0.5s cold / 0 warm. Shave candidates before defaulting: stdout instead of
+  outfile+read, persistent build service (watch), profile bun vs node service.
+
+### Phase 2 results (feat/plugin-resolver, measured)
+- Plugin mode now delivers ALL mock kinds through onResolve: relative + alias
+  mocks as identity-keyed file wrappers, package mocks as pkg wrappers
+  (?ht-real resolved via build.resolve with a pluginData re-entry guard);
+  natives/shimmed/unresolvable keep legacy externalization. Shadow trees and
+  package shims are fully bypassed in plugin mode. Barrel sub-path delegation
+  falls out of identity matching for free (no special barrel Proxy needed).
+- Fixtures: alias-mock, pkg-mock, relative-mock pairs (each with an unmocked
+  sibling needing the real module) — green in BOTH modes, one bundle, one VM.
+- Fixture-writing found + fixed a PRE-EXISTING legacy bug (repro on published
+  1.1.6): mocking a CJS default-export package (moment) broke `default` access
+  to the REAL module for non-mocking files. Fixed in the package-shim template
+  and inherited by plugin wrappers (default = module itself when !__esModule).
+- Topdanmark (288 suites / 1793 tests, ~70 alias mocks now wrapper-delivered):
+  min-of-3 interleaved — legacy cold 5.04s, plugin cold 5.69s (**+0.65s ≈ 13%**,
+  of which ~0.5s is JS-API service overhead and only ~0.15s is filtered
+  round-trips); warm 1.04s == legacy. if-session 31/31; examples 24 suites
+  parity (one pre-existing flake).
+- ~~OPEN: 87-test "nondeterminism"~~ **RESOLVED — was never nondeterministic.**
+  Post-mortem: (a) the "passing" verification runs used `2>/dev/null | grep -c
+  FAIL`, discarding the stream carrying suite lines → false passes; (b) the
+  bisect harness appended the victim file LAST, which genuinely changes the
+  outcome. Reality: a DETERMINISTIC, order-dependent failure.
+  Root cause: phase 2's identity matching intercepted EVERY import route to an
+  alias-mocked module — including production-internal relative imports that
+  legacy shadow trees never intercept (symlink bypass, Day 19). Modules doing
+  module-level init-time reads (e.g. allPayments reading constants/environment)
+  initialize once, under whichever test file triggered the first import — an
+  alphabetically-earlier Claims test that MOCKS constants/environment — freezing
+  mocked values into module state for every later test (gwUtil et al).
+  Found by ordered bisect: 3 Claims tests + gwUtil = minimal repro.
+  Fix: alias and package mocks now match by IMPORT-SPECIFIER TEXT (exact), with
+  barrel-ancestor wrappers doing prefix delegation — the legacy boundary,
+  faithfully ported (esbuild runs plugin onResolve BEFORE alias substitution,
+  verified empirically, so the pre-substitution text is visible). Only phase-1
+  relative-mock targets keep identity matching (that is their purpose).
+  After fix: topdanmark 1793/1793 plugin mode, 3× stable, warm 1.08s.
+  Lesson recorded: never count failures through a discarded stream; never bisect
+  with a harness that changes test order.

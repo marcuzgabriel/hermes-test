@@ -301,60 +301,6 @@ pub fn hoist_mocks_in_body(body: &str) -> String {
     result
 }
 
-/// Find the insertion point for hoisted mocks in a function body.
-/// Mocks must go AFTER the hermes-test require (so mockModule is defined)
-/// but BEFORE any init_*() calls (so mocks are registered before modules load).
-#[allow(dead_code)]
-pub fn find_mock_insert_point(body: &str) -> usize {
-    // Strategy: find the end of the hermes-test require line, insert after it.
-    let hermes_patterns = [
-        r#"__require("hermes-test")"#,
-    ];
-    let mut after_require = 0;
-    for pat in &hermes_patterns {
-        if let Some(pos) = body.find(pat) {
-            // Find end of this statement (next semicolon + newline)
-            let rest = &body[pos..];
-            if let Some(semi) = rest.find(";\n") {
-                let candidate = pos + semi + 2; // after ";\n"
-                if candidate > after_require {
-                    after_require = candidate;
-                }
-            } else if let Some(nl) = rest.find('\n') {
-                let candidate = pos + nl + 1;
-                if candidate > after_require {
-                    after_require = candidate;
-                }
-            }
-        }
-    }
-
-    // If we found a hermes require, also skip past any init_hermes* calls
-    if after_require > 0 {
-        let init_re = regex::Regex::new(r"(?m)^[ \t]*init_hermes\w*\(\);?\n?").unwrap();
-        let mut pos = after_require;
-        while let Some(m) = init_re.find(&body[pos..]) {
-            if m.start() == 0 || body[pos..pos + m.start()].trim().is_empty() {
-                pos += m.end();
-            } else {
-                break;
-            }
-        }
-        return pos;
-    }
-
-    // Fallback: find first non-hermes init_*() call
-    let init_re = regex::Regex::new(r"(?m)^[ \t]*(init_\w+)\(\)").unwrap();
-    for m in init_re.find_iter(body) {
-        let matched = m.as_str().trim();
-        if !matched.starts_with("init_hermes") {
-            return m.start();
-        }
-    }
-
-    0
-}
-
 /// Downlevel ALL `class Foo extends Expr { ... }` patterns to function-based constructors.
 ///
 /// Hermes has two bugs with class-extends:

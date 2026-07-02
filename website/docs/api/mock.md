@@ -31,8 +31,12 @@ ht.mock('../analytics', () => ({
 
 Relative paths resolve from the **test file's directory** (jest semantics) and apply
 at every import site of the resolved module, no matter how each importer spells its
-own relative specifier. A test file using relative mocks runs in its own bundle, so
-other test files in the same run keep the real module.
+own relative specifier. Alias and package mocks match the import specifier text
+exactly. In both cases the real module stays in the bundle — unmocked test files in
+the same run fall through to the real implementation.
+
+How this works under the hood: see
+[Mock resolution: the receptionist and the brain](../architecture/mock-resolution.md).
 
 ## Unmock directive
 

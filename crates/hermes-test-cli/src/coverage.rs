@@ -147,8 +147,6 @@ fn instrument_bundle_inner(source: &str, filename: &str, sm_info: Option<&Source
 
     // Runtime preamble: one entry with all counters (global IDs)
     let fid = filename.replace('\\', "/");
-    let si = build_zero_map(stmts.len());
-    let fi = build_zero_map(fns.len());
     let bi = build_branch_zero_map(&br);
 
     // Use typed arrays for counters to avoid Hermes 196607 property limit.
@@ -313,9 +311,6 @@ impl LineTable{
     fn new(s:&str)->Self{let mut v=vec![0u32];for(i,c)in s.bytes().enumerate(){if c==b'\n'{v.push(i as u32+1);}}Self{line_starts:v}}
     fn lookup(&self,o:u32)->(u32,u32){let l=match self.line_starts.binary_search(&o){Ok(i)=>i,Err(i)=>i.saturating_sub(1)};(l as u32+1,o.saturating_sub(self.line_starts[l]))}
 }
-fn build_loc_map(l:&[(u32,u32)],lt:&LineTable,base:u32)->String{let mut o=String::from("{");for(i,(s,e))in l.iter().enumerate(){let(sl,sc)=lt.lookup(*s);let(el,ec)=lt.lookup(*e);let sl=sl.saturating_sub(base);let el=el.saturating_sub(base);if i>0{o.push(',');}o.push_str(&format!("\"{i}\":{{\"start\":{{\"line\":{sl},\"column\":{sc}}},\"end\":{{\"line\":{el},\"column\":{ec}}}}}"));}o.push('}');o}
-fn build_fn_map(f:&[(u32,u32,String)],lt:&LineTable,base:u32)->String{let mut o=String::from("{");for(i,(s,e,n))in f.iter().enumerate(){let(sl,sc)=lt.lookup(*s);let(el,ec)=lt.lookup(*e);let sl=sl.saturating_sub(base);let el=el.saturating_sub(base);if i>0{o.push(',');}let n=n.replace('"',"\\\"");o.push_str(&format!("\"{i}\":{{\"name\":\"{n}\",\"decl\":{{\"start\":{{\"line\":{sl},\"column\":{sc}}},\"end\":{{\"line\":{el},\"column\":{ec}}}}},\"loc\":{{\"start\":{{\"line\":{sl},\"column\":{sc}}},\"end\":{{\"line\":{el},\"column\":{ec}}}}}}}"));}o.push('}');o}
-fn build_branch_map(b:&[(u32,u32,String,u32)],lt:&LineTable,base:u32)->String{let mut o=String::from("{");for(i,(s,e,t,_))in b.iter().enumerate(){let(sl,sc)=lt.lookup(*s);let(el,ec)=lt.lookup(*e);let sl=sl.saturating_sub(base);let el=el.saturating_sub(base);if i>0{o.push(',');}o.push_str(&format!("\"{i}\":{{\"loc\":{{\"start\":{{\"line\":{sl},\"column\":{sc}}},\"end\":{{\"line\":{el},\"column\":{ec}}}}},\"type\":\"{t}\"}}"));}o.push('}');o}
 // Resolved builders: use pre-computed source locations from source map
 fn build_loc_map_resolved(gids: Vec<usize>, locs: &BTreeMap<usize, (u32, u32, u32, u32)>) -> String {
     let mut o = String::from("{");
@@ -349,7 +344,6 @@ fn build_branch_map_resolved(items: Vec<(usize, String)>, locs: &BTreeMap<usize,
     o.push('}'); o
 }
 
-fn build_zero_map(c:usize)->String{let mut o=String::from("{");for i in 0..c{if i>0{o.push(',');}o.push_str(&format!("\"{i}\":0"));}o.push('}');o}
 fn build_branch_zero_map(b:&[(u32,u32,String,u32)])->String{let mut o=String::from("{");for(i,(_,_,_,p))in b.iter().enumerate(){if i>0{o.push(',');}let z:Vec<&str>=(0..*p).map(|_|"0").collect();o.push_str(&format!("\"{i}\":[{}]",z.join(",")));}o.push('}');o}
 
 // --- Coverage reporting ---

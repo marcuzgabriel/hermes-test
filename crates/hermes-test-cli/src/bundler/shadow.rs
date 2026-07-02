@@ -2,7 +2,7 @@ use std::path::{Path, PathBuf};
 
 use super::config::BundleConfig;
 
-fn hermes_temp_root(project_root: &Path) -> PathBuf {
+pub(crate) fn hermes_temp_root(project_root: &Path) -> PathBuf {
     use std::hash::{Hash, Hasher};
     let mut hasher = std::collections::hash_map::DefaultHasher::new();
     project_root.to_string_lossy().hash(&mut hasher);
@@ -140,6 +140,11 @@ var _h = {{
     var mocks = fm && f && fm[f];
     var m = mocks && mocks['{pkg}'];
     if (m && p in m) return m[p];
+    if (p === 'default') {{
+      // CJS packages without __esModule: their default IS the module itself.
+      var r0 = _getReal();
+      return r0 && r0.__esModule ? r0['default'] : r0;
+    }}
     var real = _getReal()[p];
     if (typeof real === 'function' && !_fnCache[p]) {{
       _fnCache[p] = new Proxy(real, {{ apply: function(target, thisArg, args) {{

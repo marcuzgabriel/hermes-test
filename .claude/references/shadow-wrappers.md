@@ -1,3 +1,11 @@
+> **STATUS (July 2026): LEGACY.** Shadow wrappers and package shims are no longer
+> the default mock delivery — the esbuild JS-API onResolve plugin is
+> (see hardening-assessment.md, phases 1–3, and
+> website/docs/architecture/mock-resolution.md for the current model:
+> onResolve = the receptionist, wrapper get() = the brain — the runtime half
+> documented here survives unchanged inside the plugin wrappers). This pipeline
+> remains reachable via HT_RESOLVER=legacy for one release cycle; phase 4 deletes it.
+
 # Shadow Wrappers — Mock Isolation via Proxy Shims
 
 ## The Problem

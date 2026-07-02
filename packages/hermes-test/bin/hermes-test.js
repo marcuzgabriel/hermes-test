@@ -9,11 +9,15 @@ const fs = require('fs');
 const platform = os.platform();
 const arch = os.arch();
 
+// Hand the CLI the JS runtime that is provably present: the one executing this
+// launcher. Used by plugin-resolver mode (HT_RESOLVER=plugin) for esbuild's JS API.
+const env = { ...process.env, HT_JS_RUNTIME: process.execPath };
+
 // Check for local development build first (target/release/hermes-test next to the package)
 const localBin = path.join(__dirname, '..', '..', '..', 'target', 'release', 'hermes-test');
 if (fs.existsSync(localBin)) {
   try {
-    execFileSync(localBin, process.argv.slice(2), { stdio: 'inherit' });
+    execFileSync(localBin, process.argv.slice(2), { stdio: 'inherit', env });
   } catch (e) {
     process.exit(e.status ?? 1);
   }
@@ -50,7 +54,7 @@ try {
 }
 
 try {
-  execFileSync(binPath, process.argv.slice(2), { stdio: 'inherit' });
+  execFileSync(binPath, process.argv.slice(2), { stdio: 'inherit', env });
 } catch (e) {
   process.exit(e.status ?? 1);
 }

@@ -105,16 +105,7 @@ pub fn find_mock_modules_with_alias_pairs(test_files: &[PathBuf], aliases: &[Str
     mocks
 }
 
-/// Scan a test file's ht.shallow() target for components used in JSX.
-/// For modules that contain at least one JSX component, ALL named imports are collected.
-/// JSX components get createElement stubs; non-JSX exports (hooks, utilities) get
-/// generic function stubs. This prevents barrel-file crashes from breaking fallthrough.
-/// Returns (module_path, jsx_names, other_names) for auto-mock generation.
-pub fn scan_shallow_auto_mocks(test_file: &Path, aliases: &[String]) -> Vec<(String, Vec<String>, Vec<String>)> {
-    scan_shallow_auto_mocks_with_pairs(test_file, aliases, &[])
-}
-
-pub fn scan_shallow_auto_mocks_with_pairs(test_file: &Path, aliases: &[String], alias_pairs: &[(String, String)]) -> Vec<(String, Vec<String>, Vec<String>)> {
+pub fn scan_shallow_auto_mocks_with_pairs(test_file: &Path, _aliases: &[String], alias_pairs: &[(String, String)]) -> Vec<(String, Vec<String>, Vec<String>)> {
     let content = match std::fs::read_to_string(test_file) { Ok(c) => c, Err(_) => return vec![] };
     let re_shallow = match regex::Regex::new(r#"ht\.shallow\(\s*['"]([^'"]+)['"]\s*\)"#) {
         Ok(r) => r, Err(_) => return vec![],
@@ -362,6 +353,274 @@ pub fn relative_mock_externals(test_files: &[PathBuf]) -> Vec<String> {
         }
     }
     out
+}
+
+/// Everything the plugin bundler needs to deliver ALL mock kinds through the
+/// onResolve hook (Phase 2 — replaces shadow trees and package shims in plugin mode).
+pub struct PluginMockSet {
+    /// resolved absolute target path → wrapper file path (RELATIVE mocks only —
+    /// identity matching intercepts every import route, which is the point of
+    /// test-file-relative mocks)
+    pub file_wrappers: Vec<(String, String)>,
+    /// import-specifier text → wrapper file path (alias mocks, package mocks,
+    /// and barrel ancestors of mocked alias paths). TEXT matching mirrors the
+    /// legacy shadow-tree/package-shim boundary: production-internal relative
+    /// imports of these modules are NOT intercepted, so module-level init-time
+    /// reads capture real values (see hardening-assessment: init-time capture
+    /// poisoning found via topdanmark gwUtil bisect).
+    pub text_wrappers: Vec<(String, String)>,
+    /// mocks that must stay text-externalized (native/config externals, shimmed
+    /// packages, react-native, unresolvable relative/alias specifiers) — the
+    /// legacy require-shim handles them at runtime exactly as before.
+    pub external_mocks: Vec<String>,
+    /// temp dir holding the wrapper files (cleanup after bundling)
+    pub dir: PathBuf,
+}
+
+/// Resolve an alias-prefixed mock specifier to an absolute source file via the
+/// longest matching config alias, with the same extension/index probing as
+/// relative resolution.
+fn resolve_alias_mock(m: &str, aliases: &[(String, String)]) -> Option<PathBuf> {
+    let mut best: Option<(&str, &str)> = None;
+    for (a, t) in aliases {
+        if m == a.as_str() || m.starts_with(&format!("{a}/")) {
+            if best.map_or(true, |(ba, _)| a.len() > ba.len()) {
+                best = Some((a.as_str(), t.as_str()));
+            }
+        }
+    }
+    let (a, t) = best?;
+    let rem = m.strip_prefix(a).unwrap_or("").trim_start_matches('/');
+    let base = if rem.is_empty() { PathBuf::from(t) } else { Path::new(t).join(rem) };
+    for ext in &[".tsx", ".ts", ".jsx", ".js"] {
+        let c = base.with_extension(&ext[1..]);
+        if c.is_file() { return Some(normalize_lexically(&c)); }
+    }
+    for idx in &["index.tsx", "index.ts", "index.jsx", "index.js"] {
+        let c = base.join(idx);
+        if c.is_file() { return Some(normalize_lexically(&c)); }
+    }
+    if base.is_file() { return Some(normalize_lexically(&base)); }
+    None
+}
+
+/// Classify every ht.mock() specifier and generate onResolve wrapper files:
+/// - relative → resolved from each test file's directory → file wrapper
+/// - alias-prefixed → resolved via config aliases → file wrapper
+/// - bare package → package wrapper, unless the package is a config external /
+///   shimmed / react-native (those keep legacy externalization: their real code
+///   can't be bundled anyway, so there is no fallback to preserve)
+/// Wrappers are the same access-time mock-or-real Proxy as shadow wrappers and
+/// package shims; the real module stays in the bundle via the ?ht-real marker.
+pub fn create_plugin_mock_wrappers(
+    test_files: &[PathBuf],
+    project_root: &Path,
+    cfg: &BundleConfig,
+    mock_modules: &[String],
+) -> PluginMockSet {
+    let dir = super::shadow::hermes_temp_root(project_root).join("plugin-wrappers");
+    let _ = std::fs::remove_dir_all(&dir);
+    let _ = std::fs::create_dir_all(&dir);
+
+    // Relative mocks: resolution is per-test-file; collect specifier keys per target.
+    let mut file_targets: Vec<(PathBuf, Vec<String>)> = Vec::new();
+    let mut resolved_relative_specs: Vec<String> = Vec::new();
+    for f in test_files {
+        for (spec, abs) in find_relative_mock_targets(f) {
+            if !resolved_relative_specs.contains(&spec) {
+                resolved_relative_specs.push(spec.clone());
+            }
+            if let Some((_, keys)) = file_targets.iter_mut().find(|(t, _)| *t == abs) {
+                if !keys.contains(&spec) { keys.push(spec); }
+            } else {
+                file_targets.push((abs, vec![spec]));
+            }
+        }
+    }
+
+    // Text-matched wrappers: (specifier, exact_keys, prefix_keys, resolved_abs)
+    let mut text_targets: Vec<(String, Vec<String>, Vec<String>, PathBuf)> = Vec::new();
+    let mut external_mocks: Vec<String> = Vec::new();
+
+    for m in mock_modules {
+        if m.starts_with('.') {
+            // Relative: handled above per test file; unresolvable ones keep the
+            // legacy text-external behavior.
+            if !resolved_relative_specs.contains(m) && !external_mocks.contains(m) {
+                external_mocks.push(m.clone());
+            }
+            continue;
+        }
+        if let Some(abs) = resolve_alias_mock(m, &cfg.aliases) {
+            // Alias mocks match by SPECIFIER TEXT (legacy shadow-tree boundary):
+            // production-internal relative imports of the same file keep the real
+            // module, avoiding init-time capture of another file's mocks.
+            if let Some((_, keys, _, _)) = text_targets.iter_mut().find(|(spec, _, _, _)| spec == m) {
+                if !keys.contains(m) { keys.push(m.clone()); }
+            } else {
+                text_targets.push((m.clone(), vec![m.clone()], Vec::new(), abs));
+            }
+            // Barrel ancestors: imports of any ancestor barrel must see mocked
+            // sub-paths of the current test file (legacy barrel delegation).
+            let mut ancestor = m.as_str();
+            while let Some(cut) = ancestor.rfind('/') {
+                ancestor = &ancestor[..cut];
+                let still_aliased = cfg.aliases.iter().any(|(a, _)| ancestor == a || ancestor.starts_with(&format!("{a}/")));
+                if !still_aliased { break; }
+                if let Some(barrel_abs) = resolve_alias_mock(ancestor, &cfg.aliases) {
+                    let prefix = format!("{ancestor}/");
+                    if let Some((_, _, prefixes, _)) = text_targets.iter_mut().find(|(spec, _, _, _)| spec == ancestor) {
+                        if !prefixes.contains(&prefix) { prefixes.push(prefix); }
+                    } else {
+                        text_targets.push((ancestor.to_string(), Vec::new(), vec![prefix], barrel_abs));
+                    }
+                }
+            }
+            continue;
+        }
+        let is_alias_prefixed = cfg.aliases.iter().any(|(a, _)| m == a || m.starts_with(&format!("{a}/")));
+        if is_alias_prefixed {
+            // Alias-prefixed but unresolvable → legacy externalization.
+            if !external_mocks.contains(m) { external_mocks.push(m.clone()); }
+            continue;
+        }
+        // Bare package specifier.
+        let is_config_external = cfg.externals.iter().any(|e| {
+            let e_base = e.trim_end_matches('*').trim_end_matches('/');
+            m == e_base || m.starts_with(&format!("{e_base}/"))
+                || (e.ends_with('*') && m.starts_with(e_base))
+        });
+        let is_shim = cfg.shims.iter().any(|(s, _)| s == m);
+        let is_wrapper_shim = cfg.wrapper_shims.iter().any(|(s, _)| s == m);
+        let is_hardcoded = m == "react-native" || m.starts_with("react-native/")
+            || m.starts_with("@react-native/");
+        if is_config_external || is_shim || is_wrapper_shim || is_hardcoded {
+            if !external_mocks.contains(m) { external_mocks.push(m.clone()); }
+        } else if !text_targets.iter().any(|(spec, _, _, _)| spec == m) {
+            // Package wrappers resolve their real module by bare specifier at
+            // bundle time (?ht-real via build.resolve) — abs path unused.
+            text_targets.push((m.clone(), vec![m.clone()], Vec::new(), PathBuf::new()));
+        }
+    }
+
+    let mut file_wrappers = Vec::new();
+    for (abs, keys) in &file_targets {
+        let abs_str = abs.to_string_lossy().to_string();
+        let real_import = format!("{abs_str}?ht-real");
+        if let Some(w) = write_mock_wrapper(&dir, &abs_str, &real_import, keys, &[]) {
+            file_wrappers.push((abs_str, w.to_string_lossy().to_string()));
+        }
+    }
+    let mut text_wrappers = Vec::new();
+    for (spec, keys, prefixes, abs) in &text_targets {
+        // Alias targets fall back to the real FILE (?ht-real by abs path);
+        // package targets fall back to the real PACKAGE (?ht-real by name).
+        let real_import = if abs.as_os_str().is_empty() {
+            format!("{spec}?ht-real")
+        } else {
+            format!("{}?ht-real", abs.to_string_lossy())
+        };
+        if let Some(w) = write_mock_wrapper(&dir, spec, &real_import, keys, prefixes) {
+            text_wrappers.push((spec.clone(), w.to_string_lossy().to_string()));
+        }
+    }
+
+    PluginMockSet { file_wrappers, text_wrappers, external_mocks, dir }
+}
+
+/// Write one mock-or-real Proxy wrapper file. `name_seed` only influences the
+/// generated filename; `real_import` is the ?ht-real-marked import of the real
+/// module; `keys` are the __HT_file_mocks registry keys to check.
+fn write_mock_wrapper(
+    dir: &Path,
+    name_seed: &str,
+    real_import: &str,
+    keys: &[String],
+    prefixes: &[String],
+) -> Option<PathBuf> {
+    {
+        let safe = name_seed
+            .trim_start_matches('/')
+            .replace(['/', '@'], "-")
+            .replace('.', "_");
+        let wrapper_path = dir.join(format!("{safe}.js"));
+        let keys_json = serde_json::to_string(keys).unwrap_or_else(|_| "[]".to_string());
+        let prefixes_json = serde_json::to_string(prefixes).unwrap_or_else(|_| "[]".to_string());
+        let real_import = real_import.to_string();
+
+        let wrapper = format!(
+            r#"var _loaded = null; var _loading = false;
+function _getReal() {{ if (_loaded) return _loaded; if (_loading) return {{}}; _loading = true; _loaded = require({real_require}); _loading = false; return _loaded; }}
+var _KEYS = {keys_json};
+var _PREFIXES = {prefixes_json};
+// Per-property lookup: exact mock keys first, then barrel sub-path delegation
+// (any of the current test file's mocks whose key starts with a barrel prefix
+// and provides the property — legacy shadow-tree barrel semantics).
+function _lookup(p) {{
+  var fm = globalThis.__HT_file_mocks;
+  var f = globalThis.__currentTestFile;
+  var mocks = fm && f && fm[f];
+  if (!mocks) return undefined;
+  for (var i = 0; i < _KEYS.length; i++) {{
+    var m = mocks[_KEYS[i]];
+    if (m && p in m) return {{ v: m[p] }};
+  }}
+  for (var j = 0; j < _PREFIXES.length; j++) {{
+    for (var k in mocks) {{
+      if (k.indexOf(_PREFIXES[j]) === 0 && p in mocks[k]) return {{ v: mocks[k][p] }};
+    }}
+  }}
+  return undefined;
+}}
+var _fnCache = {{}};
+var _h = {{
+  get: function(t, p) {{
+    if (p === '__esModule') return true;
+    if (typeof p === 'symbol') return undefined;
+    if (p === '__DEV__') return false;
+    var hit = _lookup(p);
+    if (hit) return hit.v;
+    if (p === 'default') {{
+      // CJS modules without __esModule: their default IS the module itself.
+      var r0 = _getReal();
+      return r0 && r0.__esModule ? r0['default'] : r0;
+    }}
+    var real = _getReal()[p];
+    if (typeof real === 'function' && !_fnCache[p]) {{
+      _fnCache[p] = new Proxy(real, {{ apply: function(target, thisArg, args) {{
+        var hit2 = _lookup(p);
+        if (hit2) return hit2.v.apply(thisArg, args);
+        return target.apply(thisArg, args);
+      }} }});
+    }}
+    return _fnCache[p] || real;
+  }},
+  ownKeys: function(t) {{
+    var r = _getReal();
+    try {{ return Object.getOwnPropertyNames(r); }} catch(e) {{ return []; }}
+  }},
+  getOwnPropertyDescriptor: function(t, p) {{
+    var r = _getReal();
+    try {{
+      var d = Object.getOwnPropertyDescriptor(r, p);
+      if (d) {{ return {{ configurable: true, enumerable: d.enumerable, writable: true, value: d.get ? d.get() : d.value }}; }}
+    }} catch(e) {{}}
+    return {{ configurable: true, enumerable: false, writable: true, value: undefined }};
+  }}
+}};
+module.exports = typeof Proxy !== 'undefined' ? new Proxy({{}}, _h) : {{}};
+"#,
+            real_require = serde_json::to_string(&real_import).unwrap_or_default(),
+            keys_json = keys_json,
+            prefixes_json = prefixes_json,
+        );
+
+        if std::fs::write(&wrapper_path, wrapper).is_ok() {
+            Some(wrapper_path)
+        } else {
+            None
+        }
+    }
 }
 
 /// The specifier esbuild emits in `__require(...)` for an import externalized by
@@ -681,88 +940,6 @@ globalThis.__HT_results = JSON.stringify({
     );
 
     entry
-}
-
-/// Minimal entry for a group: just test file requires (no setup, no runner).
-fn generate_group_entry(test_files: &[PathBuf], mock_modules: &[String], project_root: Option<&Path>, shallow_auto_mocks: &[(String, Vec<String>, Vec<String>)]) -> String {
-    let mut entry = String::new();
-
-    // Reset console log collector for this group
-    entry.push_str("globalThis.__HT_logs = [];\n");
-
-    // Re-register mock placeholders as live Proxies (same as generate_entry)
-    if !mock_modules.is_empty() {
-        for path in mock_modules {
-            entry.push_str(&format!(
-                r#"globalThis.__HT_mocks['{path}'] = globalThis.__HT_mocks['{path}'] || (typeof Proxy !== 'undefined' ? new Proxy({{}}, {{
-  get: function(t, p) {{
-    if (p === '__esModule') return true;
-    if (typeof p === 'symbol') return void 0;
-    var fm = globalThis.__HT_file_mocks;
-    var f = globalThis.__currentTestFile;
-    var m = fm && f && fm[f] && fm[f]['{path}'];
-    if (m && p in m) return m[p];
-    return t[p];
-  }},
-  set: function(t, p, v) {{ t[p] = v; return true; }}
-}}) : {{}});
-"#,
-            ));
-        }
-    }
-
-    for file in test_files {
-        let path = file.to_string_lossy();
-        let require_path = if path.starts_with('/') || path.starts_with("./") {
-            path.to_string()
-        } else {
-            format!("./{path}")
-        };
-        let file_id = project_root
-            .and_then(|root| file.strip_prefix(root).ok())
-            .map(|p| p.to_string_lossy().to_string())
-            .unwrap_or_else(|| file.file_name()
-                .map(|n| n.to_string_lossy().to_string())
-                .unwrap_or_else(|| path.to_string()));
-
-        entry.push_str(&format!(
-            "if (globalThis.__HT && globalThis.__HT.resetMockModulePatches) globalThis.__HT.resetMockModulePatches();\nglobalThis.__currentTestFile = '{}';\n",
-            file_id
-        ));
-
-        // Inject auto-mock ht.mock() calls for ht.shallow() discovered imports
-        for (mod_path, jsx_names, other_names) in shallow_auto_mocks {
-            let mut exports = String::new();
-            for name in jsx_names {
-                exports.push_str(&format!(
-                    "r['{name}'] = typeof Proxy !== 'undefined' ? new Proxy(function(p) {{ return R.createElement('{name}', p); }}, {{ get: function(t, k) {{ if (typeof k === 'symbol') return t[k]; if (k === 'prototype' || k === 'name' || k === 'length' || k === 'caller' || k === 'arguments' || k === 'displayName' || k === 'contextTypes' || k === 'childContextTypes' || k === 'getDerivedStateFromProps' || k === 'getDerivedStateFromError' || k === 'contextType' || k === 'defaultProps' || k === 'propTypes' || k === '$$typeof' || k === '__emotion_real' || k === '__docgenInfo' || k === 'render') return k === 'displayName' ? '{name}' : t[k]; return function(p) {{ return R.createElement('{name}.' + k, p); }}; }} }}) : function(p) {{ return R.createElement('{name}', p); }};",
-                ));
-            }
-            for name in other_names {
-                exports.push_str(&format!(
-                    "r['{name}'] = typeof Proxy !== 'undefined' ? new Proxy(function() {{ return {{}}; }}, {{ get: function(t, k) {{ if (typeof k === 'symbol') return t[k]; var self = r['{name}']; return function() {{ return self; }}; }} }}) : function() {{ return {{}}; }}; ",
-                ));
-            }
-            if let Some(first) = jsx_names.first() {
-                exports.push_str(&format!("r['default'] = r['{}']; ", first));
-            }
-            entry.push_str(&format!(
-                "ht.mock('{mod_path}', function() {{ var R = globalThis.__HT_React; var r = {{}}; {exports}return r; }});\n",
-            ));
-        }
-
-        entry.push_str(&format!(
-            "try {{ require('{}'); }} catch(e) {{ if (globalThis.__HT) globalThis.__HT.registerCrash('{}', String(e && e.stack || e && e.message || e)); }}\n",
-            require_path, file_id
-        ));
-    }
-
-    entry
-}
-
-/// Public wrapper for generate_group_entry (used by watch mode and split mode).
-pub fn generate_group_entry_pub(test_files: &[PathBuf], mock_modules: &[String], project_root: Option<&Path>, shallow_auto_mocks: &[(String, Vec<String>, Vec<String>)]) -> String {
-    generate_group_entry(test_files, mock_modules, project_root, shallow_auto_mocks)
 }
 
 /// Compute a cache key from source file mtimes + config + test file list.
