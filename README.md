@@ -171,7 +171,7 @@ ht.unmock('moment');
 ht.shallow('../MyComponent');
 ```
 
-Shadow wrappers check mocks at call time — `ht.mock` can appear before or after imports.
+Mocks resolve at access time, not import time — `ht.mock` can appear before or after imports.
 
 Relative mock paths are resolved against the test file and apply at every import
 site of the resolved module, no matter how each importer spells its own relative
@@ -361,9 +361,27 @@ Hermes is the JavaScript engine. The harness is the test runtime layer on top of
 
 Native modules are detected automatically by scanning `node_modules` for `ios/`, `android/`, `*.podspec`, and `app.plugin.js`. No manual `externals` config needed for standard React Native packages.
 
-### Mock isolation (Shadow Wrappers)
+### Mock isolation (the receptionist and the brain)
 
-When multiple test files mock the same module differently, hermes-test uses **shadow wrappers** — filesystem-based Proxy wrappers that check which test file is running at call time. One bundle, one runtime, per-file mock isolation.
+Every mock in hermes-test is the same two-part machine. Think of the bundle as an
+office building and every `import` as a visitor at the front desk:
+
+- **The receptionist** (`onResolve`, bundle time) only does *directions*, never
+  answers: a visitor asks for `./flows/foo`, and the receptionist points at a door.
+  For unmocked modules that's the real office. For mocked modules the visitor is
+  sent to a small **front office** (a generated wrapper file) that stands in front
+  of the real one — which still exists, right behind a connecting door.
+- **The brain** (`get()`, run time) sits inside that front office and answers each
+  question individually: "did the *currently running test file* register a mock for
+  this property? Then answer from the mock's script — otherwise open the connecting
+  door and let the real module answer."
+
+The receptionist can't answer questions (bundling happens once, before any test
+runs — it doesn't know which test will be asking). The brain can't direct anyone
+(a Proxy only works if imports actually arrive at it — someone must point visitors
+its way). Directions at bundle time, answers at run time: one bundle, one runtime,
+per-file mock isolation, and unmocked test files always reach the real
+implementation through the connecting door.
 
 ## CLI
 

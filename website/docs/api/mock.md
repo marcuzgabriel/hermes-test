@@ -35,6 +35,9 @@ own relative specifier. Alias and package mocks match the import specifier text
 exactly. In both cases the real module stays in the bundle — unmocked test files in
 the same run fall through to the real implementation.
 
+How this works under the hood: see
+[Mock resolution: the receptionist and the brain](../architecture/mock-resolution.md).
+
 ## Unmock directive
 
 ```ts

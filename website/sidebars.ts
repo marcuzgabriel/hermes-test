@@ -47,6 +47,7 @@ const sidebars: SidebarsConfig = {
       label: 'Architecture',
       items: [
         'architecture/overview',
+        'architecture/mock-resolution',
         'architecture/tooling-rationale',
         'architecture/coverage',
         'architecture/auto-detection',

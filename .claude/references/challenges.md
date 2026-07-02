@@ -547,3 +547,53 @@ afterEach(() => {
   published v1.1.5 as well (timing-sensitive).
 - print_jest_summary prints "Test Suites: N passed, N total" using the file count for
   both numbers even when suites failed (cosmetic).
+
+## Day 25: Plugin resolver — phases 2+3 and the great cleanup
+
+### Phase 2: alias + package mocks through onResolve
+- create_plugin_mock_wrappers classifies every ht.mock specifier; shadow trees and
+  package shims fully bypassed in plugin mode. Barrel sub-path delegation initially
+  fell out of identity matching for free — then had to be REINTRODUCED as explicit
+  prefix wrappers when identity matching itself proved wrong for alias mocks (below).
+- Fixture-writing found a pre-existing published bug: mocking a CJS default-export
+  package (moment) broke `default` access to the REAL module for non-mocking files.
+  Fixed in both the legacy shim and plugin wrapper templates.
+
+### Challenge: the 87-test "nondeterminism" that wasn't
+- First two full Topdanmark plugin runs failed 87 tests; later runs passed. Chased
+  as nondeterminism — WRONG on two counts, both self-inflicted:
+  1. The "passing" runs counted failures via `2>/dev/null | grep -c FAIL`, discarding
+     the stream carrying the suite lines → false passes.
+  2. The bisect harness appended the victim file LAST — and order genuinely changes
+     the outcome, so the reproducer "vanished".
+- Actual bug (deterministic, order-dependent): identity matching intercepted
+  production-internal RELATIVE imports of alias-mocked modules — routes legacy
+  shadow trees never touch (symlink bypass). Modules with module-level init-time
+  reads (allPayments reading constants/environment) initialize once, under whichever
+  test file triggers the first import — a Claims test that MOCKS environment —
+  freezing mock values into module state for every later test.
+- Found by ORDER-PRESERVING bisect: 3 Claims tests + gwUtil = minimal repro.
+- Fix: alias/package mocks match by import-specifier TEXT (the legacy boundary,
+  faithfully ported — esbuild runs plugin onResolve BEFORE alias substitution,
+  verified empirically); only relative-mock targets keep identity matching.
+- Lessons: never count failures through a discarded stream; never bisect with a
+  harness that changes run order.
+
+### Phase 3: plugin resolver becomes the default
+- HT_RESOLVER=legacy is the escape hatch (one release cycle, then phase 4 deletes).
+- Coverage via bundle_via_plugin_with_sourcemap; watch initial+rerun on the plugin.
+- Coverage totals shift vs legacy: mocked modules' real code now stays in the
+  instrumented bundle (more files in the denominator — arguably more honest).
+- Gauntlet: Topdanmark 1793/1793 in both modes (×3), coverage green, watch green
+  including fail→fix cycles at full-suite scale.
+
+### The great cleanup (~1,034 lines deleted)
+- Everything compiler-provably dead: split mode in full, run_tests_split,
+  run_persistent_cycle, orphaned print helpers, coverage map builders, force_split.
+- Plus two corpses HIDDEN by #[allow(dead_code)]: transform.rs (Day 10 Attempt 2,
+  208 lines, zero callers) and find_mock_insert_point. Zero dead_code suppressions
+  and zero crate warnings remain.
+- Current mental model documented for users:
+  website/docs/architecture/mock-resolution.md — "the receptionist (onResolve,
+  bundle time: which FILE sits at this import) and the brain (get(), run time:
+  which VALUE comes out)".
