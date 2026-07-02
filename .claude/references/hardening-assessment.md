@@ -91,8 +91,13 @@ Both issues found in the review were silent-green:
    helper injection incompatible with Hermes, full re-emit breaks other patches) —
    the OXC port must re-emit ONLY the class expressions, not the whole bundle, or
    must come after the other regex patches are also AST-based.
-4. **Prune dead code**: split mode, run_persistent_cycle, and the never-used
-   esbuild.rs functions. Keep the history in git, not in the source tree.
+4. **Prune dead code**: DONE (feat/plugin-resolver) — deleted 771 lines: split
+   mode (bundle_split*, SplitBundle, group/vendor entry generators, split
+   caching), run_tests_split, run_persistent_cycle, orphaned print helpers,
+   compile_to_bytecode_cached, coverage map builders. Zero rustc warnings from
+   crate code after prune; full gauntlet green in both resolver modes.
+   NOT deleted (deliberate): the legacy resolver path (shadow trees, package
+   shims, iso runner) behind HT_RESOLVER=legacy — phase 4, after release soak.
 5. **De-flake async-data-fetcher example** and fix the print_jest_summary suite
    line.
 6. **Comment-aware mock scanning** (nice-to-have): strip comments before the

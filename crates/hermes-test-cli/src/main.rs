@@ -99,7 +99,7 @@ fn main() {
                 root,
                 no_bundle,
             } => {
-                run_tests(&files, &root, no_bundle, false, false, false);
+                run_tests(&files, &root, no_bundle, false, false);
             }
             Commands::Watch {
                 files,
@@ -130,7 +130,7 @@ fn main() {
     if cli.watch {
         watch_tests(&files, &root);
     } else {
-        run_tests(&files, &root, cli.no_bundle, false, cli.coverage, cli.update_snapshots);
+        run_tests(&files, &root, cli.no_bundle, cli.coverage, cli.update_snapshots);
     }
 }
 
@@ -218,7 +218,7 @@ fn eval_file(path: &str) {
     }
 }
 
-fn run_tests(files: &[PathBuf], root: &PathBuf, no_bundle: bool, force_split: bool, coverage: bool, update_snapshots: bool) {
+fn run_tests(files: &[PathBuf], root: &PathBuf, no_bundle: bool, coverage: bool, update_snapshots: bool) {
     let root = std::fs::canonicalize(root).unwrap_or_else(|e| {
         eprintln!("Invalid root directory: {e}");
         std::process::exit(1);
@@ -958,88 +958,6 @@ fn run_isolated_relative_mock_files(
     (passed, failed, total, snapshots, any_failed)
 }
 
-/// Split-bundle path: vendor (node_modules) + group bundles (local code).
-/// Avoids Hermes super-linear scaling with large bundles.
-fn run_tests_split(
-    rt: &hermes::Runtime,
-    test_files: &[PathBuf],
-    root: &PathBuf,
-    mock_modules: &[String],
-    cfg: &bundler::BundleConfig,
-    start: Instant,
-) {
-    let bundle_start = Instant::now();
-    let split = match bundler::bundle_split(test_files, root, mock_modules, cfg) {
-        Ok(s) => s,
-        Err(e) => {
-            eprintln!("Bundle split failed: {e}");
-            std::process::exit(1);
-        }
-    };
-    let bundle_ms = bundle_start.elapsed().as_millis();
-
-    // Eval vendor (setup + all node_modules) — use bytecode cache
-    let exec_start = Instant::now();
-    let (eval_vendor, vendor_cached) = if let Some((bytecode, cached)) = bundler::compile_to_bytecode_cached(&split.vendor, root, "vendor") {
-        (rt.eval_bytes(&bytecode, "vendor.hbc"), cached)
-    } else {
-        (rt.eval(&split.vendor, "vendor.js"), false)
-    };
-    if let Err(e) = eval_vendor {
-        eprintln!("Vendor eval failed: {e}");
-        std::process::exit(1);
-    }
-
-    // Eval each group bundle
-    for (i, group) in split.groups.iter().enumerate() {
-        let name = format!("group-{i}.js");
-        let eval_result = if let Some(bytecode) = bundler::compile_to_bytecode(group, &root.join(&name)) {
-            rt.eval_bytes(&bytecode, &format!("group-{i}.hbc"))
-        } else {
-            rt.eval(group, &name)
-        };
-        if let Err(e) = eval_result {
-            eprintln!("Group {i} eval failed: {e}");
-            // Continue to other groups — don't exit on a single group failure
-        }
-    }
-
-    // Run all registered tests
-    let runner = r#"
-var __results = globalThis.__HT.runTests();
-globalThis.__HT_results = JSON.stringify({
-  tests: __results,
-  passed: __results.filter(function(t) { return t.status === 'pass'; }).length,
-  failed: __results.filter(function(t) { return t.status === 'fail'; }).length,
-  skipped: __results.filter(function(t) { return t.status === 'skip'; }).length,
-  total: __results.length
-});
-"#;
-    if let Err(e) = rt.eval(runner, "runner.js") {
-        eprintln!("Test runner failed: {e}");
-        std::process::exit(1);
-    }
-
-    print_console_logs(rt);
-
-    let exec_ms = exec_start.elapsed().as_millis();
-    let elapsed = start.elapsed();
-    let cache_str = if vendor_cached { " (cached)" } else { "" };
-    eprintln!(" \x1b[2mSplit:\x1b[0m  bundle {bundle_ms}ms, exec {exec_ms}ms (vendor {}KB{cache_str} + {} groups)",
-        split.vendor.len() / 1024, split.groups.len());
-    match rt.eval("globalThis.__HT_results", "results") {
-        Ok(json) => {
-            if !print_results_with_time(&json, elapsed.as_millis(), test_files.len()) {
-                std::process::exit(1);
-            }
-        }
-        Err(e) => {
-            eprintln!("Failed to read test results: {e}");
-            std::process::exit(1);
-        }
-    }
-}
-
 fn watch_tests(files: &[PathBuf], root: &PathBuf) {
     let root = std::fs::canonicalize(root).unwrap_or_else(|e| {
         eprintln!("Invalid root directory: {e}");
@@ -1407,197 +1325,6 @@ fn watch_tests(files: &[PathBuf], root: &PathBuf) {
     }
 }
 
-/// Run a test cycle on a persistent runtime. On first_run, loads vendor/setup.
-/// On reruns, resets registry and only re-evals the test group bundle.
-fn run_persistent_cycle(
-    rt: &hermes::Runtime,
-    test_files: &[PathBuf],
-    root: &PathBuf,
-    cfg: &bundler::BundleConfig,
-    first_run: bool,
-) -> bundler::DepGraph {
-    let start = Instant::now();
-
-    let alias_names: Vec<String> = cfg.aliases.iter().map(|(a, _)| a.clone()).collect();
-    let alias_pairs: Vec<(String, String)> = cfg.aliases.clone();
-    let mock_modules = bundler::find_mock_modules_with_alias_pairs(test_files, &alias_names, &alias_pairs);
-
-    // Scan shallow auto-mocks
-    let mut shallow_mocks: Vec<(String, Vec<String>, Vec<String>)> = Vec::new();
-    for f in test_files {
-        for s in bundler::scan_shallow_auto_mocks_with_pairs(f, &alias_names, &alias_pairs) {
-            if let Some((_, ej, eo)) = shallow_mocks.iter_mut().find(|(p, _, _)| p == &s.0) {
-                for name in s.1 { if !ej.contains(&name) { ej.push(name); } }
-                for name in s.2 { if !eo.contains(&name) { eo.push(name); } }
-            } else { shallow_mocks.push(s); }
-        }
-    }
-
-    if first_run {
-        // First run: use split mode to load vendor into __HT_mocks (persists across reruns)
-        let split = match bundler::bundle_split_with_shallow(test_files, root, &mock_modules, cfg, &shallow_mocks) {
-            Ok(s) => s,
-            Err(e) => {
-                eprintln!("\x1b[31mBundle split failed: {e}\x1b[0m");
-                return std::collections::HashMap::new();
-            }
-        };
-
-        // Eval vendor (setup + all node_modules → __HT_mocks)
-        let eval_vendor = if let Some(bytecode) = bundler::compile_to_bytecode(&split.vendor, &root.join("vendor.js")) {
-            rt.eval_bytes(&bytecode, "vendor.hbc")
-        } else {
-            rt.eval(&split.vendor, "vendor.js")
-        };
-        if let Err(e) = eval_vendor {
-            eprintln!("\x1b[31mVendor eval failed: {e}\x1b[0m");
-            return std::collections::HashMap::new();
-        }
-
-        // Eval all group bundles
-        for (i, group) in split.groups.iter().enumerate() {
-            let name = format!("group-{i}.js");
-            let eval_result = if let Some(bytecode) = bundler::compile_to_bytecode(group, &root.join(&name)) {
-                rt.eval_bytes(&bytecode, &format!("group-{i}.hbc"))
-            } else {
-                rt.eval(group, &name)
-            };
-            if let Err(e) = eval_result {
-                eprintln!("\x1b[31mGroup {i} eval failed: {e}\x1b[0m");
-                return std::collections::HashMap::new();
-            }
-        }
-
-        // Run tests
-        let runner = r#"
-var __results = globalThis.__HT.runTests();
-globalThis.__HT_results = JSON.stringify({
-  tests: __results,
-  passed: __results.filter(function(t) { return t.status === 'pass'; }).length,
-  failed: __results.filter(function(t) { return t.status === 'fail'; }).length,
-  skipped: __results.filter(function(t) { return t.status === 'skip'; }).length,
-  total: __results.length
-});
-"#;
-        if let Err(e) = rt.eval(runner, "runner.js") {
-            eprintln!("Test runner failed: {e}");
-            return std::collections::HashMap::new();
-        }
-
-        let elapsed = start.elapsed();
-        print_console_logs(rt);
-        match rt.eval("globalThis.__HT_results", "results") {
-            Ok(json) => {
-                print_summary(&json);
-                eprintln!("\x1b[2mRan in {}ms\x1b[0m", elapsed.as_millis());
-            }
-            Err(e) => eprintln!("Failed to read results: {e}"),
-        }
-
-        // Build dep graph for change tracking (separate esbuild pass with metafile)
-        let entry_content = bundler::generate_entry(test_files, None, &mock_modules, cfg, &[], Some(root));
-        let entry_path = root.join(".hermes-test-entry.js");
-        let depgraph = if std::fs::write(&entry_path, &entry_content).is_ok() {
-            let dg = match bundler::bundle_with_depgraph(&entry_path, root, test_files, &mock_modules) {
-                Ok((_, d)) => d,
-                Err(_) => std::collections::HashMap::new(),
-            };
-            let _ = std::fs::remove_file(&entry_path);
-            dg
-        } else {
-            std::collections::HashMap::new()
-        };
-
-        depgraph
-    } else {
-        // Rerun: reset harness state, bundle only affected files, re-eval
-        let reset_js = "globalThis.__HT.resetRegistry(); globalThis.__HT_logs = [];";
-        if let Err(e) = rt.eval(reset_js, "reset.js") {
-            eprintln!("Failed to reset harness: {e}");
-            return std::collections::HashMap::new();
-        }
-
-        // Bundle affected test files as a group (--packages=external if vendor loaded)
-        // Scan shallow auto-mocks for persistent watch first-run
-        let alias_watch: Vec<String> = cfg.aliases.iter().map(|(a, _)| a.clone()).collect();
-        let alias_watch_pairs: Vec<(String, String)> = cfg.aliases.clone();
-        let mut persist_shallow: Vec<(String, Vec<String>, Vec<String>)> = Vec::new();
-        for f in test_files {
-            for s in bundler::scan_shallow_auto_mocks_with_pairs(f, &alias_watch, &alias_watch_pairs) {
-                if let Some((_, ej, eo)) = persist_shallow.iter_mut().find(|(p, _, _)| p == &s.0) {
-                    for name in s.1 { if !ej.contains(&name) { ej.push(name); } }
-                    for name in s.2 { if !eo.contains(&name) { eo.push(name); } }
-                } else { persist_shallow.push(s); }
-            }
-        }
-        let entry = bundler::generate_group_entry_pub(test_files, &mock_modules, Some(root), &persist_shallow);
-        let entry_path = root.join(".hermes-test-rerun.js");
-        if std::fs::write(&entry_path, &entry).is_err() {
-            eprintln!("Failed to write rerun entry");
-            return std::collections::HashMap::new();
-        }
-
-        let esbuild_path = match bundler::find_esbuild_pub(root) {
-            Ok(p) => p,
-            Err(_) => {
-                eprintln!("esbuild not found");
-                return std::collections::HashMap::new();
-            }
-        };
-
-        let bundle = match bundler::bundle_esbuild_with_config_pub(
-            &entry_path, &esbuild_path, &mock_modules, cfg, true,
-        ) {
-            Ok(b) => b,
-            Err(e) => {
-                let _ = std::fs::remove_file(&entry_path);
-                eprintln!("\x1b[31mBundle failed: {e}\x1b[0m");
-                return std::collections::HashMap::new();
-            }
-        };
-        let _ = std::fs::remove_file(&entry_path);
-
-        // Eval the group bundle in the persistent runtime
-        let eval_result = if let Some(bytecode) = bundler::compile_to_bytecode(&bundle, &root.join("rerun.js")) {
-            rt.eval_bytes(&bytecode, "rerun.hbc")
-        } else {
-            rt.eval(&bundle, "rerun.js")
-        };
-        if let Err(e) = eval_result {
-            eprintln!("\x1b[31mTest execution failed: {e}\x1b[0m");
-            return std::collections::HashMap::new();
-        }
-
-        // Run tests
-        let runner = r#"
-var __results = globalThis.__HT.runTests();
-globalThis.__HT_results = JSON.stringify({
-  tests: __results,
-  passed: __results.filter(function(t) { return t.status === 'pass'; }).length,
-  failed: __results.filter(function(t) { return t.status === 'fail'; }).length,
-  skipped: __results.filter(function(t) { return t.status === 'skip'; }).length,
-  total: __results.length
-});
-"#;
-        if let Err(e) = rt.eval(runner, "runner.js") {
-            eprintln!("Test runner failed: {e}");
-            return std::collections::HashMap::new();
-        }
-
-        let elapsed = start.elapsed();
-        match rt.eval("globalThis.__HT_results", "results") {
-            Ok(json) => {
-                print_summary(&json);
-                eprintln!("\x1b[2mRan in {}ms (persistent)\x1b[0m", elapsed.as_millis());
-            }
-            Err(e) => eprintln!("Failed to read results: {e}"),
-        }
-
-        // No dep graph update on reruns (would need metafile which adds overhead)
-        std::collections::HashMap::new()
-    }
-}
-
 
 /// Print console.log/warn/error output that was collected during test execution.
 fn print_console_logs(rt: &hermes::Runtime) {
@@ -1627,54 +1354,6 @@ fn print_console_logs(rt: &hermes::Runtime) {
             }
         }
     }
-}
-
-fn print_results_with_time(json: &str, elapsed_ms: u128, file_count: usize) -> bool {
-    let ok = print_results(json);
-    // Parse for summary stats
-    let inner: String = serde_json::from_str(json).unwrap_or(json.to_string());
-    let results: serde_json::Value = serde_json::from_str(&inner).unwrap_or_default();
-    let passed = results["passed"].as_u64().unwrap_or(0);
-    let failed = results["failed"].as_u64().unwrap_or(0);
-    let total = results["total"].as_u64().unwrap_or(0);
-    let snapshots = results["snapshots"].as_u64().unwrap_or(0);
-    print_jest_summary(file_count, passed, failed, total, snapshots, elapsed_ms as f64 / 1000.0);
-    ok
-}
-
-/// Summary-only: per-file results already printed live by the harness via __HT_print.
-fn print_summary_with_time(json: &str, elapsed_ms: u128, file_count: usize) -> bool {
-    let inner: String = serde_json::from_str(json).unwrap_or(json.to_string());
-    let results: serde_json::Value = match serde_json::from_str(&inner) {
-        Ok(v) => v,
-        Err(_) => { eprintln!("{inner}"); return false; }
-    };
-    let passed = results["passed"].as_u64().unwrap_or(0);
-    let failed = results["failed"].as_u64().unwrap_or(0);
-    let total = results["total"].as_u64().unwrap_or(0);
-    let snapshots = results["snapshots"].as_u64().unwrap_or(0);
-    let secs = elapsed_ms as f64 / 1000.0;
-    print_jest_summary(file_count, passed, failed, total, snapshots, secs);
-    failed == 0
-}
-
-/// Summary only — per-file results already printed live by harness via __HT_print.
-fn print_summary(json: &str) -> bool {
-    let inner: String = serde_json::from_str(json).unwrap_or(json.to_string());
-    let results: serde_json::Value = match serde_json::from_str(&inner) {
-        Ok(v) => v,
-        Err(_) => return false,
-    };
-    let passed = results["passed"].as_u64().unwrap_or(0);
-    let failed = results["failed"].as_u64().unwrap_or(0);
-    let total = results["total"].as_u64().unwrap_or(0);
-    eprintln!();
-    if failed == 0 {
-        eprintln!(" \x1b[32mTests:\x1b[0m  {passed} passed, {total} total");
-    } else {
-        eprintln!(" \x1b[31mTests:\x1b[0m  \x1b[32m{passed} passed\x1b[0m, \x1b[31m{failed} failed\x1b[0m, {total} total");
-    }
-    failed == 0
 }
 
 fn print_jest_summary(file_count: usize, passed: u64, failed: u64, total: u64, snapshots: u64, secs: f64) {

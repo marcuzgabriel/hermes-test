@@ -105,16 +105,7 @@ pub fn find_mock_modules_with_alias_pairs(test_files: &[PathBuf], aliases: &[Str
     mocks
 }
 
-/// Scan a test file's ht.shallow() target for components used in JSX.
-/// For modules that contain at least one JSX component, ALL named imports are collected.
-/// JSX components get createElement stubs; non-JSX exports (hooks, utilities) get
-/// generic function stubs. This prevents barrel-file crashes from breaking fallthrough.
-/// Returns (module_path, jsx_names, other_names) for auto-mock generation.
-pub fn scan_shallow_auto_mocks(test_file: &Path, aliases: &[String]) -> Vec<(String, Vec<String>, Vec<String>)> {
-    scan_shallow_auto_mocks_with_pairs(test_file, aliases, &[])
-}
-
-pub fn scan_shallow_auto_mocks_with_pairs(test_file: &Path, aliases: &[String], alias_pairs: &[(String, String)]) -> Vec<(String, Vec<String>, Vec<String>)> {
+pub fn scan_shallow_auto_mocks_with_pairs(test_file: &Path, _aliases: &[String], alias_pairs: &[(String, String)]) -> Vec<(String, Vec<String>, Vec<String>)> {
     let content = match std::fs::read_to_string(test_file) { Ok(c) => c, Err(_) => return vec![] };
     let re_shallow = match regex::Regex::new(r#"ht\.shallow\(\s*['"]([^'"]+)['"]\s*\)"#) {
         Ok(r) => r, Err(_) => return vec![],
@@ -949,88 +940,6 @@ globalThis.__HT_results = JSON.stringify({
     );
 
     entry
-}
-
-/// Minimal entry for a group: just test file requires (no setup, no runner).
-fn generate_group_entry(test_files: &[PathBuf], mock_modules: &[String], project_root: Option<&Path>, shallow_auto_mocks: &[(String, Vec<String>, Vec<String>)]) -> String {
-    let mut entry = String::new();
-
-    // Reset console log collector for this group
-    entry.push_str("globalThis.__HT_logs = [];\n");
-
-    // Re-register mock placeholders as live Proxies (same as generate_entry)
-    if !mock_modules.is_empty() {
-        for path in mock_modules {
-            entry.push_str(&format!(
-                r#"globalThis.__HT_mocks['{path}'] = globalThis.__HT_mocks['{path}'] || (typeof Proxy !== 'undefined' ? new Proxy({{}}, {{
-  get: function(t, p) {{
-    if (p === '__esModule') return true;
-    if (typeof p === 'symbol') return void 0;
-    var fm = globalThis.__HT_file_mocks;
-    var f = globalThis.__currentTestFile;
-    var m = fm && f && fm[f] && fm[f]['{path}'];
-    if (m && p in m) return m[p];
-    return t[p];
-  }},
-  set: function(t, p, v) {{ t[p] = v; return true; }}
-}}) : {{}});
-"#,
-            ));
-        }
-    }
-
-    for file in test_files {
-        let path = file.to_string_lossy();
-        let require_path = if path.starts_with('/') || path.starts_with("./") {
-            path.to_string()
-        } else {
-            format!("./{path}")
-        };
-        let file_id = project_root
-            .and_then(|root| file.strip_prefix(root).ok())
-            .map(|p| p.to_string_lossy().to_string())
-            .unwrap_or_else(|| file.file_name()
-                .map(|n| n.to_string_lossy().to_string())
-                .unwrap_or_else(|| path.to_string()));
-
-        entry.push_str(&format!(
-            "if (globalThis.__HT && globalThis.__HT.resetMockModulePatches) globalThis.__HT.resetMockModulePatches();\nglobalThis.__currentTestFile = '{}';\n",
-            file_id
-        ));
-
-        // Inject auto-mock ht.mock() calls for ht.shallow() discovered imports
-        for (mod_path, jsx_names, other_names) in shallow_auto_mocks {
-            let mut exports = String::new();
-            for name in jsx_names {
-                exports.push_str(&format!(
-                    "r['{name}'] = typeof Proxy !== 'undefined' ? new Proxy(function(p) {{ return R.createElement('{name}', p); }}, {{ get: function(t, k) {{ if (typeof k === 'symbol') return t[k]; if (k === 'prototype' || k === 'name' || k === 'length' || k === 'caller' || k === 'arguments' || k === 'displayName' || k === 'contextTypes' || k === 'childContextTypes' || k === 'getDerivedStateFromProps' || k === 'getDerivedStateFromError' || k === 'contextType' || k === 'defaultProps' || k === 'propTypes' || k === '$$typeof' || k === '__emotion_real' || k === '__docgenInfo' || k === 'render') return k === 'displayName' ? '{name}' : t[k]; return function(p) {{ return R.createElement('{name}.' + k, p); }}; }} }}) : function(p) {{ return R.createElement('{name}', p); }};",
-                ));
-            }
-            for name in other_names {
-                exports.push_str(&format!(
-                    "r['{name}'] = typeof Proxy !== 'undefined' ? new Proxy(function() {{ return {{}}; }}, {{ get: function(t, k) {{ if (typeof k === 'symbol') return t[k]; var self = r['{name}']; return function() {{ return self; }}; }} }}) : function() {{ return {{}}; }}; ",
-                ));
-            }
-            if let Some(first) = jsx_names.first() {
-                exports.push_str(&format!("r['default'] = r['{}']; ", first));
-            }
-            entry.push_str(&format!(
-                "ht.mock('{mod_path}', function() {{ var R = globalThis.__HT_React; var r = {{}}; {exports}return r; }});\n",
-            ));
-        }
-
-        entry.push_str(&format!(
-            "try {{ require('{}'); }} catch(e) {{ if (globalThis.__HT) globalThis.__HT.registerCrash('{}', String(e && e.stack || e && e.message || e)); }}\n",
-            require_path, file_id
-        ));
-    }
-
-    entry
-}
-
-/// Public wrapper for generate_group_entry (used by watch mode and split mode).
-pub fn generate_group_entry_pub(test_files: &[PathBuf], mock_modules: &[String], project_root: Option<&Path>, shallow_auto_mocks: &[(String, Vec<String>, Vec<String>)]) -> String {
-    generate_group_entry(test_files, mock_modules, project_root, shallow_auto_mocks)
 }
 
 /// Compute a cache key from source file mtimes + config + test file list.
