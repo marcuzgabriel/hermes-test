@@ -187,42 +187,44 @@ pub fn bundle_esbuild_with_config(
     bundle_esbuild_with_config_inner(entry_file, esbuild_path, external_modules, cfg, packages_external, false, false)
 }
 
-fn bundle_esbuild_with_config_inner(
+/// Assemble the esbuild CLI args (everything after the entry path) and the
+/// NODE_PATH env value. Shared by the CLI invocation and the plugin bundler
+/// (which parses these exact flag strings into JS API options) so the two
+/// modes can never drift apart on flags.
+pub(crate) fn assemble_esbuild_args(
     entry_file: &Path,
-    esbuild_path: &Path,
     external_modules: &[String],
     cfg: &BundleConfig,
     packages_external: bool,
     sourcemap_inline: bool,
-    skip_patches: bool,
-) -> Result<String, String> {
-    let mut cmd = Command::new(esbuild_path);
-    cmd.arg(entry_file)
-        .arg("--bundle")
-        .arg("--format=iife")
-        .arg("--target=es2020")
+) -> (Vec<String>, Option<String>) {
+    let mut args: Vec<String> = vec![
+        "--bundle".into(),
+        "--format=iife".into(),
+        "--target=es2020".into(),
         // No --minify — our Hermes compat patches match unminified esbuild output patterns.
-        .arg("--supported:async-await=false")
-        .arg("--define:process.env.NODE_ENV=\"test\"")
-        .arg("--define:process.env.JEST_WORKER_ID=\"1\"")
-        .arg("--define:global=globalThis")
-        .arg("--jsx=automatic")
-        .arg("--loader:.js=jsx")
-        .arg("--loader:.png=empty")
-        .arg("--loader:.jpg=empty")
-        .arg("--loader:.gif=empty")
-        .arg("--loader:.svg=empty")
-        ; // console is a global in Hermes, not externalized
+        "--supported:async-await=false".into(),
+        "--define:process.env.NODE_ENV=\"test\"".into(),
+        "--define:process.env.JEST_WORKER_ID=\"1\"".into(),
+        "--define:global=globalThis".into(),
+        "--jsx=automatic".into(),
+        "--loader:.js=jsx".into(),
+        "--loader:.png=empty".into(),
+        "--loader:.jpg=empty".into(),
+        "--loader:.gif=empty".into(),
+        "--loader:.svg=empty".into(),
+    ]; // console is a global in Hermes, not externalized
 
     if sourcemap_inline {
-        cmd.arg("--sourcemap=inline");
+        args.push("--sourcemap=inline".into());
     }
 
     if packages_external {
-        cmd.arg("--packages=external");
+        args.push("--packages=external".into());
     }
 
     // Monorepo: add node_modules paths for resolution.
+    let mut node_path_env: Option<String> = None;
     {
         let mut node_paths = Vec::new();
         let project_nm = entry_file.parent().unwrap_or(Path::new(".")).join("node_modules");
@@ -236,7 +238,7 @@ fn bundle_esbuild_with_config_inner(
             }
         }
         if !node_paths.is_empty() {
-            cmd.env("NODE_PATH", node_paths.join(":"));
+            node_path_env = Some(node_paths.join(":"));
         }
     }
 
@@ -256,12 +258,12 @@ fn bundle_esbuild_with_config_inner(
             m == alias || m.starts_with(&format!("{alias}/"))
         });
         if !is_externalized && !has_mocked_subpath {
-            cmd.arg(format!("--alias:{alias}={target}"));
+            args.push(format!("--alias:{alias}={target}"));
         }
     }
 
     // Externalize hermes-test itself (thin re-export from __HT runtime)
-    cmd.arg("--external:hermes-test");
+    args.push("--external:hermes-test".into());
     // Alias hermes-test/store to the actual file so it gets BUNDLED (not externalized).
     // esbuild aliases run before external checks, so this resolves before the external match.
     {
@@ -270,14 +272,14 @@ fn bundle_esbuild_with_config_inner(
         ];
         for sp in &store_paths {
             if sp.exists() {
-                cmd.arg(format!("--alias:hermes-test/store={}", sp.to_string_lossy()));
+                args.push(format!("--alias:hermes-test/store={}", sp.to_string_lossy()));
                 break;
             }
         }
         if let Some(ref root) = cfg.root {
             let root_store = root.join("node_modules/hermes-test/src/store.ts");
             if root_store.exists() {
-                cmd.arg(format!("--alias:hermes-test/store={}", root_store.to_string_lossy()));
+                args.push(format!("--alias:hermes-test/store={}", root_store.to_string_lossy()));
             }
         }
     }
@@ -309,10 +311,10 @@ fn bundle_esbuild_with_config_inner(
             cfg.root.as_deref(),
             &test_files,
         ) {
-            cmd.arg(format!("--alias:react-reconciler={}", rec_path.to_string_lossy()));
+            args.push(format!("--alias:react-reconciler={}", rec_path.to_string_lossy()));
             let constants = rec_path.join("constants.js");
             if constants.exists() {
-                cmd.arg(format!("--alias:react-reconciler/constants={}", constants.to_string_lossy()));
+                args.push(format!("--alias:react-reconciler/constants={}", constants.to_string_lossy()));
             }
         }
     }
@@ -320,24 +322,213 @@ fn bundle_esbuild_with_config_inner(
     // react-native uses Flow syntax that esbuild can't parse — always external.
     // All other native packages are auto-detected or user-configured.
     for ext in &["react-native", "react-native/*"] {
-        cmd.arg(format!("--external:{ext}"));
+        args.push(format!("--external:{ext}"));
     }
 
     // Config externals — for wildcard patterns like `pkg/*`, also externalize `pkg` itself
     for ext in &cfg.externals {
-        cmd.arg(format!("--external:{ext}"));
+        args.push(format!("--external:{ext}"));
         if ext.ends_with("/*") {
             // Also externalize bare import: `@foo/bar/*` → also `@foo/bar`
             let base = &ext[..ext.len() - 2];
-            cmd.arg(format!("--external:{base}"));
+            args.push(format!("--external:{base}"));
         } else if !ext.ends_with('*') {
-            cmd.arg(format!("--external:{ext}/*"));
+            args.push(format!("--external:{ext}/*"));
         }
     }
 
     // Mock module externals
     for ext in external_modules {
-        cmd.arg(format!("--external:{ext}"));
+        args.push(format!("--external:{ext}"));
+    }
+
+    (args, node_path_env)
+}
+
+/// JS build script for plugin-resolver mode, embedded in the binary.
+const PLUGIN_BUILD_CJS: &str = include_str!("plugin_build.cjs");
+
+/// Locate esbuild's JS API entry (lib/main.js) — same search order as the binary.
+fn find_esbuild_lib(project_root: &Path) -> Option<PathBuf> {
+    let local = project_root.join("node_modules/esbuild/lib/main.js");
+    if local.exists() {
+        return Some(local);
+    }
+    let mut dir = project_root.parent();
+    while let Some(d) = dir {
+        let candidate = d.join("node_modules/esbuild/lib/main.js");
+        if candidate.exists() {
+            return Some(candidate);
+        }
+        dir = d.parent();
+    }
+    None
+}
+
+/// JS runtime for the plugin build script. Prefers the runtime already executing
+/// the bin launcher (HT_JS_RUNTIME = process.execPath, set by bin/hermes-test.js),
+/// then bun, then node.
+fn find_js_runtime() -> Option<String> {
+    if let Ok(rt) = std::env::var("HT_JS_RUNTIME") {
+        if !rt.is_empty() && Path::new(&rt).exists() {
+            return Some(rt);
+        }
+    }
+    for candidate in ["bun", "node"] {
+        if Command::new(candidate)
+            .arg("--version")
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .status()
+            .map(|s| s.success())
+            .unwrap_or(false)
+        {
+            return Some(candidate.to_string());
+        }
+    }
+    None
+}
+
+fn regex_escape(s: &str) -> String {
+    let mut out = String::with_capacity(s.len());
+    for c in s.chars() {
+        if "\\.+*?()|[]{}^$-".contains(c) {
+            out.push('\\');
+        }
+        out.push(c);
+    }
+    out
+}
+
+/// Bundle via esbuild's JS API with the ht-mocks onResolve plugin (HT_RESOLVER=plugin).
+/// `wrappers` maps resolved absolute target paths to their generated wrapper files.
+/// Flags are assembled by the same function as CLI mode; the build script parses
+/// those exact strings, so flag behavior cannot drift between modes.
+pub fn bundle_via_plugin_with_config(
+    entry_file: &Path,
+    project_root: &Path,
+    external_modules: &[String],
+    cfg: &BundleConfig,
+    wrappers: &[(String, String)],
+) -> Result<String, String> {
+    // Nothing to intercept → the JS API detour buys nothing. Use the CLI path:
+    // byte-identical behavior and no JS-runtime spawn for suites without
+    // relative mocks (e.g. Topdanmark).
+    if wrappers.is_empty() {
+        return bundle_auto_with_config(entry_file, project_root, external_modules, cfg);
+    }
+
+    let esbuild_bin = find_esbuild(project_root)
+        .map_err(|_| "esbuild not found. Install it: bun add -d esbuild".to_string())?;
+    let esbuild_lib = find_esbuild_lib(project_root)
+        .ok_or_else(|| "esbuild JS API (node_modules/esbuild/lib/main.js) not found".to_string())?;
+    let runtime = find_js_runtime()
+        .ok_or_else(|| "no JS runtime found for plugin bundling (need bun or node)".to_string())?;
+
+    let (args, node_path_env) =
+        assemble_esbuild_args(entry_file, external_modules, cfg, false, false);
+
+    // Go-side pre-screen: only imports whose last segment matches a mocked
+    // target's basename cross the Go→JS pipe.
+    let mut stems: Vec<String> = wrappers
+        .iter()
+        .filter_map(|(t, _)| Path::new(t).file_stem().map(|s| regex_escape(&s.to_string_lossy())))
+        .collect();
+    stems.sort();
+    stems.dedup();
+    let filter = format!(
+        "(?:^|[/\\\\])(?:{})(?:\\.(?:tsx|ts|jsx|js))?$",
+        stems.join("|")
+    );
+
+    let wrapper_map: serde_json::Map<String, serde_json::Value> = wrappers
+        .iter()
+        .map(|(t, w)| (t.clone(), serde_json::Value::String(w.clone())))
+        .collect();
+
+    let temp = super::shadow::hermes_temp_root(project_root);
+    let out_path = temp.join("plugin-bundle-out.js");
+    let script_path = temp.join("plugin-build.cjs");
+    let config_path = temp.join("plugin-build-config.json");
+
+    // esbuild's JS API ignores the NODE_PATH env var (CLI-only) — pass explicitly.
+    let node_paths: Vec<String> = node_path_env
+        .as_deref()
+        .map(|np| np.split(':').map(|s| s.to_string()).collect())
+        .unwrap_or_default();
+
+    let config = serde_json::json!({
+        "entry": entry_file.to_string_lossy(),
+        "out": out_path.to_string_lossy(),
+        "esbuildLib": esbuild_lib.to_string_lossy(),
+        "args": args,
+        "nodePaths": node_paths,
+        "wrappers": wrapper_map,
+        "filter": filter,
+    });
+
+    std::fs::write(&script_path, PLUGIN_BUILD_CJS)
+        .map_err(|e| format!("failed to write plugin build script: {e}"))?;
+    std::fs::write(&config_path, config.to_string())
+        .map_err(|e| format!("failed to write plugin build config: {e}"))?;
+
+    let mut cmd = Command::new(&runtime);
+    cmd.arg(&script_path).arg(&config_path);
+    cmd.env("ESBUILD_BINARY_PATH", &esbuild_bin);
+    if let Some(np) = &node_path_env {
+        cmd.env("NODE_PATH", np);
+    }
+    let output = cmd
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .output()
+        .map_err(|e| format!("failed to run JS runtime '{runtime}': {e}"))?;
+
+    let result = if !output.status.success() {
+        Err(format!(
+            "plugin bundling failed: {}",
+            String::from_utf8_lossy(&output.stderr)
+        ))
+    } else {
+        std::fs::read_to_string(&out_path)
+            .map_err(|e| format!("failed to read plugin bundle output: {e}"))
+    };
+    let _ = std::fs::remove_file(&script_path);
+    let _ = std::fs::remove_file(&config_path);
+    let _ = std::fs::remove_file(&out_path);
+    let code = result?;
+
+    // Same patch pipeline as the CLI path.
+    let mut code = patch_esbuild_for_hermes(&code);
+    let has_externals = !external_modules.is_empty()
+        || !cfg.externals.is_empty()
+        || code.contains("Dynamic require of");
+    if has_externals {
+        code = inject_mock_require_shim(&code);
+    }
+    code = hoist_mock_modules(&code);
+    Ok(code)
+}
+
+fn bundle_esbuild_with_config_inner(
+    entry_file: &Path,
+    esbuild_path: &Path,
+    external_modules: &[String],
+    cfg: &BundleConfig,
+    packages_external: bool,
+    sourcemap_inline: bool,
+    skip_patches: bool,
+) -> Result<String, String> {
+    let (args, node_path_env) =
+        assemble_esbuild_args(entry_file, external_modules, cfg, packages_external, sourcemap_inline);
+
+    let mut cmd = Command::new(esbuild_path);
+    cmd.arg(entry_file);
+    for a in &args {
+        cmd.arg(a);
+    }
+    if let Some(np) = &node_path_env {
+        cmd.env("NODE_PATH", np);
     }
 
     let output = cmd

@@ -364,6 +364,105 @@ pub fn relative_mock_externals(test_files: &[PathBuf]) -> Vec<String> {
     out
 }
 
+/// Plugin-resolver mode: generate one Proxy wrapper file per relative-mock target.
+/// The wrapper is what the onResolve hook serves in place of the real file. It is
+/// the same access-time mock-or-real Proxy as shadow wrappers / package shims —
+/// checks `__HT_file_mocks[__currentTestFile]` under every specifier any test file
+/// used for this target, and falls back to the REAL module (which stays in the
+/// bundle, imported via the `?ht-real` marker the hook passes through).
+/// Returns (abs_target → wrapper_path pairs, wrapper_dir_to_cleanup), or None if
+/// no test file has resolvable relative mocks.
+pub fn create_relative_mock_wrappers(
+    test_files: &[PathBuf],
+    project_root: &Path,
+) -> Option<(Vec<(String, String)>, PathBuf)> {
+    // Collect every specifier used for each resolved target, across all test files.
+    let mut targets: Vec<(PathBuf, Vec<String>)> = Vec::new();
+    for f in test_files {
+        for (spec, abs) in find_relative_mock_targets(f) {
+            if let Some((_, keys)) = targets.iter_mut().find(|(t, _)| *t == abs) {
+                if !keys.contains(&spec) { keys.push(spec); }
+            } else {
+                targets.push((abs, vec![spec]));
+            }
+        }
+    }
+    if targets.is_empty() {
+        return None;
+    }
+
+    let dir = super::shadow::hermes_temp_root(project_root).join("plugin-wrappers");
+    let _ = std::fs::remove_dir_all(&dir);
+    let _ = std::fs::create_dir_all(&dir);
+
+    let mut out = Vec::new();
+    for (abs, keys) in &targets {
+        let abs_str = abs.to_string_lossy().to_string();
+        let safe = abs_str
+            .trim_start_matches('/')
+            .replace(['/', '@'], "-")
+            .replace('.', "_");
+        let wrapper_path = dir.join(format!("{safe}.js"));
+        let keys_json = serde_json::to_string(keys).unwrap_or_else(|_| "[]".to_string());
+        let real_import = format!("{abs_str}?ht-real");
+
+        let wrapper = format!(
+            r#"var _loaded = null; var _loading = false;
+function _getReal() {{ if (_loaded) return _loaded; if (_loading) return {{}}; _loading = true; _loaded = require({real_require}); _loading = false; return _loaded; }}
+var _KEYS = {keys_json};
+function _mock() {{
+  var fm = globalThis.__HT_file_mocks;
+  var f = globalThis.__currentTestFile;
+  var mocks = fm && f && fm[f];
+  if (!mocks) return null;
+  for (var i = 0; i < _KEYS.length; i++) {{ var m = mocks[_KEYS[i]]; if (m) return m; }}
+  return null;
+}}
+var _fnCache = {{}};
+var _h = {{
+  get: function(t, p) {{
+    if (p === '__esModule') return true;
+    if (typeof p === 'symbol') return undefined;
+    if (p === '__DEV__') return false;
+    var m = _mock();
+    if (m && p in m) return m[p];
+    var real = _getReal()[p];
+    if (typeof real === 'function' && !_fnCache[p]) {{
+      _fnCache[p] = new Proxy(real, {{ apply: function(target, thisArg, args) {{
+        var m2 = _mock();
+        if (m2 && p in m2) return m2[p].apply(thisArg, args);
+        return target.apply(thisArg, args);
+      }} }});
+    }}
+    return _fnCache[p] || real;
+  }},
+  ownKeys: function(t) {{
+    var r = _getReal();
+    try {{ return Object.getOwnPropertyNames(r); }} catch(e) {{ return []; }}
+  }},
+  getOwnPropertyDescriptor: function(t, p) {{
+    var r = _getReal();
+    try {{
+      var d = Object.getOwnPropertyDescriptor(r, p);
+      if (d) {{ return {{ configurable: true, enumerable: d.enumerable, writable: true, value: d.get ? d.get() : d.value }}; }}
+    }} catch(e) {{}}
+    return {{ configurable: true, enumerable: false, writable: true, value: undefined }};
+  }}
+}};
+module.exports = typeof Proxy !== 'undefined' ? new Proxy({{}}, _h) : {{}};
+"#,
+            real_require = serde_json::to_string(&real_import).unwrap_or_default(),
+            keys_json = keys_json,
+        );
+
+        if std::fs::write(&wrapper_path, wrapper).is_ok() {
+            out.push((abs_str, wrapper_path.to_string_lossy().to_string()));
+        }
+    }
+
+    if out.is_empty() { None } else { Some((out, dir)) }
+}
+
 /// The specifier esbuild emits in `__require(...)` for an import externalized by
 /// absolute path: the resolved path relative to esbuild's cwd (inherited from this
 /// process), `./`-prefixed, with extension.

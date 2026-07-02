@@ -2,7 +2,7 @@ use std::path::{Path, PathBuf};
 
 use super::config::BundleConfig;
 
-fn hermes_temp_root(project_root: &Path) -> PathBuf {
+pub(crate) fn hermes_temp_root(project_root: &Path) -> PathBuf {
     use std::hash::{Hash, Hasher};
     let mut hasher = std::collections::hash_map::DefaultHasher::new();
     project_root.to_string_lossy().hash(&mut hasher);
