@@ -38,8 +38,20 @@ door** to the real office (a `?ht-real` import the receptionist waves through), 
 
 ## The brain (`get()`, run time)
 
-The brain sits inside the front office and answers each question individually. The
-wrapper is a CommonJS Proxy; its property getter runs on every access:
+The brain sits inside the front office and handles **mock isolation and
+management**:
+
+- **Isolation** — it knows *who is asking*: only the currently running test file's
+  mocks apply (`__HT_file_mocks[__currentTestFile]`), never another file's. Two
+  test files can mock the same module differently in one bundle without touching
+  each other.
+- **Management** — it decides *which* registered mock answers each question: exact
+  mock keys first, then barrel sub-path delegation (prefix scan), CJS `default`
+  handling, and call-time re-checks for functions captured at module init.
+- **Fallback** — when no mock matches, it opens the connecting door and lets the
+  real module answer.
+
+The wrapper is a CommonJS Proxy; its property getter runs on every access:
 
 ```js
 get(target, prop) {
@@ -49,10 +61,9 @@ get(target, prop) {
 }
 ```
 
-The mock-or-real decision is made **per running test file, per property access** —
-not at import time. That's why `ht.mock()` can appear before or after imports, why
-two test files can mock the same module differently inside one bundle, and why a
-test file that mocks nothing falls straight through to the real implementation.
+The decision is made **per running test file, per property access** — not at import
+time. That's why `ht.mock()` can appear before or after imports, and why a test
+file that mocks nothing falls straight through to the real implementation.
 
 ## Why two parts?
 

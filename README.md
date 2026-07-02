@@ -371,10 +371,13 @@ office building and every `import` as a visitor at the front desk:
   For unmocked modules that's the real office. For mocked modules the visitor is
   sent to a small **front office** (a generated wrapper file) that stands in front
   of the real one — which still exists, right behind a connecting door.
-- **The brain** (`get()`, run time) sits inside that front office and answers each
-  question individually: "did the *currently running test file* register a mock for
-  this property? Then answer from the mock's script — otherwise open the connecting
-  door and let the real module answer."
+- **The brain** (`get()`, run time) sits inside that front office and handles
+  **mock isolation and management**. Isolation: it knows *who is asking* — only the
+  currently running test file's mocks apply, never another file's. Management: it
+  decides *which* registered mock answers each question (exact mock keys, barrel
+  sub-path delegation, CJS default handling, call-time re-checks for captured
+  functions) — and when no mock matches, it opens the connecting door and lets the
+  real module answer.
 
 The receptionist can't answer questions (bundling happens once, before any test
 runs — it doesn't know which test will be asking). The brain can't direct anyone
