@@ -676,9 +676,9 @@ fn fix_all_class_extends(code: &str) -> String {
                 let args = body[args_start..args_end].trim();
                 let super_call_end = args_end + 1; // include closing paren
                 let reflect_call = if args.is_empty() {
-                    format!("var _this = Reflect.construct({parent}, [], {var_name})")
+                    format!("var _this = Reflect.construct({parent}, [], new.target || {var_name})")
                 } else {
-                    format!("var _this = Reflect.construct({parent}, [{args}], {var_name})")
+                    format!("var _this = Reflect.construct({parent}, [{args}], new.target || {var_name})")
                 };
                 format!("{}{}{}", &body[..super_pos], reflect_call, &body[super_call_end..])
             } else {
