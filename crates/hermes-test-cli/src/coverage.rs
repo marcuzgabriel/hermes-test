@@ -64,7 +64,8 @@ fn instrument_bundle_inner(source: &str, filename: &str, sm_info: Option<&Source
                     let src_col = token.get_src_col();
                     // Filter out unwanted files
                     if src.contains("node_modules") || is_test_file(src)
-                        || src.starts_with("..") || src.starts_with(".hermes-test-") {
+                        || src.starts_with("..") || src.starts_with(".hermes-test-")
+                        || src.contains("plugin-wrappers/") || src.contains("hermes-test-work-") {
                         return None;
                     }
                     // Skip import/export-from lines (boilerplate, not logic)

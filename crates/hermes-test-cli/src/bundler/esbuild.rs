@@ -524,7 +524,12 @@ fn bundle_via_plugin_inner(
         .collect();
 
     let temp = super::shadow::hermes_temp_root(project_root);
-    let out_path = temp.join("plugin-bundle-out.js");
+    // The outfile must live in the PROJECT ROOT, not the temp dir: esbuild
+    // computes sourcemap `sources` relative to the outfile's directory, and
+    // coverage excludes any source starting with "..". A temp-dir outfile makes
+    // every project file "../..."-relative (dropped from coverage) while the
+    // /tmp wrapper files become bare relative paths (wrongly included).
+    let out_path = project_root.join(format!(".hermes-test-plugin-out-{}.js", std::process::id()));
     let script_path = temp.join("plugin-build.cjs");
     let config_path = temp.join("plugin-build-config.json");
 

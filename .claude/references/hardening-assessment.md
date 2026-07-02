@@ -177,10 +177,20 @@ serving as the correctness bridge.
   pipeline (escape hatch for one release cycle — do not delete legacy until a
   release has soaked in prod).
 - Coverage: bundle_via_plugin_with_sourcemap mirrors the CLI sourcemap path;
-  if-session and Topdanmark coverage runs green in default mode. NOTE: coverage
-  totals differ from legacy because mocked modules' real code now stays in the
-  instrumented bundle (legacy externalized/isolated them out of the
-  denominator) — more files measured, arguably more honest.
+  if-session and Topdanmark coverage runs green in default mode.
+- COVERAGE BUG (found in prod by Topdanmark's 65% threshold, fixed in 1.2.1):
+  the plugin outfile lived in the temp dir, so esbuild emitted sourcemap
+  `sources` relative to /tmp — every project file became "../..."-relative
+  (excluded by coverage's ..-filter → 321 files silently dropped) while the
+  wrapper files became bare relative paths (wrongly INCLUDED: dozens of
+  identical 45.0%/42.9% template entries). Total read 56.9% vs threshold 65.
+  Fix: write the plugin outfile in the PROJECT ROOT (sources become
+  project-relative like the CLI path) + explicit coverage exclusion of
+  plugin-wrappers/ and hermes-test-work- paths. After fix: 573 files measured
+  (85 MORE than legacy's 488 — legacy silently hid mocked modules' real code
+  behind /tmp shadow-tree paths), line total 74.4%. Function/branch totals read
+  lower than legacy (32% vs 52%) for the same reason: the newly visible mocked
+  modules are lightly exercised. Plugin numbers are the honest ones.
 - Watch: both initial run and reruns bundle via the plugin; verified with a
   mixed relative+alias watch session (initial + source-change rerun).
 - Default-mode gauntlet: examples 24 suites parity, if-session 31/31
