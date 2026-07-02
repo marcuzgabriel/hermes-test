@@ -17,6 +17,7 @@ When Claude Code opens this repo, before doing anything else:
 7. Read `.claude/references/shadow-wrappers.md` for how shadow wrappers and package shims work
 9. Read `.claude/references/shallow-rendering-fixes.md` for shallow rendering bugs, fixes, and remaining work
 8. Read `.claude/references/challenges.md` for the full journey of challenges and solutions
+10. Read `.claude/references/hardening-assessment.md` for the solidity review, known risk areas, and the prioritized enhancement plan
 
 The references are the source of truth. If something in this README disagrees with them, trust the references and ask the user.
 
