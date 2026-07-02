@@ -175,8 +175,9 @@ Shadow wrappers check mocks at call time — `ht.mock` can appear before or afte
 
 Relative mock paths are resolved against the test file and apply at every import
 site of the resolved module, no matter how each importer spells its own relative
-specifier. Test files using relative mocks run in their own bundle, so other test
-files in the same run keep the real module.
+specifier. Alias and package mocks match the import specifier text exactly. In
+both cases the real module stays in the bundle — unmocked test files in the same
+run fall through to the real implementation.
 
 ### Hook testing
 
