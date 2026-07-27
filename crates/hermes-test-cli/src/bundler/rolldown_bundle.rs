@@ -42,6 +42,8 @@ struct HtMockResolver {
     /// Bare-specifier alias targets (@__ht_real_pkg/x -> x) must re-resolve
     /// from the PROJECT, not from the temp shim dir that imported them.
     resolve_anchor: String,
+    /// Project root for computing test-file ids in the context prologue.
+    project_root: String,
 }
 
 impl Plugin for HtMockResolver {
@@ -50,7 +52,36 @@ impl Plugin for HtMockResolver {
     }
 
     fn register_hook_usage(&self) -> HookUsage {
-        HookUsage::ResolveId
+        HookUsage::ResolveId | HookUsage::Transform
+    }
+
+    /// ROLLUP-SEMANTICS FIX (phase-2 finding): ESM modules are scope-hoisted
+    /// and execute EAGERLY at bundle load — the entry's per-file
+    /// `__currentTestFile = ...` protocol runs too late, so every file's
+    /// hooks/mocks would register under the wrong file. Inject the file
+    /// context as a PROLOGUE into each test-file module itself.
+    async fn transform(
+        &self,
+        _ctx: rolldown::plugin::SharedTransformPluginContext,
+        args: &rolldown::plugin::HookTransformArgs<'_>,
+    ) -> rolldown::plugin::HookTransformReturn {
+        if args.id.contains(".test.t") {
+            let file_id = args
+                .id
+                .strip_prefix(&format!("{}/", self.project_root))
+                .unwrap_or(args.id);
+            let prologue = format!(
+                "globalThis.__currentTestFile = '{file_id}';
+globalThis.__currentTestFilePath = '{}';
+",
+                args.id
+            );
+            return Ok(Some(rolldown::plugin::HookTransformOutput {
+                code: Some(format!("{prologue}{}", args.code)),
+                ..Default::default()
+            }));
+        }
+        Ok(None)
     }
 
     async fn resolve_id(
@@ -153,7 +184,8 @@ pub fn bundle_via_rolldown(
             ..Default::default()
         };
         let resolve_anchor = cwd.to_string_lossy().to_string();
-        let plugins: Vec<SharedPluginable> = vec![Arc::new(HtMockResolver { wrappers, aliases, resolve_anchor })];
+        let project_root = resolve_anchor.clone();
+        let plugins: Vec<SharedPluginable> = vec![Arc::new(HtMockResolver { wrappers, aliases, resolve_anchor, project_root })];
         let mut bundler = Bundler::with_plugins(options, plugins)
             .map_err(|e| format!("rolldown bundler construction: {e:?}"))?;
         let out = bundler
@@ -318,7 +350,8 @@ mod tests {
 
         let _ = fs::remove_file(&entry_path);
 
-        let min = |v: &Vec<std::time::Duration>| v.iter().min().copied().unwrap_or_default();
+        let min_d = |v: &Vec<std::time::Duration>| v.iter().min().copied().unwrap_or_default();
+        let min = min_d;
         println!("==== phase-1 bundle benchmark: examples app ({} test files) ====", test_files.len());
         println!(
             "esbuild (prod path, node service + plugin): min {:?} of {:?}, bundle {} KB",
@@ -332,4 +365,81 @@ mod tests {
             Some(e) => println!("rolldown FAILED (phase-1 finding, not a verdict): {e}"),
         }
     }
+    /// Phase-2 execution snapshot: run the rolldown bundle in real Hermes
+    /// with the real harness and count test results. Expected to be partial
+    /// (text-wrapper mocks unported) — the failure map IS the deliverable.
+    ///   cargo test -p hermes-test-cli --release phase2_execute -- --ignored --nocapture
+    #[test]
+    #[ignore]
+    fn phase2_execute_rolldown_bundle_in_hermes() {
+        let repo_root = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .parent().unwrap().parent().unwrap().to_path_buf();
+        let root = repo_root.join("examples/expo-app");
+        let cfg = crate::bundler::read_config(&root);
+        let alias_names: Vec<String> = cfg.aliases.iter().map(|(a, _)| a.clone()).collect();
+        let alias_pairs: Vec<(String, String)> = cfg.aliases.clone();
+        let test_files = crate::bundler::find_test_files(&root);
+        let mocks = crate::bundler::find_mock_modules_with_alias_pairs(&test_files, &alias_names, &alias_pairs);
+        let (shim_cfg, _wd) = crate::bundler::create_wrapper_shims(&root, &cfg);
+        let entry = crate::bundler::generate_entry_with_shallow(&test_files, None, &mocks, &shim_cfg, &[], Some(&root), &[]);
+        let entry_path = root.join(".hermes-test-phase2-entry.js");
+        fs::write(&entry_path, &entry).unwrap();
+
+        let pm = crate::bundler::create_plugin_mock_wrappers(&test_files, &root, &shim_cfg, &mocks);
+        let wrappers: HashMap<String, String> = pm.file_wrappers.iter().map(|(k, v)| (k.clone(), v.clone())).collect();
+        let mut externals = pm.external_mocks.clone();
+        externals.extend(shim_cfg.externals.iter().cloned());
+        externals.push("hermes-test".to_string());
+        let mut aliases: Vec<(String, String)> = shim_cfg.aliases.iter().map(|(a, t)| (a.clone(), t.clone())).collect();
+        let store = root.join("node_modules/hermes-test/src/store.ts");
+        if store.exists() {
+            aliases.insert(0, ("hermes-test/store".to_string(), store.to_string_lossy().to_string()));
+        }
+
+        let bundle = bundle_via_rolldown(&entry_path, &root, wrappers, externals, aliases).expect("rolldown bundle");
+        let _ = fs::remove_file(&entry_path);
+        let _ = fs::remove_dir_all(&pm.dir);
+        fs::write("/tmp/ht-phase2-bundle.js", &bundle).unwrap();
+
+        let harness = fs::read_to_string(repo_root.join("packages/hermes-test/dist/harness.bundle.js")).expect("harness bundle");
+        let rt = Runtime::new().expect("hermes runtime");
+        rt.eval(&harness, "hermes-test/harness.js").expect("harness eval");
+        // Rollup-dialect externals are GLOBALS, not require() calls: the
+        // entire mock-require-shim problem class becomes this prelude.
+        rt.eval(
+            "globalThis.hermes_test = globalThis.__HT;",
+            "externals-prelude.js",
+        )
+        .expect("prelude");
+        match rt.eval(&bundle, "bundle.js") {
+            Ok(_) => {
+                let results = rt.eval("globalThis.__HT_results", "results").unwrap_or_default();
+                let inner: String = serde_json::from_str(&results).unwrap_or_else(|_| results.clone());
+                let v: serde_json::Value = serde_json::from_str(&inner).unwrap_or_default();
+                println!("==== phase-2 execution snapshot (file-wrapper mocks only) ====");
+                println!("passed: {} failed: {} total: {}",
+                    v["passed"], v["failed"], v["total"]);
+                // First few failures = the parity map
+                if let Some(tests) = v["tests"].as_array() {
+                    let mut shown = 0;
+                    let mut seen_files = std::collections::HashSet::new();
+                    for t in tests {
+                        let f = t["file"].as_str().unwrap_or("?");
+                        if t["status"].as_str() == Some("fail") && shown < 10 && seen_files.insert(f.to_string()) {
+                            println!("  FAIL {} > {} — {}",
+                                t["file"].as_str().unwrap_or("?"),
+                                t["name"].as_str().unwrap_or("?"),
+                                t["error"].as_str().unwrap_or("").lines().take(6).collect::<Vec<_>>().join(" | "));
+                            shown += 1;
+                        }
+                    }
+                }
+            }
+            Err(e) => {
+                let head: String = e.lines().take(8).collect::<Vec<_>>().join("\n");
+                println!("==== phase-2: bundle FAILED to execute (parity wall — the finding) ====\n{head}");
+            }
+        }
+    }
+
 }
