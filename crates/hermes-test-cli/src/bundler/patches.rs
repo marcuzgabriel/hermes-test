@@ -304,7 +304,7 @@ pub fn hoist_mocks_in_body(body: &str) -> String {
 
 /// Find the index of the `)` matching the `(` at `open`.
 /// Skips string literals and comments (same discipline as find_matching_brace).
-fn find_paren_close(code: &str, open: usize) -> usize {
+pub(crate) fn find_paren_close(code: &str, open: usize) -> usize {
     let bytes = code.as_bytes();
     let mut depth = 0;
     let mut j = open;

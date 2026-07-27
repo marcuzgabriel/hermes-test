@@ -31,11 +31,14 @@ use rolldown_common::Output;
 /// docs, minus the process boundary.
 #[derive(Debug)]
 struct HtMockResolver {
-    /// specifier suffix → wrapper absolute path.
-    /// Phase 1 keeps esbuild-parity matching rules out of scope; suffix
-    /// matching is enough to prove delivery. The real port must replicate
-    /// the identity-vs-specifier-text split documented in mock-resolution.md.
-    wrappers: HashMap<String, String>,
+    /// FILE-IDENTITY wrappers (relative mocks): resolved absolute path of the
+    /// mocked file → wrapper path. Matching happens AFTER resolving the
+    /// import against its importer (mock-resolution.md: identity matching).
+    file_wrappers: HashMap<String, String>,
+    /// SPECIFIER-TEXT wrappers (alias + package mocks, incl. barrel
+    /// ancestors): exact import text → wrapper path (mock-resolution.md:
+    /// text matching, the legacy boundary faithfully ported).
+    text_wrappers: HashMap<String, String>,
     /// esbuild --alias parity: (name, target). Exact or name/-prefixed
     /// specifiers redirect to target (shims, tsconfig aliases).
     aliases: Vec<(String, String)>,
@@ -65,6 +68,25 @@ impl Plugin for HtMockResolver {
         _ctx: rolldown::plugin::SharedTransformPluginContext,
         args: &rolldown::plugin::HookTransformArgs<'_>,
     ) -> rolldown::plugin::HookTransformReturn {
+        // Patch-3, rollup dialect: rolldown's __toESM copies properties into
+        // a fresh namespace, destroying mock-wrapper Proxies. Early-return
+        // __esModule modules (the Proxy claims it) — same logic as the
+        // esbuild patch, but attached in a SUPPORTED hook on the stable
+        // runtime module instead of regex over the final bundle.
+        if args.id.contains("rolldown/runtime") {
+            let mut code = args.code.to_string();
+            let header = "__toESM = (mod, isNodeMode, target) => (";
+            if let Some(pos) = code.find(header) {
+                let open = pos + header.len() - 1;
+                let close = super::patches::find_paren_close(&code, open);
+                code.insert(close, ')');
+                code.insert_str(open + 1, "mod && mod.__esModule ? mod : (");
+            }
+            return Ok(Some(rolldown::plugin::HookTransformOutput {
+                code: Some(code),
+                ..Default::default()
+            }));
+        }
         if args.id.contains(".test.t") {
             let file_id = args
                 .id
@@ -89,11 +111,45 @@ globalThis.__currentTestFilePath = '{}';
         _ctx: &PluginContext,
         args: &HookResolveIdArgs<'_>,
     ) -> HookResolveIdReturn {
+        // 1. Wrapper's own re-entry to the real module: {abs}?ht-real (relative
+        //    mocks) or {bare-package}?ht-real (package mocks — re-resolve,
+        //    anchored at the project since wrapper temp dirs have no
+        //    node_modules ancestry).
+        if let Some(real) = args.specifier.strip_suffix("?ht-real") {
+            if std::path::Path::new(real).is_absolute() {
+                return Ok(Some(HookResolveIdOutput::from_id(real)));
+            }
+            let anchor = format!("{}/__ht_resolve_anchor__.js", self.resolve_anchor);
+            let opts = rolldown::plugin::PluginContextResolveOptions {
+                skip_self: true,
+                ..Default::default()
+            };
+            if let Ok(Ok(resolved)) = _ctx.resolve(real, Some(anchor.as_str()), Some(opts)).await {
+                return Ok(Some(HookResolveIdOutput::from_id(resolved.id.as_str())));
+            }
+            return Ok(Some(HookResolveIdOutput::from_id(real)));
+        }
+        // 2. Specifier-text mocks (alias/package/barrel) — exact text match.
         if args.importer.is_some() {
-            for (suffix, wrapper) in &self.wrappers {
-                if args.specifier.ends_with(suffix.as_str()) {
-                    return Ok(Some(HookResolveIdOutput::from_id(wrapper.as_str())));
+            if let Some(w) = self.text_wrappers.get(args.specifier) {
+                return Ok(Some(HookResolveIdOutput::from_id(w.as_str())));
+            }
+        }
+        // 3. File-identity mocks (relative): resolve against the importer
+        //    (skip_self prevents re-entering this hook), then match identity.
+        if args.importer.is_some()
+            && (args.specifier.starts_with("./") || args.specifier.starts_with("../"))
+            && !self.file_wrappers.is_empty()
+        {
+            let opts = rolldown::plugin::PluginContextResolveOptions {
+                skip_self: true,
+                ..Default::default()
+            };
+            if let Ok(Ok(resolved)) = _ctx.resolve(args.specifier, args.importer, Some(opts)).await {
+                if let Some(w) = self.file_wrappers.get(resolved.id.as_str()) {
+                    return Ok(Some(HookResolveIdOutput::from_id(w.as_str())));
                 }
+                return Ok(Some(HookResolveIdOutput::from_id(resolved.id.as_str())));
             }
         }
         for (name, target) in &self.aliases {
@@ -141,7 +197,8 @@ globalThis.__currentTestFilePath = '{}';
 pub fn bundle_via_rolldown(
     entry: &Path,
     cwd: &Path,
-    wrappers: HashMap<String, String>,
+    file_wrappers: HashMap<String, String>,
+    text_wrappers: HashMap<String, String>,
     externals: Vec<String>,
     aliases: Vec<(String, String)>,
 ) -> Result<String, String> {
@@ -160,6 +217,9 @@ pub fn bundle_via_rolldown(
                 Ok(ext.iter().any(|e| {
                     if let Some(prefix) = e.strip_suffix('*') {
                         spec.starts_with(prefix)
+                    } else if e == "hermes-test" {
+                        // exact only: hermes-test/store is aliased and BUNDLED
+                        spec == *e
                     } else {
                         spec == *e || spec.starts_with(&format!("{e}/"))
                     }
@@ -172,6 +232,14 @@ pub fn bundle_via_rolldown(
         define.insert("process.env.JEST_WORKER_ID".to_string(), "\"1\"".to_string());
         define.insert("global".to_string(), "globalThis".to_string());
 
+        // Parity with the esbuild pipeline's deliberate --supported:async-await=false:
+        // the harness drives promise settling via synchronous drains, and RTK
+        // Query's chains only settle deterministically with downleveled async
+        // (probed on both bundlers). es2016 = async/await lowered, rest modern.
+        let transform = rolldown::BundlerTransformOptions {
+            target: Some(rolldown_common::Either::Left("es2016".to_string())),
+            ..Default::default()
+        };
         let options = BundlerOptions {
             input: Some(vec![InputItem {
                 name: Some("bundle".to_string()),
@@ -181,11 +249,12 @@ pub fn bundle_via_rolldown(
             format: Some(OutputFormat::Iife),
             external: Some(is_external),
             define: Some(define),
+            transform: Some(transform),
             ..Default::default()
         };
         let resolve_anchor = cwd.to_string_lossy().to_string();
         let project_root = resolve_anchor.clone();
-        let plugins: Vec<SharedPluginable> = vec![Arc::new(HtMockResolver { wrappers, aliases, resolve_anchor, project_root })];
+        let plugins: Vec<SharedPluginable> = vec![Arc::new(HtMockResolver { file_wrappers, text_wrappers, aliases, resolve_anchor, project_root })];
         let mut bundler = Bundler::with_plugins(options, plugins)
             .map_err(|e| format!("rolldown bundler construction: {e:?}"))?;
         let out = bundler
@@ -237,13 +306,16 @@ mod tests {
         )
         .unwrap();
 
-        let mut wrappers = HashMap::new();
-        wrappers.insert(
-            "analytics.js".to_string(),
-            dir.join("analytics.wrapper.js").to_string_lossy().to_string(),
-        );
+        fn wrappers_as_text(dir: &std::path::Path) -> HashMap<String, String> {
+            let mut w = HashMap::new();
+            w.insert(
+                "./analytics.js".to_string(),
+                dir.join("analytics.wrapper.js").to_string_lossy().to_string(),
+            );
+            w
+        }
 
-        let code = bundle_via_rolldown(&dir.join("entry.js"), &dir, wrappers, vec![], vec![]).unwrap();
+        let code = bundle_via_rolldown(&dir.join("entry.js"), &dir, HashMap::new(), wrappers_as_text(&dir), vec![], vec![]).unwrap();
         assert!(code.contains("WRAPPED"), "wrapper not delivered:\n{code}");
         assert!(
             !code.contains("REAL:"),
@@ -321,11 +393,8 @@ mod tests {
         let mut rd_err: Option<String> = None;
         for _ in 0..3 {
             let pm = crate::bundler::create_plugin_mock_wrappers(&test_files, &root, &shim_cfg, &mocks);
-            let wrappers: HashMap<String, String> = pm
-                .file_wrappers
-                .iter()
-                .map(|(k, v)| (k.clone(), v.clone()))
-                .collect();
+            let file_w: HashMap<String, String> = pm.file_wrappers.iter().map(|(k, v)| (k.clone(), v.clone())).collect();
+            let text_w: HashMap<String, String> = pm.text_wrappers.iter().map(|(k, v)| (k.clone(), v.clone())).collect();
             let mut externals = pm.external_mocks.clone();
             externals.extend(shim_cfg.externals.iter().cloned());
             externals.push("hermes-test".to_string());
@@ -335,7 +404,7 @@ mod tests {
                 .iter()
                 .map(|(a, t)| (a.clone(), t.clone()))
                 .collect();
-            match bundle_via_rolldown(&entry_path, &root, wrappers, externals, aliases) {
+            match bundle_via_rolldown(&entry_path, &root, file_w, text_w, externals, aliases) {
                 Ok(code) => {
                     rd_times.push(t.elapsed());
                     rd_len = code.len();
@@ -382,6 +451,11 @@ mod tests {
         let mocks = crate::bundler::find_mock_modules_with_alias_pairs(&test_files, &alias_names, &alias_pairs);
         let (shim_cfg, _wd) = crate::bundler::create_wrapper_shims(&root, &cfg);
         let entry = crate::bundler::generate_entry_with_shallow(&test_files, None, &mocks, &shim_cfg, &[], Some(&root), &[]);
+        // Surface merge: setupApiStore et al. live in hermes-test/store (bundled
+        // via alias); expose them for the externals-global Proxy fallback chain.
+        let entry = format!(
+            "import * as __htStoreNS from 'hermes-test/store';\nglobalThis.__HT_storeSurface = __htStoreNS;\n{entry}"
+        );
         let entry_path = root.join(".hermes-test-phase2-entry.js");
         fs::write(&entry_path, &entry).unwrap();
 
@@ -396,7 +470,8 @@ mod tests {
             aliases.insert(0, ("hermes-test/store".to_string(), store.to_string_lossy().to_string()));
         }
 
-        let bundle = bundle_via_rolldown(&entry_path, &root, wrappers, externals, aliases).expect("rolldown bundle");
+        let text_w: HashMap<String, String> = pm.text_wrappers.iter().map(|(k, v)| (k.clone(), v.clone())).collect();
+        let bundle = bundle_via_rolldown(&entry_path, &root, wrappers, text_w, externals, aliases).expect("rolldown bundle");
         let _ = fs::remove_file(&entry_path);
         let _ = fs::remove_dir_all(&pm.dir);
         fs::write("/tmp/ht-phase2-bundle.js", &bundle).unwrap();
@@ -417,12 +492,20 @@ mod tests {
     apply: function(){ return noop; },
     construct: function(){ return {}; }
   });
+  // store.ts lazily self-requires 'hermes-test' (circular-import dodge);
+  // serve that one require from the same surface.
+  globalThis.require = function(m) {
+    if (m === 'hermes-test') return globalThis.hermes_test;
+    throw new Error('require not available for: ' + m);
+  };
   globalThis.hermes_test = new Proxy({}, {
     get: function(t, p){
       if (p === '__esModule') return true;
       var fm = globalThis.__HT_file_mocks, cf = globalThis.__currentTestFile;
       var m = fm && cf && fm[cf] && fm[cf]['hermes-test'];
-      var v = (m && m[p] !== undefined) ? m[p] : (globalThis.__HT ? globalThis.__HT[p] : undefined);
+      var v = (m && m[p] !== undefined) ? m[p]
+        : (globalThis.__HT && globalThis.__HT[p] !== undefined) ? globalThis.__HT[p]
+        : (globalThis.__HT_storeSurface ? globalThis.__HT_storeSurface[p] : undefined);
       return v !== undefined ? v : noop;
     }
   });
@@ -485,7 +568,8 @@ mod tests {
         fs::write(&entry_path, &entry).unwrap();
 
         let pm = crate::bundler::create_plugin_mock_wrappers(&test_files, &root, &shim_cfg, &mocks);
-        let wrappers: HashMap<String, String> = pm.file_wrappers.iter().map(|(k, v)| (k.clone(), v.clone())).collect();
+        let file_w: HashMap<String, String> = pm.file_wrappers.iter().map(|(k, v)| (k.clone(), v.clone())).collect();
+        let text_w: HashMap<String, String> = pm.text_wrappers.iter().map(|(k, v)| (k.clone(), v.clone())).collect();
         let mut externals = pm.external_mocks.clone();
         externals.extend(shim_cfg.externals.iter().cloned());
         externals.push("hermes-test".to_string());
@@ -495,7 +579,7 @@ mod tests {
             aliases.insert(0, ("hermes-test/store".to_string(), store.to_string_lossy().to_string()));
         }
 
-        let bundle = match bundle_via_rolldown(&entry_path, &root, wrappers, externals, aliases) {
+        let bundle = match bundle_via_rolldown(&entry_path, &root, file_w, text_w, externals, aliases) {
             Ok(b) => b,
             Err(e) => {
                 println!("==== phase-2b bundle FAILED ====");
