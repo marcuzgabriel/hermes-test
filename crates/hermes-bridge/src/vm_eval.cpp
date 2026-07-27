@@ -3,31 +3,9 @@
 // works correctly (same path as the hermes CLI).
 
 #include <hermes/VM/Runtime.h>
-// CompileFlags is defined in BytecodeProviderFromSrc.h but that header
-// transitively includes LLVH IR headers with generated .inc files we don't
-// have. Since Runtime.h only forward-declares it, we replicate the struct
-// here with just the fields we need. The memory layout must match exactly.
-#include <hermes/Utils/Options.h>  // for OutputFormatKind
-#include "llvh/ADT/Optional.h"     // for llvh::Optional
-
-namespace hermes { namespace hbc {
-struct CompileFlags {
-  bool debug{false};
-  bool lazy{false};
-  bool enableBlockScoping{false};
-  unsigned preemptiveFileCompilationThreshold{1 << 16};
-  unsigned preemptiveFunctionCompilationThreshold{160};
-  bool strict{false};
-  llvh::Optional<bool> staticBuiltins;
-  bool verifyIR{false};
-  bool emitAsyncBreakCheck{false};
-  bool includeLibHermes{true};
-  bool instrumentIR{false};
-  bool enableGenerator{true};
-  bool enableES6Classes{false};
-  OutputFormatKind format{Execute};
-};
-}} // namespace hermes::hbc
+// V1/static_h: Runtime.h transitively provides the real hbc::CompileFlags
+// (HBC.h) — the old hand-replicated struct (a memory-layout hazard) is gone.
+#include <hermes/BCGen/HBC/HBC.h>
 
 #include <cstdlib>
 #include <cstring>
@@ -67,8 +45,8 @@ int hermes_vm_run(
   auto* runtime = static_cast<::hermes::vm::Runtime*>(vm_runtime_ptr);
 
   ::hermes::hbc::CompileFlags flags;
-  flags.enableES6Classes = true;
-  flags.enableBlockScoping = true;
+  // V1/static_h: ES6 classes are native (no flag); block scoping still gated.
+  flags.enableES6BlockScoping = true;
   flags.enableGenerator = true;
   flags.includeLibHermes = false;
 

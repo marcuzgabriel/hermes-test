@@ -6,22 +6,15 @@ var Logger = class {
     return this.prefix + ": " + msg;
   }
 };
-var TaggedLogger = (function() {
-  function TaggedLogger(prefix, tag) {
-    var _this = Reflect.construct(Logger, [prefix], new.target || TaggedLogger);
-    _this.tag = tag;
-  
-    return _this;
+var TaggedLogger = class _TaggedLogger extends Logger {
+  constructor(prefix, tag) {
+    super(prefix);
+    this.tag = tag;
   }
-  TaggedLogger.prototype = Object.create(Logger.prototype, {
-    constructor: { value: TaggedLogger, writable: true, configurable: true }
-  });
-  Object.setPrototypeOf(TaggedLogger, Logger);
-  TaggedLogger.prototype.tagged = function(msg) {
+  tagged(msg) {
     return "[" + this.tag + "] " + this.prefix + ": " + msg;
-  };
-TaggedLogger.create = function(tag) {
-    return new TaggedLogger("app", tag);
-  };
-  return TaggedLogger;
-})();
+  }
+  static create(tag) {
+    return new _TaggedLogger("app", tag);
+  }
+};

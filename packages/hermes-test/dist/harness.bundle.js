@@ -1228,11 +1228,11 @@ Run with --update-snapshots to update.`
     const fn = function(...args) {
       calls.push(args);
       let ret;
-      if (onceImpls.length > 0) {
-        const onceFn = onceImpls.shift();
-        ret = onceFn.apply(this, args);
+      const active = onceImpls.length > 0 ? onceImpls.shift() : baseImpl;
+      if (active) {
+        ret = new.target ? Reflect.construct(active, args, new.target) : active.apply(this, args);
       } else {
-        ret = baseImpl ? baseImpl.apply(this, args) : void 0;
+        ret = void 0;
       }
       returnValues.push(ret);
       return ret;
