@@ -40,6 +40,14 @@ is narrow and known, addressable with bounded work, not rewrites.
 - An esbuild version bump can silently change output formatting and break pattern
   matching — the failure mode would be silent, not loud.
 - Mitigation until fixed: keep esbuild pinned.
+- **RESOLVED (July 2026, feat/hermes-v1-engine / PR #4): the mini-transpiler is
+  DELETED.** Vendored engine moved to the Hermes V1/static_h line
+  (hermes-v250829098.0.14, RN 0.84+), probe-verified to handle classes natively
+  (TDZ, new.target, super.method, native-builtin subclassing). ~400 lines gone;
+  what remains of patches.rs is small mocking-feature rewrites (configurable
+  getters, __toESM passthrough, require shim, hoist) — engine-independent by
+  design and each covered by fixtures. The esbuild-pin guardrail still applies
+  to the remaining text matches; the fixture corpus is the tripwire.
 
 ### 2. Silent-pass failure modes (worst class of bug for a test runner)
 Both issues found in the review were silent-green:
@@ -100,8 +108,12 @@ Both issues found in the review were silent-green:
    CI runs `cargo test -p hermes-test-cli`.
    MERGE GATE: Topdanmark parity run before test/fixture-corpus → main
    (patches now modify react-redux internals and class output).
-3. **Class downleveling: do NOT re-attempt an AST port.** SETTLED (July 2026,
-   maintainer decision). OXC/AST approaches were tried multiple times and failed;
+3. **Class downleveling: do NOT re-attempt an AST port.** MOOT since the V1
+   engine (July 2026, PR #4): the downleveler itself was deleted — classes are
+   engine-native, so there is nothing left to port. The paragraph below is
+   preserved as the decision record for the remaining regex patches: full-AST
+   re-emit is still inadmissible for THEM, for the same whitespace reasons.
+   Originally SETTLED (July 2026, maintainer decision). OXC/AST approaches were tried multiple times and failed;
    the documented reasons (SWC: scoped thread-locals, helper injection incompatible
    with Hermes; and for ANY full-AST tool: re-emitting the bundle changes
    whitespace and breaks every other regex patch) apply to OXC as well — this is

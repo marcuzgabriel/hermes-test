@@ -4,11 +4,11 @@ use std::process::{Command, Stdio};
 use super::config::{BundleConfig, read_config};
 use super::patches::{patch_esbuild_for_hermes, inject_mock_require_shim, hoist_mock_modules};
 
-// SWC class transform was evaluated but rejected:
-// - Requires 3 scoped thread-locals (GLOBALS, HANDLER, HELPERS)
-// - inject_helpers() emits require('@swc/helpers') calls incompatible with Hermes
-// - Full SWC codegen re-emits the entire bundle (changes whitespace, breaks other patches)
-// Our regex-based fix_all_class_extends() handles all known patterns at <1ms with zero deps.
+// Historical note: an SWC/AST class transform was evaluated and rejected
+// (thread-locals, helper injection, full re-emit breaking other patches), and a
+// regex-based class downleveler served for a year. Since the V1 engine (July
+// 2026) classes are engine-native and the downleveler is deleted — the whole
+// debate is moot. See fixtures/class-extends/ for the engine-conformance guards.
 
 /// Bundle an entry file with esbuild.
 pub fn bundle_auto(
