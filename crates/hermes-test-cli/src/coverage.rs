@@ -158,8 +158,14 @@ fn instrument_bundle_inner(source: &str, filename: &str, sm_info: Option<&Source
         f_len = fns.len(),
     );
 
-    let iife = source.find("(() => {").map(|p| p + 8)
-        .or_else(|| source.find("(function() {").map(|p| p + 13))
+    // The bundle-wrapping IIFE opener must be at the very start of the file —
+    // matching anywhere would find nested IIFEs deep in vendor code and plant
+    // the preamble after the first counters.
+    let head = &source[..source.len().min(120)];
+    let iife = head.find("(() => {").map(|p| p + 8)
+        .or_else(|| head.find("(function() {").map(|p| p + 13))
+        // rolldown's IIFE opener carries externals params: (function(a, b) {
+        .or_else(|| head.find("(function(").and_then(|p| head[p..].find('{').map(|b| p + b + 1)))
         .unwrap_or(0) as u32;
 
     let mut ins: Vec<(u32, String)> = Vec::new();

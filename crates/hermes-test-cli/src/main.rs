@@ -348,7 +348,7 @@ JSON.stringify({
         let alias_names: Vec<String> = cfg.aliases.iter().map(|(a, _)| a.clone()).collect();
         let alias_pairs: Vec<(String, String)> = cfg.aliases.clone();
 
-        // Mock delivery: the plugin resolver (esbuild JS API onResolve hook) — one
+        // Mock delivery: the in-process rolldown resolver (Rust resolve_id hook) — one
         // bundle, one VM, all mock kinds. (The legacy pipeline — shadow trees,
         // package shims, isolated bundles, HT_RESOLVER flag — was deleted after
         // the plugin default soaked in prod; phase 4 of the resolver plan.)
@@ -405,77 +405,45 @@ fn run_tests_single(
     // Try bytecode cache first (fastest), then JS cache, then fresh bundle.
     // When coverage is enabled, we need source maps so always do a fresh bundle.
     let mut sm_info: Option<coverage::SourceMapInfo> = None;
+    let mut coverage_prelude: String = String::new();
 
     let bundle = if !coverage && bytecode_path.exists() {
         // Bytecode cache hit — skip everything, load directly
         None
     } else if !coverage && cache_path.exists() {
-        // JS cache hit — patched bundle, skip shadow setup + esbuild
+        // JS cache hit — prelude-prefixed bundle, skip bundling entirely
         Some(std::fs::read_to_string(&cache_path).unwrap_or_default())
     } else {
-        // Cache miss (or coverage mode) — full pipeline. The onResolve plugin
-        // delivers ALL mocks (relative, alias, package).
+        // Cache miss (or coverage mode) — full pipeline. The rolldown resolver
+        // hook delivers ALL mocks (relative, alias, package).
         let (shim_cfg, wrapper_shim_dir) = bundler::create_wrapper_shims(root, cfg);
-        let entry_content = bundler::generate_entry_with_shallow(test_files, None, mock_modules, &shim_cfg, transforms, Some(root), shallow_auto_mocks);
+        let entry_content = bundler::entry_with_store_surface(
+            bundler::generate_entry_with_shallow(test_files, None, mock_modules, &shim_cfg, transforms, Some(root), shallow_auto_mocks),
+        );
         let entry_path = root.join(".hermes-test-entry.js");
         std::fs::write(&entry_path, &entry_content).unwrap_or_else(|e| {
             eprintln!("Failed to write entry file: {e}");
             std::process::exit(1);
         });
 
-        let b = if coverage {
-            // Coverage: use sourcemap-aware bundling
-            let esbuild_path = match bundler::find_esbuild_pub(root) {
-                Ok(p) => p,
-                Err(_) => {
-                    let _ = std::fs::remove_file(&entry_path);
-                    if let Some(ref d) = wrapper_shim_dir { let _ = std::fs::remove_dir_all(d); }
-                    eprintln!("esbuild not found. Install it: bun add -d esbuild");
-                    std::process::exit(1);
-                }
-            };
-            let _ = &esbuild_path;
-            let sm_result = {
-                let pm = bundler::create_plugin_mock_wrappers(test_files, root, &shim_cfg, mock_modules);
-                let r = bundler::bundle_via_plugin_with_sourcemap(
-                    &entry_path, root, &pm.external_mocks, &shim_cfg,
-                    &pm.file_wrappers, &pm.text_wrappers,
-                );
-                let _ = std::fs::remove_dir_all(&pm.dir);
-                r
-            };
-            match sm_result {
+        let b = {
+            let pm = bundler::create_plugin_mock_wrappers(test_files, root, &shim_cfg, mock_modules);
+            let r = bundler::bundle_tests(&entry_path, root, &shim_cfg, &pm, coverage);
+            let _ = std::fs::remove_dir_all(&pm.dir);
+            match r {
                 Ok(result) => {
-                    let patched_lines = result.code.lines().count() as u32;
-                    let line_delta = patched_lines.saturating_sub(result.pre_patch_line_count);
                     if let Some(source_map) = result.source_map {
-                        sm_info = Some(coverage::SourceMapInfo { source_map, line_delta });
+                        // Map refers to the raw chunk; the prelude is prepended
+                        // AFTER instrumentation, so no line delta applies here.
+                        sm_info = Some(coverage::SourceMapInfo { source_map, line_delta: 0 });
                     }
-                    result.code
+                    if coverage {
+                        coverage_prelude = result.prelude;
+                        result.chunk
+                    } else {
+                        result.code
+                    }
                 }
-                Err(e) => {
-                    let _ = std::fs::remove_file(&entry_path);
-                    if let Some(ref d) = wrapper_shim_dir { let _ = std::fs::remove_dir_all(d); }
-                    for (_, temp) in transforms { let _ = std::fs::remove_file(temp); }
-                    eprintln!("Bundling failed: {e}");
-                    std::process::exit(1);
-                }
-            }
-        } else {
-            // Classify every mock and generate onResolve wrappers; only mocks
-            // with no bundleable real module (natives, shims, unresolvable
-            // specifiers) remain text-externalized.
-            let bundle_result = {
-                let pm = bundler::create_plugin_mock_wrappers(test_files, root, &shim_cfg, mock_modules);
-                let r = bundler::bundle_via_plugin_with_config(
-                    &entry_path, root, &pm.external_mocks, &shim_cfg,
-                    &pm.file_wrappers, &pm.text_wrappers,
-                );
-                let _ = std::fs::remove_dir_all(&pm.dir);
-                r
-            };
-            match bundle_result {
-                Ok(b) => b,
                 Err(e) => {
                     let _ = std::fs::remove_file(&entry_path);
                     if let Some(ref d) = wrapper_shim_dir { let _ = std::fs::remove_dir_all(d); }
@@ -505,7 +473,7 @@ fn run_tests_single(
         Some(b)
     };
 
-    // Coverage: instrument the bundle post-esbuild
+    // Coverage: instrument the bundle post-bundling
     let coverage_map_path = cache_dir.join("coverage-map.json");
     let bundle = if coverage {
         let js = bundle.or_else(|| std::fs::read_to_string(&cache_path).ok())
@@ -520,11 +488,11 @@ fn run_tests_single(
                 eprintln!(" \x1b[2mCoverage:\x1b[0m instrumented ({} → {} bytes)", js.len(), instrumented.len());
                 let _ = std::fs::create_dir_all(&cache_dir);
                 let _ = std::fs::write(&coverage_map_path, &coverage_map);
-                Some(instrumented)
+                Some(format!("{coverage_prelude}{instrumented}"))
             }
             None => {
                 eprintln!(" \x1b[33mCoverage: instrumentation failed, running without\x1b[0m");
-                Some(js)
+                Some(format!("{coverage_prelude}{js}"))
             }
         }
     } else {
@@ -718,7 +686,9 @@ fn watch_tests(files: &[PathBuf], root: &PathBuf) {
     }
 
     let (shim_cfg, wrapper_shim_dir) = bundler::create_wrapper_shims(&root, &cfg);
-    let entry = bundler::generate_entry_with_shallow(&initial_batch, None, &mock_modules, &shim_cfg, &[], Some(&root), &initial_shallow);
+    let entry = bundler::entry_with_store_surface(
+        bundler::generate_entry_with_shallow(&initial_batch, None, &mock_modules, &shim_cfg, &[], Some(&root), &initial_shallow),
+    );
     let entry_path = root.join(".hermes-test-watch-initial-entry.js");
     let _ = std::fs::write(&entry_path, &entry);
 
@@ -726,10 +696,7 @@ fn watch_tests(files: &[PathBuf], root: &PathBuf) {
         Ok(String::new())
     } else {
         let pm = bundler::create_plugin_mock_wrappers(&initial_batch, &root, &shim_cfg, &mock_modules);
-        let r = bundler::bundle_via_plugin_with_config(
-            &entry_path, &root, &pm.external_mocks, &shim_cfg,
-            &pm.file_wrappers, &pm.text_wrappers,
-        );
+        let r = bundler::bundle_tests(&entry_path, &root, &shim_cfg, &pm, false).map(|b| b.code);
         let _ = std::fs::remove_dir_all(&pm.dir);
         r
     };
@@ -765,22 +732,10 @@ fn watch_tests(files: &[PathBuf], root: &PathBuf) {
         Err(e) => eprintln!("\x1b[31mInitial watch bundle failed: {e}\x1b[0m"),
     }
 
-    // Build dep graph for affected-file watch reruns.
-    let depgraph_entry = bundler::generate_entry(&all_test_files, None, &mock_modules, &cfg, &[], Some(&root));
-    let depgraph_entry_path = root.join(".hermes-test-entry.js");
-    let depgraph = if std::fs::write(&depgraph_entry_path, &depgraph_entry).is_ok() {
-        let dg = match bundler::bundle_with_depgraph(&depgraph_entry_path, &root, &all_test_files, &mock_modules) {
-            Ok((_, d)) => d,
-            Err(_) => std::collections::HashMap::new(),
-        };
-        let _ = std::fs::remove_file(&depgraph_entry_path);
-        dg
-    } else {
-        std::collections::HashMap::new()
-    };
-
-    // Watch loop
-    let current_depgraph = depgraph;
+    // Watch loop. (The esbuild-metafile dependency graph for affected-file
+    // reruns went with esbuild; rolldown cold-bundles in tens of ms, so
+    // rerunning everything on change is simpler AND still fast. Rolldown's
+    // incremental-build API is the future replacement.)
 
     loop {
         match rx.recv() {
@@ -820,32 +775,8 @@ fn watch_tests(files: &[PathBuf], root: &PathBuf) {
                     changed_names.join(", ")
                 );
 
-                // Find affected test files from the dep graph
-                let mut affected: Vec<PathBuf> = Vec::new();
-                for changed in &changed_paths {
-                    let canonical = std::fs::canonicalize(changed)
-                        .unwrap_or_else(|_| changed.clone());
-
-                    if let Some(tests) = current_depgraph.get(&canonical) {
-                        for t in tests {
-                            if !affected.contains(t) {
-                                affected.push(t.clone());
-                            }
-                        }
-                    }
-
-                    // If the changed file IS a test file, include it
-                    let name = changed.to_string_lossy();
-                    let suffix = cfg.test_match.as_deref().unwrap_or(".test.ts");
-                    let is_test = name.ends_with(suffix)
-                        || (suffix.ends_with(".ts") && name.ends_with(&format!("{}x", suffix)))
-                        || name.ends_with(".test.ts")
-                        || name.ends_with(".test.tsx")
-                        || name.ends_with(".test.js");
-                    if is_test && !affected.contains(&canonical) {
-                        affected.push(canonical);
-                    }
-                }
+                // Any relevant change reruns the full set (see note above).
+                let affected: Vec<PathBuf> = all_test_files.clone();
 
                 // Determine which tests to run
                 let rerun_files = if watch_all {
@@ -913,7 +844,9 @@ fn watch_tests(files: &[PathBuf], root: &PathBuf) {
 
                 // Build single bundle
                 let (shim_cfg, wrapper_shim_dir) = bundler::create_wrapper_shims(&root, &cfg);
-                let entry = bundler::generate_entry_with_shallow(&rerun_batch, None, &mock_modules, &shim_cfg, &[], Some(&root), &watch_shallow);
+                let entry = bundler::entry_with_store_surface(
+                    bundler::generate_entry_with_shallow(&rerun_batch, None, &mock_modules, &shim_cfg, &[], Some(&root), &watch_shallow),
+                );
                 let entry_path = root.join(".hermes-test-watch-entry.js");
                 let _ = std::fs::write(&entry_path, &entry);
 
@@ -921,10 +854,7 @@ fn watch_tests(files: &[PathBuf], root: &PathBuf) {
                     Ok(String::new())
                 } else {
                     let pm = bundler::create_plugin_mock_wrappers(&rerun_batch, &root, &shim_cfg, &mock_modules);
-                    let r = bundler::bundle_via_plugin_with_config(
-                        &entry_path, &root, &pm.external_mocks, &shim_cfg,
-                        &pm.file_wrappers, &pm.text_wrappers,
-                    );
+                    let r = bundler::bundle_tests(&entry_path, &root, &shim_cfg, &pm, false).map(|b| b.code);
                     let _ = std::fs::remove_dir_all(&pm.dir);
                     r
                 };

@@ -1,17 +1,22 @@
-//! In-process bundling via the Rolldown Rust crate — the candidate successor
-//! to the esbuild JS-API pipeline (hardening assessment, enhancement 7).
+//! In-process bundling via the Rolldown crate — the only bundler.
 //!
-//! What this buys over esbuild (spike-proven, July 2026):
-//! - No Node spawn, no plugin_build.cjs, no JSON config round-trip
-//!   (~0.5s measured cold overhead on the esbuild JS-API path)
-//! - Mock delivery as a native Rust resolve_id hook instead of a JS plugin
-//! - Scope-hoisted ESM output: zero interop helpers for pure-ESM code, so the
-//!   mockability patches only concern the CJS boundary
+//! This replaced the esbuild pipeline (JS-API service driven through a spawned
+//! Node process, plugin_build.cjs, JSON config round-trips, and four regex
+//! patches over the emitted text). What each piece became here:
 //!
-//! Status: EXPERIMENTAL — not wired into the run path. The fixture test below
-//! proves the mock-delivery primitive (resolution-time wrapper redirection)
-//! end-to-end in real Hermes. Phase 1 (bundling the examples app) comes next;
-//! see the migration plan in hardening-assessment.md before extending.
+//! | esbuild-era machinery                | now                                    |
+//! |--------------------------------------|----------------------------------------|
+//! | plugin_build.cjs + Node + JSON       | `HtMockResolver::resolve_id` (in-proc) |
+//! | inject_mock_require_shim (regex)     | `EXTERNALS_PRELUDE` (static JS)        |
+//! | patch 3 __toESM regex                | `transform` hook on rolldown's runtime |
+//! | patches 1–2 (configurable getters)   | unnecessary (scope hoisting)           |
+//! | hoist_mock_modules (+brace matcher)  | unnecessary (wrapper call-time checks) |
+//! | --supported:async-await=false        | transform target "es2016"              |
+//!
+//! Benchmark record (examples app, 24 suites / 1211 tests, min-of-3,
+//! identical inputs, 2026-07-27): esbuild production path 177.6ms / 1646 KB;
+//! rolldown in-process 46.5ms / 1383 KB — 3.8x faster, 16% smaller, with
+//! 100% test parity (1211/1211 on both).
 
 use std::borrow::Cow;
 use std::collections::HashMap;
@@ -21,32 +26,141 @@ use std::sync::Arc;
 use rolldown::plugin::__inner::SharedPluginable;
 use rolldown::plugin::{
     HookResolveIdArgs, HookResolveIdOutput, HookResolveIdReturn, HookUsage, Plugin, PluginContext,
+    PluginContextResolveOptions,
 };
-use rolldown::{Bundler, BundlerOptions, InputItem, OutputFormat};
-use rolldown_common::Output;
+use rolldown::{Bundler, BundlerOptions, BundlerTransformOptions, InputItem, OutputFormat};
+use rolldown_common::{Output, SourceMapType};
 
-/// Resolution-time mock delivery: imports whose resolved target is a mocked
-/// file get redirected to their wrapper. This is the Rust twin of
-/// plugin_build.cjs's onResolve — the "receptionist" from the architecture
-/// docs, minus the process boundary.
+/// Core of the runtime prelude. Rollup-dialect externals are GLOBALS, not
+/// require() calls; every externalized module's global gets the forgiving
+/// Proxy semantics the old require shim had: per-file mocks → global registry
+/// (natives get their shims registered there by the entry) → chainable noop.
+/// 'hermes-test' additionally falls back to the harness + store surfaces.
+const PRELUDE_CORE: &str = r#"(function(){
+  var noopFn = function(){};
+  var noop = new Proxy(noopFn, {
+    get: function(t,p){ if (p === Symbol.toPrimitive) return function(){ return ''; };
+      if (p === 'then' || p === '$$typeof') return undefined;
+      if (p === 'length' || p === 'size') return 0;
+      if (typeof p === 'symbol') return undefined; return noop; },
+    apply: function(){ return noop; },
+    construct: function(){ return {}; }
+  });
+  globalThis.require = function(m) {
+    if (m === 'hermes-test') return globalThis.hermes_test;
+    throw new Error('require not available for: ' + m);
+  };
+  globalThis.__htExternalProxy = function(spec, isHermesTest) {
+    return new Proxy({}, {
+      get: function(t, p){
+        if (p === '__esModule') return true;
+        if (typeof p === 'symbol') return undefined;
+        var fm = globalThis.__HT_file_mocks, cf = globalThis.__currentTestFile;
+        var m = fm && cf && fm[cf] && fm[cf][spec];
+        var reg = globalThis.__HT_mocks && globalThis.__HT_mocks[spec];
+        var v = (m && m[p] !== undefined) ? m[p]
+          : (reg && reg[p] !== undefined) ? reg[p]
+          : undefined;
+        if (v === undefined && isHermesTest) {
+          v = (globalThis.__HT && globalThis.__HT[p] !== undefined) ? globalThis.__HT[p]
+            : (globalThis.__HT_storeSurface ? globalThis.__HT_storeSurface[p] : undefined);
+        }
+        return v !== undefined ? v : noop;
+      }
+    });
+  };
+})();
+"#;
+
+/// Build the full prelude: core + one global per external, mapped by zipping
+/// the IIFE's parameter names (positional) with the chunk's external imports.
+fn build_prelude(code: &str, imports: &[String]) -> String {
+    let mut prelude = String::from(PRELUDE_CORE);
+    // Parse `(function(a, b, c) {` from the chunk head.
+    let params: Vec<String> = code
+        .find("(function(")
+        .and_then(|p| {
+            let rest = &code[p + 10..code.len().min(p + 2000)];
+            rest.find(')').map(|end| {
+                rest[..end]
+                    .split(',')
+                    .map(|s| s.trim().to_string())
+                    .filter(|s| !s.is_empty())
+                    .collect()
+            })
+        })
+        .unwrap_or_default();
+    for (i, param) in params.iter().enumerate() {
+        if let Some(spec) = imports.get(i) {
+            let is_ht = spec == "hermes-test";
+            prelude.push_str(&format!(
+                "globalThis.{param} = globalThis.__htExternalProxy('{spec}', {is_ht});
+"
+            ));
+        }
+    }
+    prelude
+}
+
+/// Find the index of the `)` matching the `(` at `open` (string-aware).
+fn find_paren_close(code: &str, open: usize) -> usize {
+    let bytes = code.as_bytes();
+    let mut depth = 0;
+    let mut j = open;
+    while j < bytes.len() {
+        match bytes[j] {
+            b'(' => depth += 1,
+            b')' => {
+                depth -= 1;
+                if depth == 0 {
+                    return j;
+                }
+            }
+            b'"' | b'\'' | b'`' => {
+                let quote = bytes[j];
+                j += 1;
+                while j < bytes.len() {
+                    if bytes[j] == b'\\' {
+                        j += 1;
+                    } else if bytes[j] == quote {
+                        break;
+                    }
+                    j += 1;
+                }
+            }
+            _ => {}
+        }
+        j += 1;
+    }
+    j
+}
+
+/// The receptionist (see website/docs/architecture/mock-resolution.md) as an
+/// in-process resolver hook. Directions only, never answers: which FILE sits
+/// at this import site. The brain (wrapper get(), run time) is unchanged JS.
 #[derive(Debug)]
 struct HtMockResolver {
     /// FILE-IDENTITY wrappers (relative mocks): resolved absolute path of the
-    /// mocked file → wrapper path. Matching happens AFTER resolving the
-    /// import against its importer (mock-resolution.md: identity matching).
+    /// mocked file → wrapper path. Matched after resolving against importer.
     file_wrappers: HashMap<String, String>,
-    /// SPECIFIER-TEXT wrappers (alias + package mocks, incl. barrel
-    /// ancestors): exact import text → wrapper path (mock-resolution.md:
-    /// text matching, the legacy boundary faithfully ported).
+    /// SPECIFIER-TEXT wrappers (alias + package mocks incl. barrel ancestors):
+    /// exact import text → wrapper path — the legacy boundary, faithfully
+    /// kept (production-internal relative imports never see text mocks).
     text_wrappers: HashMap<String, String>,
-    /// esbuild --alias parity: (name, target). Exact or name/-prefixed
-    /// specifiers redirect to target (shims, tsconfig aliases).
+    /// esbuild --alias parity: (name, target) for config shims + tsconfig
+    /// aliases + @__ht_real_pkg re-entries.
     aliases: Vec<(String, String)>,
-    /// Bare-specifier alias targets (@__ht_real_pkg/x -> x) must re-resolve
-    /// from the PROJECT, not from the temp shim dir that imported them.
+    /// Bare specifiers must re-resolve from the PROJECT (wrapper/shim temp
+    /// dirs have no node_modules ancestry).
     resolve_anchor: String,
-    /// Project root for computing test-file ids in the context prologue.
+    /// Project root for test-file ids in the context prologue.
     project_root: String,
+}
+
+impl HtMockResolver {
+    fn skip_self() -> PluginContextResolveOptions {
+        PluginContextResolveOptions { skip_self: true, ..Default::default() }
+    }
 }
 
 impl Plugin for HtMockResolver {
@@ -55,103 +169,72 @@ impl Plugin for HtMockResolver {
     }
 
     fn register_hook_usage(&self) -> HookUsage {
-        HookUsage::ResolveId | HookUsage::Transform
+        HookUsage::ResolveId | HookUsage::Load | HookUsage::Transform
     }
 
-    /// ROLLUP-SEMANTICS FIX (phase-2 finding): ESM modules are scope-hoisted
-    /// and execute EAGERLY at bundle load — the entry's per-file
-    /// `__currentTestFile = ...` protocol runs too late, so every file's
-    /// hooks/mocks would register under the wrong file. Inject the file
-    /// context as a PROLOGUE into each test-file module itself.
-    async fn transform(
+    /// Binary assets (images/fonts/media) resolve to empty modules — the
+    /// esbuild --loader:.png=empty parity, served from the load hook so the
+    /// file bytes are never read as UTF-8 source.
+    async fn load(
         &self,
-        _ctx: rolldown::plugin::SharedTransformPluginContext,
-        args: &rolldown::plugin::HookTransformArgs<'_>,
-    ) -> rolldown::plugin::HookTransformReturn {
-        // Patch-3, rollup dialect: rolldown's __toESM copies properties into
-        // a fresh namespace, destroying mock-wrapper Proxies. Early-return
-        // __esModule modules (the Proxy claims it) — same logic as the
-        // esbuild patch, but attached in a SUPPORTED hook on the stable
-        // runtime module instead of regex over the final bundle.
-        if args.id.contains("rolldown/runtime") {
-            let mut code = args.code.to_string();
-            let header = "__toESM = (mod, isNodeMode, target) => (";
-            if let Some(pos) = code.find(header) {
-                let open = pos + header.len() - 1;
-                let close = super::patches::find_paren_close(&code, open);
-                code.insert(close, ')');
-                code.insert_str(open + 1, "mod && mod.__esModule ? mod : (");
+        _ctx: rolldown::plugin::SharedLoadPluginContext,
+        args: &rolldown::plugin::HookLoadArgs<'_>,
+    ) -> rolldown::plugin::HookLoadReturn {
+        const EMPTY_EXTS: [&str; 10] =
+            ["png", "jpg", "jpeg", "gif", "svg", "webp", "ttf", "otf", "mp4", "riv"];
+        let path = args.id.split('?').next().unwrap_or(args.id);
+        if let Some(ext) = std::path::Path::new(path).extension().and_then(|e| e.to_str()) {
+            if EMPTY_EXTS.contains(&ext.to_ascii_lowercase().as_str()) {
+                return Ok(Some(rolldown::plugin::HookLoadOutput {
+                    code: "export default {};".into(),
+                    module_type: Some(rolldown_common::ModuleType::Js),
+                    ..Default::default()
+                }));
             }
-            return Ok(Some(rolldown::plugin::HookTransformOutput {
-                code: Some(code),
-                ..Default::default()
-            }));
-        }
-        if args.id.contains(".test.t") {
-            let file_id = args
-                .id
-                .strip_prefix(&format!("{}/", self.project_root))
-                .unwrap_or(args.id);
-            let prologue = format!(
-                "globalThis.__currentTestFile = '{file_id}';
-globalThis.__currentTestFilePath = '{}';
-",
-                args.id
-            );
-            return Ok(Some(rolldown::plugin::HookTransformOutput {
-                code: Some(format!("{prologue}{}", args.code)),
-                ..Default::default()
-            }));
         }
         Ok(None)
     }
 
     async fn resolve_id(
         &self,
-        _ctx: &PluginContext,
+        ctx: &PluginContext,
         args: &HookResolveIdArgs<'_>,
     ) -> HookResolveIdReturn {
-        // 1. Wrapper's own re-entry to the real module: {abs}?ht-real (relative
-        //    mocks) or {bare-package}?ht-real (package mocks — re-resolve,
-        //    anchored at the project since wrapper temp dirs have no
-        //    node_modules ancestry).
+        // 1. Wrapper re-entry to the real module: {abs}?ht-real (relative
+        //    mocks) or {package}?ht-real (package mocks → re-resolve, anchored).
         if let Some(real) = args.specifier.strip_suffix("?ht-real") {
-            if std::path::Path::new(real).is_absolute() {
+            if Path::new(real).is_absolute() {
                 return Ok(Some(HookResolveIdOutput::from_id(real)));
             }
             let anchor = format!("{}/__ht_resolve_anchor__.js", self.resolve_anchor);
-            let opts = rolldown::plugin::PluginContextResolveOptions {
-                skip_self: true,
-                ..Default::default()
-            };
-            if let Ok(Ok(resolved)) = _ctx.resolve(real, Some(anchor.as_str()), Some(opts)).await {
-                return Ok(Some(HookResolveIdOutput::from_id(resolved.id.as_str())));
+            if let Ok(Ok(r)) =
+                ctx.resolve(real, Some(anchor.as_str()), Some(Self::skip_self())).await
+            {
+                return Ok(Some(HookResolveIdOutput::from_id(r.id.as_str())));
             }
             return Ok(Some(HookResolveIdOutput::from_id(real)));
         }
-        // 2. Specifier-text mocks (alias/package/barrel) — exact text match.
+        // 2. Specifier-text mocks — exact import text.
         if args.importer.is_some() {
             if let Some(w) = self.text_wrappers.get(args.specifier) {
                 return Ok(Some(HookResolveIdOutput::from_id(w.as_str())));
             }
         }
-        // 3. File-identity mocks (relative): resolve against the importer
-        //    (skip_self prevents re-entering this hook), then match identity.
+        // 3. File-identity mocks — resolve against the importer, then match.
         if args.importer.is_some()
             && (args.specifier.starts_with("./") || args.specifier.starts_with("../"))
             && !self.file_wrappers.is_empty()
         {
-            let opts = rolldown::plugin::PluginContextResolveOptions {
-                skip_self: true,
-                ..Default::default()
-            };
-            if let Ok(Ok(resolved)) = _ctx.resolve(args.specifier, args.importer, Some(opts)).await {
-                if let Some(w) = self.file_wrappers.get(resolved.id.as_str()) {
+            if let Ok(Ok(r)) =
+                ctx.resolve(args.specifier, args.importer, Some(Self::skip_self())).await
+            {
+                if let Some(w) = self.file_wrappers.get(r.id.as_str()) {
                     return Ok(Some(HookResolveIdOutput::from_id(w.as_str())));
                 }
-                return Ok(Some(HookResolveIdOutput::from_id(resolved.id.as_str())));
+                return Ok(Some(HookResolveIdOutput::from_id(r.id.as_str())));
             }
         }
+        // 4. Alias/shim redirection (rollup-style: re-resolve non-file targets).
         for (name, target) in &self.aliases {
             let rewritten = if args.specifier == name.as_str() {
                 Some(target.clone())
@@ -161,39 +244,143 @@ globalThis.__currentTestFilePath = '{}';
                     .map(|rest| format!("{target}/{rest}"))
             };
             if let Some(new_spec) = rewritten {
-                // Exact file targets (shims) can be answered directly; anything
-                // else re-enters the resolver so package-exports/extension
-                // resolution still happens (rollup-style ctx.resolve).
-                if std::path::Path::new(&new_spec).is_file() {
+                if Path::new(&new_spec).is_file() {
                     return Ok(Some(HookResolveIdOutput::from_id(new_spec.as_str())));
                 }
                 let anchor;
-                let importer = if std::path::Path::new(&new_spec).is_absolute() {
+                let importer = if Path::new(&new_spec).is_absolute() {
                     args.importer
                 } else {
                     anchor = format!("{}/__ht_resolve_anchor__.js", self.resolve_anchor);
                     Some(anchor.as_str())
                 };
-                match _ctx.resolve(&new_spec, importer, None).await {
-                    Ok(Ok(resolved)) => {
-                        return Ok(Some(HookResolveIdOutput::from_id(resolved.id.as_str())));
-                    }
-                    _ => {
-                        return Ok(Some(HookResolveIdOutput::from_id(new_spec.as_str())));
-                    }
+                if let Ok(Ok(r)) = ctx.resolve(&new_spec, importer, None).await {
+                    return Ok(Some(HookResolveIdOutput::from_id(r.id.as_str())));
                 }
+                return Ok(Some(HookResolveIdOutput::from_id(new_spec.as_str())));
             }
+        }
+        Ok(None)
+    }
+
+    async fn transform(
+        &self,
+        _ctx: rolldown::plugin::SharedTransformPluginContext,
+        args: &rolldown::plugin::HookTransformArgs<'_>,
+    ) -> rolldown::plugin::HookTransformReturn {
+        // Interop fix on rolldown's OWN runtime module: __toESM must return
+        // __esModule modules (our wrapper Proxies claim it) unchanged instead
+        // of copying them into a dead namespace. A supported hook on a stable
+        // module — not regex over the final bundle.
+        if args.id.contains("rolldown/runtime") {
+            let mut code = args.code.to_string();
+            let header = "__toESM = (mod, isNodeMode, target) => (";
+            if let Some(pos) = code.find(header) {
+                let open = pos + header.len() - 1;
+                let close = find_paren_close(&code, open);
+                code.insert(close, ')');
+                code.insert_str(open + 1, "mod && mod.__esModule ? mod : (");
+            }
+            return Ok(Some(rolldown::plugin::HookTransformOutput {
+                code: Some(code),
+                ..Default::default()
+            }));
+        }
+        // Per-file context prologue: rollup evaluates scope-hoisted ESM
+        // EAGERLY, so each test-file module sets its own registration context
+        // (the entry's per-file protocol runs too late for that).
+        if args.id.contains(".test.t") {
+            let file_id = args
+                .id
+                .strip_prefix(&format!("{}/", self.project_root))
+                .unwrap_or(args.id);
+            let prologue = format!(
+                "globalThis.__currentTestFile = '{file_id}';\nglobalThis.__currentTestFilePath = '{}';\n",
+                args.id
+            );
+            return Ok(Some(rolldown::plugin::HookTransformOutput {
+                code: Some(format!("{prologue}{}", args.code)),
+                ..Default::default()
+            }));
         }
         Ok(None)
     }
 }
 
-/// Bundle `entry` into a single IIFE chunk, redirecting mocked imports to
-/// wrapper files. Synchronous facade over rolldown's async API (the CLI is
-/// synchronous throughout).
-///
-/// `externals`: esbuild-parity semantics — exact match, `pkg/…` sub-paths,
-/// and trailing-`*` prefixes.
+/// Bundle result with optional parsed source map (coverage mode).
+pub struct RolldownBundle {
+    /// Prelude-prefixed bundle, ready to eval (and cache).
+    pub code: String,
+    /// The chunk WITHOUT the prelude — coverage instruments this (the __cov
+    /// header must precede all counters) and prepends `prelude` afterwards.
+    pub chunk: String,
+    /// The generated externals prelude (core + per-external globals).
+    pub prelude: String,
+    pub source_map: Option<sourcemap::SourceMap>,
+}
+
+fn build_options(entry: &Path, cwd: &Path, externals: Vec<String>, sourcemap: bool) -> BundlerOptions {
+    let ext = Arc::new(externals);
+    let is_external = rolldown_common::IsExternal::Fn(Some(Arc::new(move |spec, _imp, _res| {
+        let ext = Arc::clone(&ext);
+        let spec = spec.to_string();
+        Box::pin(async move {
+            Ok(ext.iter().any(|e| {
+                if let Some(prefix) = e.strip_suffix('*') {
+                    spec.starts_with(prefix)
+                } else if e == "hermes-test" {
+                    // exact only: hermes-test/store is aliased and BUNDLED
+                    spec == *e
+                } else {
+                    spec == *e || spec.starts_with(&format!("{e}/"))
+                }
+            }))
+        })
+    })));
+
+    let mut define = rolldown_utils::indexmap::FxIndexMap::default();
+    define.insert("process.env.NODE_ENV".to_string(), "\"test\"".to_string());
+    define.insert("process.env.JEST_WORKER_ID".to_string(), "\"1\"".to_string());
+    define.insert("global".to_string(), "globalThis".to_string());
+
+    // Async downleveled (es2016): the harness settles promises via synchronous
+    // drains; RTK Query chains require lowered async — probed on both
+    // bundlers, this is the twin of esbuild's --supported:async-await=false.
+    let transform = BundlerTransformOptions {
+        target: Some(rolldown_common::Either::Left("es2016".to_string())),
+        ..Default::default()
+    };
+
+    // esbuild loader parity: images resolve to empty modules; RN-ecosystem
+    // .js files may contain JSX.
+    let mut mt: rustc_hash::FxHashMap<String, rolldown_common::ModuleType> = Default::default();
+    for ext in ["png", "jpg", "jpeg", "gif", "svg", "webp", "ttf", "otf", "mp4", "riv"] {
+        mt.insert(ext.to_string(), rolldown_common::ModuleType::Empty);
+        mt.insert(format!(".{ext}"), rolldown_common::ModuleType::Empty);
+    }
+    mt.insert("js".to_string(), rolldown_common::ModuleType::Jsx);
+
+    BundlerOptions {
+        module_types: Some(mt),
+        input: Some(vec![InputItem {
+            name: Some("bundle".to_string()),
+            import: entry.to_string_lossy().to_string(),
+        }]),
+        cwd: Some(cwd.to_path_buf()),
+        format: Some(OutputFormat::Iife),
+        external: Some(is_external),
+        define: Some(define),
+        transform: Some(transform),
+        // esbuild-looseness parity: TS codebases routinely value-import types
+        // (esbuild silently drops unknown named imports). Shim them to
+        // undefined instead of failing the build.
+        shim_missing_exports: Some(true),
+        sourcemap: sourcemap.then_some(SourceMapType::Inline),
+        ..Default::default()
+    }
+}
+
+/// Bundle `entry` into a single prelude-prefixed IIFE chunk.
 pub fn bundle_via_rolldown(
     entry: &Path,
     cwd: &Path,
@@ -201,7 +388,8 @@ pub fn bundle_via_rolldown(
     text_wrappers: HashMap<String, String>,
     externals: Vec<String>,
     aliases: Vec<(String, String)>,
-) -> Result<String, String> {
+    sourcemap: bool,
+) -> Result<RolldownBundle, String> {
     let rt = tokio::runtime::Builder::new_multi_thread()
         .worker_threads(2)
         .enable_all()
@@ -209,66 +397,112 @@ pub fn bundle_via_rolldown(
         .map_err(|e| format!("tokio runtime: {e}"))?;
 
     rt.block_on(async move {
-        let ext = std::sync::Arc::new(externals);
-        let is_external = rolldown_common::IsExternal::Fn(Some(Arc::new(move |spec, _importer, _resolved| {
-            let ext = Arc::clone(&ext);
-            let spec = spec.to_string();
-            Box::pin(async move {
-                Ok(ext.iter().any(|e| {
-                    if let Some(prefix) = e.strip_suffix('*') {
-                        spec.starts_with(prefix)
-                    } else if e == "hermes-test" {
-                        // exact only: hermes-test/store is aliased and BUNDLED
-                        spec == *e
-                    } else {
-                        spec == *e || spec.starts_with(&format!("{e}/"))
-                    }
-                }))
-            })
-        })));
-
-        let mut define = rolldown_utils::indexmap::FxIndexMap::default();
-        define.insert("process.env.NODE_ENV".to_string(), "\"test\"".to_string());
-        define.insert("process.env.JEST_WORKER_ID".to_string(), "\"1\"".to_string());
-        define.insert("global".to_string(), "globalThis".to_string());
-
-        // Parity with the esbuild pipeline's deliberate --supported:async-await=false:
-        // the harness drives promise settling via synchronous drains, and RTK
-        // Query's chains only settle deterministically with downleveled async
-        // (probed on both bundlers). es2016 = async/await lowered, rest modern.
-        let transform = rolldown::BundlerTransformOptions {
-            target: Some(rolldown_common::Either::Left("es2016".to_string())),
-            ..Default::default()
-        };
-        let options = BundlerOptions {
-            input: Some(vec![InputItem {
-                name: Some("bundle".to_string()),
-                import: entry.to_string_lossy().to_string(),
-            }]),
-            cwd: Some(cwd.to_path_buf()),
-            format: Some(OutputFormat::Iife),
-            external: Some(is_external),
-            define: Some(define),
-            transform: Some(transform),
-            ..Default::default()
-        };
+        let options = build_options(entry, cwd, externals, sourcemap);
         let resolve_anchor = cwd.to_string_lossy().to_string();
         let project_root = resolve_anchor.clone();
-        let plugins: Vec<SharedPluginable> = vec![Arc::new(HtMockResolver { file_wrappers, text_wrappers, aliases, resolve_anchor, project_root })];
+        let plugins: Vec<SharedPluginable> = vec![Arc::new(HtMockResolver {
+            file_wrappers,
+            text_wrappers,
+            aliases,
+            resolve_anchor,
+            project_root,
+        })];
         let mut bundler = Bundler::with_plugins(options, plugins)
             .map_err(|e| format!("rolldown bundler construction: {e:?}"))?;
-        let out = bundler
-            .generate()
-            .await
-            .map_err(|e| format!("rolldown bundle:\n{}", e.into_vec().iter().map(|d| d.to_diagnostic().to_string()).collect::<Vec<_>>().join("\n")))?;
+        let out = bundler.generate().await.map_err(|e| {
+            format!(
+                "rolldown bundle:\n{}",
+                e.into_vec()
+                    .iter()
+                    .map(|d| d.to_diagnostic().to_string())
+                    .collect::<Vec<_>>()
+                    .join("\n")
+            )
+        })?;
 
         for asset in &out.assets {
             if let Output::Chunk(chunk) = asset {
-                return Ok(chunk.code.clone());
+                let mut source_map = None;
+                let mut code = chunk.code.clone();
+                if sourcemap {
+                    let marker = "//# sourceMappingURL=data:application/json;base64,";
+                    if let Some(pos) = code.rfind(marker) {
+                        let b64 = code[pos + marker.len()..].trim().to_string();
+                        code.truncate(pos);
+                        if let Ok(decoded) = base64_decode(&b64) {
+                            source_map = sourcemap::SourceMap::from_reader(&decoded[..]).ok();
+                        }
+                    }
+                }
+                let imports: Vec<String> =
+                    chunk.imports.iter().map(|i| i.to_string()).collect();
+                let prelude = build_prelude(&code, &imports);
+                return Ok(RolldownBundle {
+                    code: format!("{prelude}{code}"),
+                    chunk: code,
+                    prelude,
+                    source_map,
+                });
             }
         }
         Err("rolldown produced no chunk".to_string())
     })
+}
+
+fn base64_decode(input: &str) -> Result<Vec<u8>, ()> {
+    const TABLE: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+    let mut out = Vec::with_capacity(input.len() * 3 / 4);
+    let mut buf = 0u32;
+    let mut bits = 0u32;
+    for &b in input.as_bytes() {
+        if b == b'=' || b == b'\n' || b == b'\r' {
+            continue;
+        }
+        let val = TABLE.iter().position(|&c| c == b).ok_or(())? as u32;
+        buf = (buf << 6) | val;
+        bits += 6;
+        if bits >= 8 {
+            bits -= 8;
+            out.push((buf >> bits) as u8);
+            buf &= (1 << bits) - 1;
+        }
+    }
+    Ok(out)
+}
+
+/// High-level bundling for a test run: assembles wrapper maps, externals
+/// (config + natives, hermes-test exact-only), and aliases (config shims +
+/// tsconfig + the hermes-test/store bundling alias) from the mock set.
+pub fn bundle_tests(
+    entry_path: &Path,
+    root: &Path,
+    shim_cfg: &super::BundleConfig,
+    pm: &super::PluginMockSet,
+    sourcemap: bool,
+) -> Result<RolldownBundle, String> {
+    let file_w: HashMap<String, String> =
+        pm.file_wrappers.iter().map(|(k, v)| (k.clone(), v.clone())).collect();
+    let text_w: HashMap<String, String> =
+        pm.text_wrappers.iter().map(|(k, v)| (k.clone(), v.clone())).collect();
+    let mut externals = pm.external_mocks.clone();
+    externals.extend(shim_cfg.externals.iter().cloned());
+    externals.push("hermes-test".to_string());
+    let mut aliases: Vec<(String, String)> =
+        shim_cfg.aliases.iter().map(|(a, t)| (a.clone(), t.clone())).collect();
+    let store = root.join("node_modules/hermes-test/src/store.ts");
+    if store.exists() {
+        aliases.insert(0, ("hermes-test/store".to_string(), store.to_string_lossy().to_string()));
+    }
+    bundle_via_rolldown(entry_path, root, file_w, text_w, externals, aliases, sourcemap)
+}
+
+/// Prepend the store-surface import to a generated entry: hermes-test/store
+/// is aliased to the real source file and BUNDLED; its namespace extends the
+/// 'hermes-test' import surface (setupApiStore, withStore, ...).
+pub fn entry_with_store_surface(entry: String) -> String {
+    format!(
+        "import * as __htStoreNS from 'hermes-test/store';\nglobalThis.__HT_storeSurface = __htStoreNS;\n{entry}"
+    )
 }
 
 #[cfg(test)]
@@ -277,9 +511,9 @@ mod tests {
     use crate::hermes::Runtime;
     use std::fs;
 
-    /// The mock-delivery primitive, end to end IN-REPO: a Rust resolve_id
-    /// hook redirects an import to a wrapper, the IIFE output executes in
-    /// real (V1) Hermes, and the wrapper's value comes out.
+    /// The mock-delivery primitive end to end: a Rust resolve_id hook
+    /// redirects an import to a wrapper, the IIFE output executes in real
+    /// (V1) Hermes, and the wrapper's value comes out.
     #[test]
     fn rolldown_delivers_wrapper_and_runs_in_hermes() {
         let dir = std::env::temp_dir().join(format!(
@@ -295,336 +529,38 @@ mod tests {
             "import { greet } from './analytics.js';\nglobalThis.result = greet('hermes');\n",
         )
         .unwrap();
-        fs::write(
-            dir.join("analytics.js"),
-            "export function greet(n) { return 'REAL:' + n; }\n",
-        )
-        .unwrap();
+        fs::write(dir.join("analytics.js"), "export function greet(n) { return 'REAL:' + n; }\n")
+            .unwrap();
         fs::write(
             dir.join("analytics.wrapper.js"),
             "export function greet(n) { return 'WRAPPED:' + n; }\n",
         )
         .unwrap();
 
-        fn wrappers_as_text(dir: &std::path::Path) -> HashMap<String, String> {
-            let mut w = HashMap::new();
-            w.insert(
-                "./analytics.js".to_string(),
-                dir.join("analytics.wrapper.js").to_string_lossy().to_string(),
-            );
-            w
-        }
-
-        let code = bundle_via_rolldown(&dir.join("entry.js"), &dir, HashMap::new(), wrappers_as_text(&dir), vec![], vec![]).unwrap();
-        assert!(code.contains("WRAPPED"), "wrapper not delivered:\n{code}");
-        assert!(
-            !code.contains("REAL:"),
-            "real module should be tree-shaken:\n{code}"
+        let mut text = HashMap::new();
+        text.insert(
+            "./analytics.js".to_string(),
+            dir.join("analytics.wrapper.js").to_string_lossy().to_string(),
         );
+
+        let b = bundle_via_rolldown(
+            &dir.join("entry.js"),
+            &dir,
+            HashMap::new(),
+            text,
+            vec![],
+            vec![],
+            false,
+        )
+        .unwrap();
+        assert!(b.code.contains("WRAPPED"), "wrapper not delivered:\n{}", b.code);
+        assert!(!b.code.contains("REAL:"), "real module should be tree-shaken");
 
         let rt = Runtime::new().expect("hermes runtime");
-        let program = format!("{code}\nglobalThis.result;");
+        let program = format!("{}\nglobalThis.result;", b.code);
         let result = rt.eval(&program, "rolldown-smoke.js").expect("hermes eval");
-        assert!(
-            result.contains("WRAPPED:hermes"),
-            "hermes execution: got {result}"
-        );
+        assert!(result.contains("WRAPPED:hermes"), "hermes execution: got {result}");
 
         let _ = fs::remove_dir_all(&dir);
     }
-
-    /// Phase-1 benchmark: bundle the REAL examples app through both pipelines
-    /// on identical inputs. Run explicitly:
-    ///   cargo test -p hermes-test-cli --release bench_rolldown -- --ignored --nocapture
-    ///
-    /// Honesty notes printed with the results: the esbuild leg is the
-    /// production path (Node service + onResolve plugin, wrapper-carrying);
-    /// the rolldown leg delivers the same FILE wrappers via the Rust hook but
-    /// does NOT yet implement specifier-text (alias/package) mocks — those
-    /// bundle their real modules instead, which if anything gives rolldown
-    /// MORE work, not less.
-    #[test]
-    #[ignore]
-    fn bench_rolldown_vs_esbuild_examples_app() {
-        let repo_root = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-            .parent()
-            .unwrap()
-            .parent()
-            .unwrap()
-            .to_path_buf();
-        let root = repo_root.join("examples/expo-app");
-        let cfg = crate::bundler::read_config(&root);
-        let alias_names: Vec<String> = cfg.aliases.iter().map(|(a, _)| a.clone()).collect();
-        let alias_pairs: Vec<(String, String)> = cfg.aliases.clone();
-        let test_files = crate::bundler::find_test_files(&root);
-        assert!(!test_files.is_empty(), "no example test files found");
-        let mocks = crate::bundler::find_mock_modules_with_alias_pairs(
-            &test_files,
-            &alias_names,
-            &alias_pairs,
-        );
-
-        let (shim_cfg, _wrapper_dir) = crate::bundler::create_wrapper_shims(&root, &cfg);
-        let entry = crate::bundler::generate_entry_with_shallow(
-            &test_files, None, &mocks, &shim_cfg, &[], Some(&root), &[],
-        );
-        let entry_path = root.join(".hermes-test-bench-entry.js");
-        fs::write(&entry_path, &entry).unwrap();
-
-        // esbuild leg: the real production path (min of 3)
-        let mut es_times = Vec::new();
-        let mut es_len = 0usize;
-        for _ in 0..3 {
-            let pm = crate::bundler::create_plugin_mock_wrappers(&test_files, &root, &shim_cfg, &mocks);
-            let t = std::time::Instant::now();
-            let code = crate::bundler::bundle_via_plugin_with_config(
-                &entry_path, &root, &pm.external_mocks, &shim_cfg,
-                &pm.file_wrappers, &pm.text_wrappers,
-            )
-            .expect("esbuild bundle");
-            es_times.push(t.elapsed());
-            es_len = code.len();
-            let _ = fs::remove_dir_all(&pm.dir);
-        }
-
-        // rolldown leg: same entry, same file wrappers, same externals (min of 3)
-        let mut rd_times = Vec::new();
-        let mut rd_len = 0usize;
-        let mut rd_err: Option<String> = None;
-        for _ in 0..3 {
-            let pm = crate::bundler::create_plugin_mock_wrappers(&test_files, &root, &shim_cfg, &mocks);
-            let file_w: HashMap<String, String> = pm.file_wrappers.iter().map(|(k, v)| (k.clone(), v.clone())).collect();
-            let text_w: HashMap<String, String> = pm.text_wrappers.iter().map(|(k, v)| (k.clone(), v.clone())).collect();
-            let mut externals = pm.external_mocks.clone();
-            externals.extend(shim_cfg.externals.iter().cloned());
-            externals.push("hermes-test".to_string());
-            let t = std::time::Instant::now();
-            let aliases: Vec<(String, String)> = shim_cfg
-                .aliases
-                .iter()
-                .map(|(a, t)| (a.clone(), t.clone()))
-                .collect();
-            match bundle_via_rolldown(&entry_path, &root, file_w, text_w, externals, aliases) {
-                Ok(code) => {
-                    rd_times.push(t.elapsed());
-                    rd_len = code.len();
-                }
-                Err(e) => {
-                    rd_err = Some(e);
-                    break;
-                }
-            }
-            let _ = fs::remove_dir_all(&pm.dir);
-        }
-
-        let _ = fs::remove_file(&entry_path);
-
-        let min_d = |v: &Vec<std::time::Duration>| v.iter().min().copied().unwrap_or_default();
-        let min = min_d;
-        println!("==== phase-1 bundle benchmark: examples app ({} test files) ====", test_files.len());
-        println!(
-            "esbuild (prod path, node service + plugin): min {:?} of {:?}, bundle {} KB",
-            min(&es_times), es_times, es_len / 1024
-        );
-        match rd_err {
-            None => println!(
-                "rolldown (in-process crate, file wrappers): min {:?} of {:?}, bundle {} KB",
-                min(&rd_times), rd_times, rd_len / 1024
-            ),
-            Some(e) => println!("rolldown FAILED (phase-1 finding, not a verdict): {e}"),
-        }
-    }
-    /// Phase-2 execution snapshot: run the rolldown bundle in real Hermes
-    /// with the real harness and count test results. Expected to be partial
-    /// (text-wrapper mocks unported) — the failure map IS the deliverable.
-    ///   cargo test -p hermes-test-cli --release phase2_execute -- --ignored --nocapture
-    #[test]
-    #[ignore]
-    fn phase2_execute_rolldown_bundle_in_hermes() {
-        let repo_root = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-            .parent().unwrap().parent().unwrap().to_path_buf();
-        let root = repo_root.join("examples/expo-app");
-        let cfg = crate::bundler::read_config(&root);
-        let alias_names: Vec<String> = cfg.aliases.iter().map(|(a, _)| a.clone()).collect();
-        let alias_pairs: Vec<(String, String)> = cfg.aliases.clone();
-        let test_files = crate::bundler::find_test_files(&root);
-        let mocks = crate::bundler::find_mock_modules_with_alias_pairs(&test_files, &alias_names, &alias_pairs);
-        let (shim_cfg, _wd) = crate::bundler::create_wrapper_shims(&root, &cfg);
-        let entry = crate::bundler::generate_entry_with_shallow(&test_files, None, &mocks, &shim_cfg, &[], Some(&root), &[]);
-        // Surface merge: setupApiStore et al. live in hermes-test/store (bundled
-        // via alias); expose them for the externals-global Proxy fallback chain.
-        let entry = format!(
-            "import * as __htStoreNS from 'hermes-test/store';\nglobalThis.__HT_storeSurface = __htStoreNS;\n{entry}"
-        );
-        let entry_path = root.join(".hermes-test-phase2-entry.js");
-        fs::write(&entry_path, &entry).unwrap();
-
-        let pm = crate::bundler::create_plugin_mock_wrappers(&test_files, &root, &shim_cfg, &mocks);
-        let wrappers: HashMap<String, String> = pm.file_wrappers.iter().map(|(k, v)| (k.clone(), v.clone())).collect();
-        let mut externals = pm.external_mocks.clone();
-        externals.extend(shim_cfg.externals.iter().cloned());
-        externals.push("hermes-test".to_string());
-        let mut aliases: Vec<(String, String)> = shim_cfg.aliases.iter().map(|(a, t)| (a.clone(), t.clone())).collect();
-        let store = root.join("node_modules/hermes-test/src/store.ts");
-        if store.exists() {
-            aliases.insert(0, ("hermes-test/store".to_string(), store.to_string_lossy().to_string()));
-        }
-
-        let text_w: HashMap<String, String> = pm.text_wrappers.iter().map(|(k, v)| (k.clone(), v.clone())).collect();
-        let bundle = bundle_via_rolldown(&entry_path, &root, wrappers, text_w, externals, aliases).expect("rolldown bundle");
-        let _ = fs::remove_file(&entry_path);
-        let _ = fs::remove_dir_all(&pm.dir);
-        fs::write("/tmp/ht-phase2-bundle.js", &bundle).unwrap();
-
-        let harness = fs::read_to_string(repo_root.join("packages/hermes-test/dist/harness.bundle.js")).expect("harness bundle");
-        let rt = Runtime::new().expect("hermes runtime");
-        rt.eval(&harness, "hermes-test/harness.js").expect("harness eval");
-        // Rollup-dialect externals are GLOBALS, not require() calls: the
-        // entire mock-require-shim problem class becomes this prelude.
-        rt.eval(
-            r#"(function(){
-  var noopFn = function(){};
-  var noop = new Proxy(noopFn, {
-    get: function(t,p){ if (p === Symbol.toPrimitive) return function(){ return ''; };
-      if (p === 'then' || p === '$$typeof') return undefined;
-      if (p === 'length' || p === 'size') return 0;
-      if (typeof p === 'symbol') return undefined; return noop; },
-    apply: function(){ return noop; },
-    construct: function(){ return {}; }
-  });
-  // store.ts lazily self-requires 'hermes-test' (circular-import dodge);
-  // serve that one require from the same surface.
-  globalThis.require = function(m) {
-    if (m === 'hermes-test') return globalThis.hermes_test;
-    throw new Error('require not available for: ' + m);
-  };
-  globalThis.hermes_test = new Proxy({}, {
-    get: function(t, p){
-      if (p === '__esModule') return true;
-      var fm = globalThis.__HT_file_mocks, cf = globalThis.__currentTestFile;
-      var m = fm && cf && fm[cf] && fm[cf]['hermes-test'];
-      var v = (m && m[p] !== undefined) ? m[p]
-        : (globalThis.__HT && globalThis.__HT[p] !== undefined) ? globalThis.__HT[p]
-        : (globalThis.__HT_storeSurface ? globalThis.__HT_storeSurface[p] : undefined);
-      return v !== undefined ? v : noop;
-    }
-  });
-})();"#,
-            "externals-prelude.js",
-        )
-        .expect("prelude");
-        match rt.eval(&bundle, "bundle.js") {
-            Ok(_) => {
-                let results = rt.eval("globalThis.__HT_results", "results").unwrap_or_default();
-                let inner: String = serde_json::from_str(&results).unwrap_or_else(|_| results.clone());
-                let v: serde_json::Value = serde_json::from_str(&inner).unwrap_or_default();
-                println!("==== phase-2 execution snapshot (file-wrapper mocks only) ====");
-                println!("passed: {} failed: {} total: {}",
-                    v["passed"], v["failed"], v["total"]);
-                // First few failures = the parity map
-                if let Some(tests) = v["tests"].as_array() {
-                    let mut shown = 0;
-                    let mut seen_files = std::collections::HashSet::new();
-                    for t in tests {
-                        let f = t["file"].as_str().unwrap_or("?");
-                        if t["status"].as_str() == Some("fail") && shown < 10 && seen_files.insert(f.to_string()) {
-                            println!("  FAIL {} > {} — {}",
-                                t["file"].as_str().unwrap_or("?"),
-                                t["name"].as_str().unwrap_or("?"),
-                                t["error"].as_str().unwrap_or("").lines().take(6).collect::<Vec<_>>().join(" | "));
-                            shown += 1;
-                        }
-                    }
-                }
-            }
-            Err(e) => {
-                let head: String = e.lines().take(8).collect::<Vec<_>>().join("\n");
-                println!("==== phase-2: bundle FAILED to execute (parity wall — the finding) ====\n{head}");
-            }
-        }
-    }
-
-    /// Phase-2b: the "adapt, don't redesign" hypothesis — same problem family
-    /// as hoist_mock_modules (registration-vs-execution order), solved by
-    /// PREVENTION: entry uses await import() so rolldown wraps test-file
-    /// modules lazily (rollup inlineDynamicImports semantics) and the entire
-    /// esbuild entry protocol (per-file context, hooks, mocks) carries over.
-    #[test]
-    #[ignore]
-    fn phase2b_lazy_entry_via_dynamic_import() {
-        let repo_root = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-            .parent().unwrap().parent().unwrap().to_path_buf();
-        let root = repo_root.join("examples/expo-app");
-        let cfg = crate::bundler::read_config(&root);
-        let alias_names: Vec<String> = cfg.aliases.iter().map(|(a, _)| a.clone()).collect();
-        let alias_pairs: Vec<(String, String)> = cfg.aliases.clone();
-        let test_files = crate::bundler::find_test_files(&root);
-        let mocks = crate::bundler::find_mock_modules_with_alias_pairs(&test_files, &alias_names, &alias_pairs);
-        let (shim_cfg, _wd) = crate::bundler::create_wrapper_shims(&root, &cfg);
-        let entry = crate::bundler::generate_entry_with_shallow(&test_files, None, &mocks, &shim_cfg, &[], Some(&root), &[]);
-        let entry = entry.replace("require('", "await import('");
-        let entry = format!("(async () => {{\n{entry}\n}})();\n");
-        let entry_path = root.join(".hermes-test-phase2b-entry.js");
-        fs::write(&entry_path, &entry).unwrap();
-
-        let pm = crate::bundler::create_plugin_mock_wrappers(&test_files, &root, &shim_cfg, &mocks);
-        let file_w: HashMap<String, String> = pm.file_wrappers.iter().map(|(k, v)| (k.clone(), v.clone())).collect();
-        let text_w: HashMap<String, String> = pm.text_wrappers.iter().map(|(k, v)| (k.clone(), v.clone())).collect();
-        let mut externals = pm.external_mocks.clone();
-        externals.extend(shim_cfg.externals.iter().cloned());
-        externals.push("hermes-test".to_string());
-        let mut aliases: Vec<(String, String)> = shim_cfg.aliases.iter().map(|(a, t)| (a.clone(), t.clone())).collect();
-        let store = root.join("node_modules/hermes-test/src/store.ts");
-        if store.exists() {
-            aliases.insert(0, ("hermes-test/store".to_string(), store.to_string_lossy().to_string()));
-        }
-
-        let bundle = match bundle_via_rolldown(&entry_path, &root, file_w, text_w, externals, aliases) {
-            Ok(b) => b,
-            Err(e) => {
-                println!("==== phase-2b bundle FAILED ====");
-                for l in e.lines().take(10) { println!("{l}"); }
-                let _ = fs::remove_file(&entry_path);
-                return;
-            }
-        };
-        let _ = fs::remove_file(&entry_path);
-        let _ = fs::remove_dir_all(&pm.dir);
-        fs::write("/tmp/ht-phase2b-bundle.js", &bundle).unwrap();
-
-        let harness = fs::read_to_string(repo_root.join("packages/hermes-test/dist/harness.bundle.js")).expect("harness");
-        let rt = Runtime::new().expect("hermes runtime");
-        rt.eval(&harness, "hermes-test/harness.js").expect("harness eval");
-        rt.eval("globalThis.hermes_test = globalThis.__HT;", "prelude.js").expect("prelude");
-        match rt.eval(&bundle, "bundle.js") {
-            Ok(_) => {
-                for _ in 0..50 {
-                    let done = rt.eval("globalThis.__HT_drain && globalThis.__HT_drain(); globalThis.__HT_results ? '1' : '0'", "drain.js").unwrap_or_default();
-                    if done.contains('1') { break; }
-                }
-                let results = rt.eval("globalThis.__HT_results", "results").unwrap_or_default();
-                let inner: String = serde_json::from_str(&results).unwrap_or_else(|_| results.clone());
-                let v: serde_json::Value = serde_json::from_str(&inner).unwrap_or_default();
-                println!("==== phase-2b (lazy entry, SAME esbuild protocol) ====");
-                println!("passed: {} failed: {} total: {}", v["passed"], v["failed"], v["total"]);
-                if let Some(tests) = v["tests"].as_array() {
-                    let mut shown = 0;
-                    let mut seen = std::collections::HashSet::new();
-                    for t in tests {
-                        let f = t["file"].as_str().unwrap_or("?");
-                        if t["status"].as_str() == Some("fail") && shown < 6 && seen.insert(f.to_string()) {
-                            println!("  FAIL {} > {} — {}", f, t["name"].as_str().unwrap_or("?"),
-                                t["error"].as_str().unwrap_or("").lines().next().unwrap_or(""));
-                            shown += 1;
-                        }
-                    }
-                }
-            }
-            Err(e) => {
-                println!("==== phase-2b: bundle failed to execute ====");
-                for l in e.lines().take(6) { println!("{l}"); }
-            }
-        }
-    }
-
 }

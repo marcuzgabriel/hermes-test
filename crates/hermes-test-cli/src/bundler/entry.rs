@@ -633,20 +633,6 @@ pub fn needs_react(test_files: &[PathBuf]) -> bool {
 
 /// Compute a relative path from `from_dir` to `to_file`.
 
-/// Generate a synthetic entry file that imports the harness and all test files.
-/// `transforms` maps original test file paths to pre-transformed temp paths.
-/// `shallow_auto_mocks` contains (module_path, jsx_names, other_names) from ht.shallow() scanning.
-/// These are injected as ht.mock() calls that create component stubs.
-pub fn generate_entry(
-    test_files: &[PathBuf],
-    _harness_path: Option<&Path>,
-    mock_modules: &[String],
-    cfg: &BundleConfig,
-    transforms: &[(PathBuf, PathBuf)],
-    project_root: Option<&Path>,
-) -> String {
-    generate_entry_with_shallow(test_files, _harness_path, mock_modules, cfg, transforms, project_root, &[])
-}
 
 pub fn generate_entry_with_shallow(
     test_files: &[PathBuf],

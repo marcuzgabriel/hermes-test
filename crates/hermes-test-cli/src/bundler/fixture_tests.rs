@@ -17,7 +17,6 @@
 use std::fs;
 use std::path::PathBuf;
 
-use super::patches::{hoist_mock_modules, inject_mock_require_shim, patch_esbuild_for_hermes};
 use crate::hermes::Runtime;
 
 fn fixtures_root(transform: &str) -> PathBuf {
@@ -89,31 +88,12 @@ fn run_fixture_dir(transform: &str, apply: impl Fn(&str) -> String) {
 
 #[test]
 fn class_extends_fixtures() {
-    run_fixture_dir("class-extends", patch_esbuild_for_hermes);
+    // ENGINE CONFORMANCE: no transform exists anymore (the class downleveler
+    // died with the V1 engine; the esbuild helper patches died with esbuild).
+    // expected.js == input.js by definition; behavior.js still executes each
+    // shape in real Hermes as the engine-regression tripwire.
+    run_fixture_dir("class-extends", |code| code.to_string());
 }
 
-// Patches 1–3 of patch_esbuild_for_hermes rewrite esbuild's runtime helpers
-// (__copyProps, __export, __toESM). The inputs reproduce the helper text
-// byte-for-byte from a real bundle (examples/expo-app cache) — the patches
-// are exact-text matches, so whitespace drift IS the failure being guarded.
-#[test]
-fn esbuild_helper_fixtures() {
-    run_fixture_dir("esbuild-helpers", patch_esbuild_for_hermes);
-}
 
-// The shim that replaces esbuild's "Dynamic require of X is not supported"
-// throw with the __HT_mocks registry Proxy — how externalized/native modules
-// become mockable (silent-green risk class: if it stops matching, tests run
-// against nothing).
-#[test]
-fn mock_require_shim_fixtures() {
-    run_fixture_dir("mock-require-shim", inject_mock_require_shim);
-}
 
-// Reordering inside bundled test-file bodies: init_*() module initializers
-// are pushed below the last ht.mock() so mocks register before modules
-// capture values at init time.
-#[test]
-fn hoist_mocks_fixtures() {
-    run_fixture_dir("hoist-mocks", hoist_mock_modules);
-}
