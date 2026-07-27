@@ -407,7 +407,26 @@ mod tests {
         // Rollup-dialect externals are GLOBALS, not require() calls: the
         // entire mock-require-shim problem class becomes this prelude.
         rt.eval(
-            "globalThis.hermes_test = globalThis.__HT;",
+            r#"(function(){
+  var noopFn = function(){};
+  var noop = new Proxy(noopFn, {
+    get: function(t,p){ if (p === Symbol.toPrimitive) return function(){ return ''; };
+      if (p === 'then' || p === '$$typeof') return undefined;
+      if (p === 'length' || p === 'size') return 0;
+      if (typeof p === 'symbol') return undefined; return noop; },
+    apply: function(){ return noop; },
+    construct: function(){ return {}; }
+  });
+  globalThis.hermes_test = new Proxy({}, {
+    get: function(t, p){
+      if (p === '__esModule') return true;
+      var fm = globalThis.__HT_file_mocks, cf = globalThis.__currentTestFile;
+      var m = fm && cf && fm[cf] && fm[cf]['hermes-test'];
+      var v = (m && m[p] !== undefined) ? m[p] : (globalThis.__HT ? globalThis.__HT[p] : undefined);
+      return v !== undefined ? v : noop;
+    }
+  });
+})();"#,
             "externals-prelude.js",
         )
         .expect("prelude");
@@ -438,6 +457,88 @@ mod tests {
             Err(e) => {
                 let head: String = e.lines().take(8).collect::<Vec<_>>().join("\n");
                 println!("==== phase-2: bundle FAILED to execute (parity wall — the finding) ====\n{head}");
+            }
+        }
+    }
+
+    /// Phase-2b: the "adapt, don't redesign" hypothesis — same problem family
+    /// as hoist_mock_modules (registration-vs-execution order), solved by
+    /// PREVENTION: entry uses await import() so rolldown wraps test-file
+    /// modules lazily (rollup inlineDynamicImports semantics) and the entire
+    /// esbuild entry protocol (per-file context, hooks, mocks) carries over.
+    #[test]
+    #[ignore]
+    fn phase2b_lazy_entry_via_dynamic_import() {
+        let repo_root = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .parent().unwrap().parent().unwrap().to_path_buf();
+        let root = repo_root.join("examples/expo-app");
+        let cfg = crate::bundler::read_config(&root);
+        let alias_names: Vec<String> = cfg.aliases.iter().map(|(a, _)| a.clone()).collect();
+        let alias_pairs: Vec<(String, String)> = cfg.aliases.clone();
+        let test_files = crate::bundler::find_test_files(&root);
+        let mocks = crate::bundler::find_mock_modules_with_alias_pairs(&test_files, &alias_names, &alias_pairs);
+        let (shim_cfg, _wd) = crate::bundler::create_wrapper_shims(&root, &cfg);
+        let entry = crate::bundler::generate_entry_with_shallow(&test_files, None, &mocks, &shim_cfg, &[], Some(&root), &[]);
+        let entry = entry.replace("require('", "await import('");
+        let entry = format!("(async () => {{\n{entry}\n}})();\n");
+        let entry_path = root.join(".hermes-test-phase2b-entry.js");
+        fs::write(&entry_path, &entry).unwrap();
+
+        let pm = crate::bundler::create_plugin_mock_wrappers(&test_files, &root, &shim_cfg, &mocks);
+        let wrappers: HashMap<String, String> = pm.file_wrappers.iter().map(|(k, v)| (k.clone(), v.clone())).collect();
+        let mut externals = pm.external_mocks.clone();
+        externals.extend(shim_cfg.externals.iter().cloned());
+        externals.push("hermes-test".to_string());
+        let mut aliases: Vec<(String, String)> = shim_cfg.aliases.iter().map(|(a, t)| (a.clone(), t.clone())).collect();
+        let store = root.join("node_modules/hermes-test/src/store.ts");
+        if store.exists() {
+            aliases.insert(0, ("hermes-test/store".to_string(), store.to_string_lossy().to_string()));
+        }
+
+        let bundle = match bundle_via_rolldown(&entry_path, &root, wrappers, externals, aliases) {
+            Ok(b) => b,
+            Err(e) => {
+                println!("==== phase-2b bundle FAILED ====");
+                for l in e.lines().take(10) { println!("{l}"); }
+                let _ = fs::remove_file(&entry_path);
+                return;
+            }
+        };
+        let _ = fs::remove_file(&entry_path);
+        let _ = fs::remove_dir_all(&pm.dir);
+        fs::write("/tmp/ht-phase2b-bundle.js", &bundle).unwrap();
+
+        let harness = fs::read_to_string(repo_root.join("packages/hermes-test/dist/harness.bundle.js")).expect("harness");
+        let rt = Runtime::new().expect("hermes runtime");
+        rt.eval(&harness, "hermes-test/harness.js").expect("harness eval");
+        rt.eval("globalThis.hermes_test = globalThis.__HT;", "prelude.js").expect("prelude");
+        match rt.eval(&bundle, "bundle.js") {
+            Ok(_) => {
+                for _ in 0..50 {
+                    let done = rt.eval("globalThis.__HT_drain && globalThis.__HT_drain(); globalThis.__HT_results ? '1' : '0'", "drain.js").unwrap_or_default();
+                    if done.contains('1') { break; }
+                }
+                let results = rt.eval("globalThis.__HT_results", "results").unwrap_or_default();
+                let inner: String = serde_json::from_str(&results).unwrap_or_else(|_| results.clone());
+                let v: serde_json::Value = serde_json::from_str(&inner).unwrap_or_default();
+                println!("==== phase-2b (lazy entry, SAME esbuild protocol) ====");
+                println!("passed: {} failed: {} total: {}", v["passed"], v["failed"], v["total"]);
+                if let Some(tests) = v["tests"].as_array() {
+                    let mut shown = 0;
+                    let mut seen = std::collections::HashSet::new();
+                    for t in tests {
+                        let f = t["file"].as_str().unwrap_or("?");
+                        if t["status"].as_str() == Some("fail") && shown < 6 && seen.insert(f.to_string()) {
+                            println!("  FAIL {} > {} — {}", f, t["name"].as_str().unwrap_or("?"),
+                                t["error"].as_str().unwrap_or("").lines().next().unwrap_or(""));
+                            shown += 1;
+                        }
+                    }
+                }
+            }
+            Err(e) => {
+                println!("==== phase-2b: bundle failed to execute ====");
+                for l in e.lines().take(6) { println!("{l}"); }
             }
         }
     }
