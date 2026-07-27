@@ -145,20 +145,6 @@ Both issues found in the review were silent-green:
    total".
 6. **Comment-aware mock scanning** (nice-to-have): strip comments before the
    ht.mock regex pass, or move scanning to OXC once (3) lands.
-7. **Rolldown migration — SPIKE PASSED (July 2026), full port not started.**
-   rolldown 1.2.0 is a real crates.io library: in-process Bundler with native
-   Rust plugin hooks (resolve_id/load/transform). Spike proved the mock-
-   delivery primitive end-to-end: Rust resolve_id redirected an import to a
-   wrapper file, IIFE output executed in V1 Hermes, real module tree-shaken.
-   Payoff if ported: delete plugin_build.cjs + Node spawn + JSON config
-   (~0.5s cold JS-API overhead, measured phase 1); workarounds move from
-   regex-over-output to supported transform/renderChunk hooks; pure-ESM code
-   gets ZERO interop helpers (scope hoisting) so patches 1–3 shrink to the
-   CJS boundary; require-shim likely becomes globals config (rollup IIFE
-   externals are globals). Cost: re-derive text transforms for the Rollup
-   output dialect, regenerate fixture inputs, re-prove the Day-19 resolution
-   tail. Estimate 1–3 weeks, gauntlet-gated. Sequence AFTER the V1 engine +
-   phase-4 deletion ship in a release and soak.
 
 ## The endgame: esbuild JS API + onResolve plugin (unify all mock delivery)
 
