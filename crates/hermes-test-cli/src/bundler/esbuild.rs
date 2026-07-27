@@ -1,7 +1,7 @@
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 
-use super::config::{BundleConfig, read_config};
+use super::config::BundleConfig;
 use super::patches::{patch_esbuild_for_hermes, inject_mock_require_shim, hoist_mock_modules};
 
 // Historical note: an SWC/AST class transform was evaluated and rejected
@@ -9,17 +9,6 @@ use super::patches::{patch_esbuild_for_hermes, inject_mock_require_shim, hoist_m
 // regex-based class downleveler served for a year. Since the V1 engine (July
 // 2026) classes are engine-native and the downleveler is deleted — the whole
 // debate is moot. See fixtures/class-extends/ for the engine-conformance guards.
-
-/// Bundle an entry file with esbuild.
-pub fn bundle_auto(
-    entry_file: &Path,
-    project_root: &Path,
-    external_modules: &[String],
-) -> Result<String, String> {
-    let path = find_esbuild(project_root)
-        .map_err(|_| "esbuild not found. Install it: bun add -d esbuild".to_string())?;
-    bundle_esbuild(entry_file, &path, external_modules)
-}
 
 /// Bundle result that optionally includes a source map.
 pub struct BundleResult {
@@ -89,56 +78,6 @@ pub fn find_esbuild(project_root: &Path) -> Result<PathBuf, ()> {
     Err(())
 }
 
-fn bundle_esbuild(
-    entry_file: &Path,
-    esbuild_path: &Path,
-    external_modules: &[String],
-) -> Result<String, String> {
-    let project_root = entry_file.parent().unwrap_or(Path::new("."));
-    let cfg = read_config(project_root);
-    bundle_esbuild_with_config(entry_file, esbuild_path, external_modules, &cfg, false)
-}
-
-/// Bundle with a custom config (e.g. shadow-wrapped aliases).
-pub fn bundle_auto_with_config(
-    entry_file: &Path,
-    project_root: &Path,
-    external_modules: &[String],
-    cfg: &BundleConfig,
-) -> Result<String, String> {
-    let path = find_esbuild(project_root)
-        .map_err(|_| "esbuild not found. Install it: bun add -d esbuild".to_string())?;
-    bundle_esbuild_with_config(entry_file, &path, external_modules, cfg, false)
-}
-
-/// Bundle with esbuild + inline source map for coverage. Returns code, parsed source map,
-/// and the pre-patch line count (used to compute line delta after patches).
-pub fn bundle_esbuild_with_sourcemap(
-    entry_file: &Path,
-    esbuild_path: &Path,
-    external_modules: &[String],
-    cfg: &BundleConfig,
-) -> Result<BundleResult, String> {
-    // Run esbuild with inline source map
-    let raw = bundle_esbuild_with_config_inner(entry_file, esbuild_path, external_modules, cfg, false, true, true)?;
-
-    // Extract inline source map from the bundle
-    let (code, sm) = extract_inline_sourcemap(&raw);
-    let pre_patch_line_count = code.lines().count() as u32;
-
-    // Apply patches (these shift line numbers, we track the delta)
-    let mut code = code;
-    code = super::patches::patch_esbuild_for_hermes(&code);
-    let has_externals = !external_modules.is_empty() || !cfg.externals.is_empty()
-        || code.contains("Dynamic require of");
-    if has_externals {
-        code = super::patches::inject_mock_require_shim(&code);
-    }
-    code = super::patches::hoist_mock_modules(&code);
-
-    Ok(BundleResult { code, source_map: sm, pre_patch_line_count })
-}
-
 /// Extract inline source map from bundle, returning (code_without_map, parsed_map).
 fn extract_inline_sourcemap(code: &str) -> (String, Option<sourcemap::SourceMap>) {
     let marker = "//# sourceMappingURL=data:application/json;base64,";
@@ -171,18 +110,6 @@ fn base64_decode(input: &str) -> Result<Vec<u8>, ()> {
         if bits >= 8 { bits -= 8; out.push((buf >> bits) as u8); buf &= (1 << bits) - 1; }
     }
     Ok(out)
-}
-
-/// Bundle with esbuild using provided config (avoids re-reading from disk).
-/// When `packages_external` is true, adds --packages=external to externalize all node_modules.
-pub fn bundle_esbuild_with_config(
-    entry_file: &Path,
-    esbuild_path: &Path,
-    external_modules: &[String],
-    cfg: &BundleConfig,
-    packages_external: bool,
-) -> Result<String, String> {
-    bundle_esbuild_with_config_inner(entry_file, esbuild_path, external_modules, cfg, packages_external, false, false)
 }
 
 /// Assemble the esbuild CLI args (everything after the entry path) and the
@@ -398,7 +325,7 @@ fn regex_escape(s: &str) -> String {
     out
 }
 
-/// Bundle via esbuild's JS API with the ht-mocks onResolve plugin (HT_RESOLVER=plugin).
+/// Bundle via esbuild's JS API with the ht-mocks onResolve plugin (the only resolver).
 /// `file_wrappers` maps resolved absolute target paths (relative + alias mocks) and
 /// `text_wrappers` import-specifier texts (alias mocks, package mocks, barrel
 /// ancestors) to their generated wrapper files.
@@ -523,7 +450,7 @@ fn bundle_via_plugin_inner(
         .map(|(a, t)| serde_json::json!([a, t]))
         .collect();
 
-    let temp = super::shadow::hermes_temp_root(project_root);
+    let temp = super::shims::hermes_temp_root(project_root);
     // The outfile must live in the PROJECT ROOT, not the temp dir: esbuild
     // computes sourcemap `sources` relative to the outfile's directory, and
     // coverage excludes any source starting with "..". A temp-dir outfile makes
@@ -690,23 +617,6 @@ fn bundle_esbuild_with_config_inner(
     code = hoisted;
 
     Ok(code)
-}
-
-/// Compile JS to Hermes bytecode in-process via linked Hermes compiler.
-/// No subprocess, no temp files. Returns None if bundle has no classes.
-pub fn compile_to_bytecode(code: &str, _context_path: &Path) -> Option<Vec<u8>> {
-    // Only needed for bundles with class syntax
-    if !code.contains("= class ") && !code.contains("= class{") {
-        return None;
-    }
-
-    match crate::hermes::compile_bytecode(code, "bundle.js") {
-        Ok(bytecode) => Some(bytecode),
-        Err(e) => {
-            eprintln!("WARNING: hermesc bytecode compilation failed: {e}");
-            None
-        },
-    }
 }
 
 /// Bundle with esbuild and return the dependency graph (metafile).

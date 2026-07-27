@@ -1,6 +1,6 @@
 mod config;
 mod patches;
-mod shadow;
+mod shims;
 mod entry;
 mod esbuild;
 
@@ -8,6 +8,6 @@ mod esbuild;
 mod fixture_tests;
 
 pub use config::*;
-pub use shadow::*;
+pub use shims::*;
 pub use entry::*;
 pub use esbuild::*;

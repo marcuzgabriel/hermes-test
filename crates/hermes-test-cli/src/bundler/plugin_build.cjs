@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 // hermes-test plugin bundler — runs esbuild via its JS API so an onResolve hook
 // can serve mock wrapper files for relative-path mocks. Invoked by the Rust CLI
-// (HT_RESOLVER=plugin) with a JSON config path as the only argument.
+// with a JSON config path as the only argument.
 // The config's `args` array contains the exact CLI flag strings the legacy path
 // uses; they are parsed into JS API options here so the two modes cannot drift.
 'use strict';
