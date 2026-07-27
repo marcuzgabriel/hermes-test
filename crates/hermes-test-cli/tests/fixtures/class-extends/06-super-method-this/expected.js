@@ -6,19 +6,12 @@ var Base = class {
     return "base:" + this.name;
   }
 };
-var Sub = (function() {
-  function Sub(name) {
-    var _this = Reflect.construct(Base, [name], new.target || Sub);
-    _this.initial = Base.prototype.describe.call(_this);
-  
-    return _this;
+var Sub = class extends Base {
+  constructor(name) {
+    super(name);
+    this.initial = super.describe();
   }
-  Sub.prototype = Object.create(Base.prototype, {
-    constructor: { value: Sub, writable: true, configurable: true }
-  });
-  Object.setPrototypeOf(Sub, Base);
-  Sub.prototype.describe = function() {
-    return "sub(" + Base.prototype.describe.call(this) + ")";
-  };
-  return Sub;
-})();
+  describe() {
+    return "sub(" + super.describe() + ")";
+  }
+};

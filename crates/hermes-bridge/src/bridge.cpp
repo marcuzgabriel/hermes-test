@@ -180,8 +180,7 @@ HermesRuntime* hermes_create_runtime(void) {
         .withInitHeapSize(32 * 1024 * 1024)   // 32MB initial
         .build();
     auto config = ::hermes::vm::RuntimeConfig::Builder()
-        .withES6Class(true)
-        .withEnableBlockScoping(true)
+        .withES6BlockScoping(true)
         .withMicrotaskQueue(true)
         .withMaxNumRegisters(1024 * 1024)
         .withGCConfig(gcConfig)

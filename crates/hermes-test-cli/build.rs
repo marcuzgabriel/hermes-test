@@ -17,8 +17,10 @@ fn main() {
         hermes_dir.join("include"),
         hermes_dir.join("lib"),
         hermes_dir.join("external/llvh/include"),
+        hermes_dir.join("external/llvh/gen/include"), // V1: pre-generated .inc files
         hermes_build.join("external/llvh/include"),
         hermes_build.join("include"),
+        hermes_build.join("lib/config"), // V1: generated libhermesvm-config.h
     ];
 
     // Compile the bridge C++ file and jsi.cpp (statically, to avoid dylib dep)
@@ -69,19 +71,24 @@ fn main() {
         .compile("hermes_compile");
 
     // Link Hermes static libraries (order matters for static linking)
+    // V1/static_h build-tree layout: FlowParser removed, InternalBytecode moved
+    // to InternalJavaScript, new Sema stage, VM core is lib/libhermesvm_a.a,
+    // JSI-facing API is libhermesapi.a, boost context backs VM stacks.
     let lib_dirs = [
         hermes_build.join("API/hermes"),
         hermes_build.join("lib/VM"),
+        hermes_build.join("lib/VM/Instrumentation"),
         hermes_build.join("lib"),
         hermes_build.join("lib/BCGen/HBC"),
         hermes_build.join("lib/BCGen"),
+        hermes_build.join("lib/BCGen/SH"),
         hermes_build.join("lib/CompilerDriver"),
         hermes_build.join("lib/Inst"),
         hermes_build.join("lib/FrontEndDefs"),
         hermes_build.join("lib/Parser"),
         hermes_build.join("lib/AST"),
+        hermes_build.join("lib/Sema"),
         hermes_build.join("lib/SourceMap"),
-        hermes_build.join("lib/FlowParser"),
         hermes_build.join("lib/AST2JS"),
         hermes_build.join("lib/Support"),
         hermes_build.join("lib/ADT"),
@@ -89,11 +96,12 @@ fn main() {
         hermes_build.join("lib/Platform/Intl"),
         hermes_build.join("lib/Platform/Unicode"),
         hermes_build.join("lib/Regex"),
-        hermes_build.join("lib/InternalBytecode"),
+        hermes_build.join("lib/InternalJavaScript"),
         hermes_build.join("public/hermes/Public"),
         hermes_build.join("external/dtoa"),
         hermes_build.join("external/llvh/lib/Support"),
         hermes_build.join("external/llvh/lib/Demangle"),
+        hermes_build.join("external/boost/boost_1_86_0/libs/context"),
     ];
 
     for dir in &lib_dirs {
@@ -105,32 +113,36 @@ fn main() {
     // On Linux (GNU ld), circular deps need libs listed twice.
     // macOS ld64 handles circular deps automatically.
     let base_libs = [
-        "hermesvm",
+        "hermesapi",
         "hermesVMRuntime",
-        "hermesFrontend",
+        "hermesvm_a",
         "hermesCompilerDriver",
-        "hermesHBCBackend",
+        "hermesFrontend",
+        "hermesSema",
         "hermesOptimizer",
+        "hermesHBCBackend",
         "hermesBackend",
         "hermesInst",
         "hermesFrontEndDefs",
         "hermesParser",
         "hermesAST",
-        "hermesFlowParser",
         "hermesAST2JS",
         "hermesSourceMap",
         "hermesInternalBytecode",
+        "hermesInternalUnit",
         "hermesRegex",
         "hermesPlatformIntl",
         "hermesBCP47Parser",
         "hermesPlatformUnicode",
         "hermesPlatform",
+        "hermesInstrumentation",
         "hermesSupport",
         "hermesADT",
         "hermesPublic",
         "dtoa",
         "LLVHSupport",
         "LLVHDemangle",
+        "boost_context",
     ];
 
     // GNU ld on Linux is strict about archive ordering and can miss symbols

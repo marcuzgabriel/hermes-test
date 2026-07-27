@@ -13,12 +13,9 @@
   };
   var __copyProps = (to, from, except, desc) => {
     if (from && typeof from === "object" || typeof from === "function") {
-      var keys = __getOwnPropNames(from);
-      for (var i = 0; i < keys.length; i++) {
-        var key = keys[i];
+      for (let key of __getOwnPropNames(from))
         if (!__hasOwnProp.call(to, key) && key !== except)
-          __defProp(to, key, { get: ((k) => from[k]).bind(null, key), enumerable: !(desc = __getOwnPropDesc(from, key)) || desc.enumerable, configurable: true });
-      }
+          __defProp(to, key, { get: () => from[key], enumerable: !(desc = __getOwnPropDesc(from, key)) || desc.enumerable, configurable: true });
     }
     return to;
   };
@@ -45,12 +42,9 @@
       };
       var __copyProps2 = (to, from, except, desc) => {
         if (from && typeof from === "object" || typeof from === "function") {
-          var keys = __getOwnPropNames2(from);
-          for (var i = 0; i < keys.length; i++) {
-            var key = keys[i];
+          for (let key of __getOwnPropNames2(from))
             if (!__hasOwnProp2.call(to, key) && key !== except)
-              __defProp2(to, key, { get: ((k) => from[k]).bind(null, key), enumerable: !(desc = __getOwnPropDesc2(from, key)) || desc.enumerable, configurable: true });
-          }
+              __defProp2(to, key, { get: () => from[key], enumerable: !(desc = __getOwnPropDesc2(from, key)) || desc.enumerable, configurable: true });
         }
         return to;
       };

@@ -301,415 +301,7 @@ pub fn hoist_mocks_in_body(body: &str) -> String {
     result
 }
 
-/// Downlevel ALL `class Foo extends Expr { ... }` patterns to function-based constructors.
-///
-/// Hermes has two bugs with class-extends:
-/// 1. TDZ bug: `class X extends Variable` crashes when Variable is a local/parameter
-///    (e.g. zod v4: `class Definition extends Parent {}` where Parent = params?.Parent ?? Object)
-/// 2. Native super bug: `super()` in `class X extends Array` discards the return value
-///
-/// Fix: replace every class-extends with Reflect.construct-based function.
-/// Same pattern as Babel's `_wrapNativeSuper` and SWC's `_wrap_native_super`.
-///
-/// Handles three forms:
-/// - Assignment with named class: `Name = class InternalName extends Expr {`
-/// - Assignment with anonymous class: `var Name = class extends Expr {`
-/// - Class declaration: `class Name extends Expr {` (inside function scope)
-fn fix_all_class_extends(code: &str) -> String {
-    // Collect all matches from three patterns, storing (start, end, var_name, internal_name, parent_expr)
-    struct ClassMatch {
-        start: usize,
-        end: usize,       // end of the full class (including trailing ;)
-        var_name: String,
-        internal_name: String,
-        parent_expr: String,
-        body: String,      // everything between the opening { and closing }
-    }
 
-    let mut matches: Vec<ClassMatch> = Vec::new();
-
-    // JS identifiers can contain $ — use [\w$] instead of \w
-    // Pattern A: `Name = class InternalName extends Expr {`
-    let re_a = regex::Regex::new(
-        r"([\w$]+)\s*=\s*class\s+([\w$]+)\s+extends\s+([\w$][\w$.]*)\s*\{"
-    ).unwrap();
-
-    // Pattern B: `Name = class extends Expr {` (anonymous)
-    let re_b = regex::Regex::new(
-        r"([\w$]+)\s*=\s*class\s+extends\s+([\w$][\w$.]*)\s*\{"
-    ).unwrap();
-
-    // Pattern C: class declaration `class Name extends Expr {` (not preceded by `= `)
-    let re_c = regex::Regex::new(
-        r"(?:^|[\n;{}\s])class\s+([\w$]+)\s+extends\s+([\w$][\w$.]*)\s*\{"
-    ).unwrap();
-
-    // Rewrite super.method(...) calls so `this` stays bound to the instance.
-    // The naive `super.` → `Parent.prototype.` rewrite silently rebinds `this`
-    // to the prototype inside the parent method (and in constructors the
-    // untransformed `super.` doesn't even compile outside a class).
-    fn rewrite_super_method_calls(body: &str, parent: &str) -> String {
-        let no_args = regex::Regex::new(r"super\.([\w$]+)\(\)").unwrap();
-        let body = no_args
-            .replace_all(body, |c: &regex::Captures| {
-                format!("{parent}.prototype.{}.call(this)", &c[1])
-            })
-            .to_string();
-        let with_args = regex::Regex::new(r"super\.([\w$]+)\(").unwrap();
-        let body = with_args
-            .replace_all(&body, |c: &regex::Captures| {
-                format!("{parent}.prototype.{}.call(this, ", &c[1])
-            })
-            .to_string();
-        // Anything left (property reads like `super.x`) keeps the old rewrite.
-        body.replace("super.", &format!("{parent}.prototype."))
-    }
-
-    // Helper: find matching close brace from position after opening {
-    fn find_class_end(code: &str, body_start: usize) -> usize {
-        let mut depth = 1;
-        for (i, ch) in code[body_start..].char_indices() {
-            match ch {
-                '{' => depth += 1,
-                '}' => {
-                    depth -= 1;
-                    if depth == 0 {
-                        return body_start + i + 1;
-                    }
-                }
-                _ => {}
-            }
-        }
-        code.len()
-    }
-
-    // Collect pattern A matches
-    for cap in re_a.captures_iter(code) {
-        let full = cap.get(0).unwrap();
-        let body_start = full.end();
-        let mut class_end = find_class_end(code, body_start);
-        if class_end < code.len() && code.as_bytes()[class_end] == b';' {
-            class_end += 1;
-        }
-        let body = code[body_start..class_end].to_string();
-        matches.push(ClassMatch {
-            start: full.start(),
-            end: class_end,
-            var_name: cap[1].to_string(),
-            internal_name: cap[2].to_string(),
-            parent_expr: cap[3].to_string(),
-            body,
-
-        });
-    }
-
-    // Collect pattern B matches (skip if overlaps with pattern A)
-    for cap in re_b.captures_iter(code) {
-        let full = cap.get(0).unwrap();
-        if matches.iter().any(|m| m.start <= full.start() && full.start() < m.end) {
-            continue; // Already matched by pattern A
-        }
-        let body_start = full.end();
-        let mut class_end = find_class_end(code, body_start);
-        if class_end < code.len() && code.as_bytes()[class_end] == b';' {
-            class_end += 1;
-        }
-        let var_name = cap[1].to_string();
-        let body = code[body_start..class_end].to_string();
-        matches.push(ClassMatch {
-            start: full.start(),
-            end: class_end,
-            var_name: var_name.clone(),
-            internal_name: var_name,
-            parent_expr: cap[2].to_string(),
-            body,
-
-        });
-    }
-
-    // Collect pattern C matches (class declarations, skip overlaps)
-    for cap in re_c.captures_iter(code) {
-        let full = cap.get(0).unwrap();
-        // Adjust start to skip the leading whitespace/newline character
-        let actual_start = code[full.start()..full.end()]
-            .find("class")
-            .map(|i| full.start() + i)
-            .unwrap_or(full.start());
-        if matches.iter().any(|m| m.start <= actual_start && actual_start < m.end) {
-            continue;
-        }
-        // Also skip if preceded by `= ` (would be pattern A/B)
-        if actual_start >= 2 && &code[actual_start - 2..actual_start] == "= " {
-            continue;
-        }
-        let body_start = full.end();
-        let mut class_end = find_class_end(code, body_start);
-        if class_end < code.len() && code.as_bytes()[class_end] == b';' {
-            class_end += 1;
-        }
-        let var_name = cap[1].to_string();
-        let body = code[body_start..class_end].to_string();
-        matches.push(ClassMatch {
-            start: actual_start,
-            end: class_end,
-            var_name: var_name.clone(),
-            internal_name: var_name,
-            parent_expr: cap[2].to_string(),
-            body,
-
-        });
-    }
-
-    if matches.is_empty() {
-        return code.to_string();
-    }
-
-    // Sort by start position descending so we can replace from end to start
-    matches.sort_by(|a, b| b.start.cmp(&a.start));
-
-    let mut result = code.to_string();
-
-    for m in &matches {
-        let var_name = &m.var_name;
-        let parent = &m.parent_expr;
-        let class_body = &m.body;
-
-        // Parse class body for constructor and methods
-        let mut methods = Vec::new();
-        let mut constructor_body: Option<(String, String)> = None; // (params, body)
-        let mut pos = 0;
-
-        while pos < class_body.len() {
-            let remaining = &class_body[pos..];
-
-            // Skip whitespace and closing braces
-            if remaining.starts_with('}') || remaining.starts_with('\n') || remaining.starts_with(' ') || remaining.starts_with(';') {
-                pos += 1;
-                continue;
-            }
-
-            // Constructor
-            if remaining.starts_with("constructor") {
-                let after_kw = &remaining[11..];
-                if let Some(paren_start) = after_kw.find('(') {
-                    let params_start = 11 + paren_start + 1;
-                    // Find matching close paren
-                    let mut pd = 1;
-                    let mut params_end = pos + params_start;
-                    for (i, ch) in class_body[pos + params_start..].char_indices() {
-                        match ch {
-                            '(' => pd += 1,
-                            ')' => { pd -= 1; if pd == 0 { params_end = pos + params_start + i; break; } }
-                            _ => {}
-                        }
-                    }
-                    let params = class_body[pos + params_start..params_end].to_string();
-
-                    // Find constructor body
-                    if let Some(brace) = class_body[params_end..].find('{') {
-                        let body_start = params_end + brace + 1;
-                        let mut d = 1;
-                        let mut body_end = body_start;
-                        for (i, ch) in class_body[body_start..].char_indices() {
-                            match ch {
-                                '{' => d += 1,
-                                '}' => { d -= 1; if d == 0 { body_end = body_start + i; break; } }
-                                _ => {}
-                            }
-                        }
-                        let body = class_body[body_start..body_end].to_string();
-                        constructor_body = Some((params, body));
-                        pos = body_end + 1;
-                    } else {
-                        pos += 1;
-                    }
-                } else {
-                    pos += 1;
-                }
-                continue;
-            }
-
-            // Static or instance methods
-            let is_static = remaining.starts_with("static ");
-            let method_remaining = if is_static { &remaining[7..] } else { remaining };
-
-            // Skip Symbol.species getter — we add our own for Array subclasses
-            if is_static && method_remaining.starts_with("get [Symbol.species]") {
-                if let Some(brace) = remaining.find('{') {
-                    let mut d = 1;
-                    let start = pos + brace + 1;
-                    for (i, ch) in class_body[start..].char_indices() {
-                        match ch {
-                            '{' => d += 1,
-                            '}' => { d -= 1; if d == 0 { pos = start + i + 1; break; } }
-                            _ => {}
-                        }
-                    }
-                } else {
-                    pos += 1;
-                }
-                continue;
-            }
-
-            // Match: `methodName(` — use paren-matching for params (handles nested parens/braces)
-            let method_start_re = regex::Regex::new(r"^([\w$]+)\s*\(").unwrap();
-            if let Some(cap) = method_start_re.captures(method_remaining) {
-                let name = cap.get(1).unwrap().as_str();
-                // Skip JS keywords — these are statements, not method definitions
-                if matches!(name, "if" | "for" | "while" | "switch" | "catch" | "with" | "do"
-                    | "return" | "throw" | "try" | "new" | "delete" | "typeof" | "void"
-                    | "function" | "var" | "let" | "const" | "class") {
-                    pos += 1;
-                    continue;
-                }
-                let paren_start = pos + (if is_static { 7 } else { 0 }) + cap.get(0).unwrap().end();
-                // Find matching close paren with balanced matching
-                let mut pd = 1;
-                let mut paren_end = paren_start;
-                for (i, ch) in class_body[paren_start..].char_indices() {
-                    match ch {
-                        '(' => pd += 1,
-                        ')' => { pd -= 1; if pd == 0 { paren_end = paren_start + i; break; } }
-                        _ => {}
-                    }
-                }
-                let params = &class_body[paren_start..paren_end];
-                // After `)`, expect whitespace then `{`
-                let after_paren = &class_body[paren_end + 1..];
-                let trimmed = after_paren.trim_start();
-                if !trimmed.starts_with('{') {
-                    pos += 1;
-                    continue;
-                }
-                let brace_offset = paren_end + 1 + (after_paren.len() - trimmed.len()) + 1;
-                let abs_body_start = brace_offset;
-
-                let mut d = 1;
-                let mut body_end = abs_body_start;
-                for (i, ch) in class_body[abs_body_start..].char_indices() {
-                    match ch {
-                        '{' => d += 1,
-                        '}' => { d -= 1; if d == 0 { body_end = abs_body_start + i; break; } }
-                        _ => {}
-                    }
-                }
-
-                let body = &class_body[abs_body_start..body_end];
-                let body = rewrite_super_method_calls(body, parent);
-                // Replace ALL references to internal class name with var_name
-                // e.g. _I18n.createInstance → I18n.createInstance, new _Tuple → new Tuple
-                let body = if m.internal_name != *var_name {
-                    body.replace(&m.internal_name, var_name)
-                } else {
-                    body
-                };
-
-                let target = if is_static { var_name.to_string() } else { format!("{var_name}.prototype") };
-                methods.push(format!("{target}.{name} = function({params}) {{{body}}};"));
-
-                pos = body_end + 1;
-                continue;
-            }
-
-            pos += 1;
-        }
-
-        let methods_str = methods.join("\n");
-
-        // Build constructor function
-        let constructor_fn = if let Some((params, body)) = &constructor_body {
-            // Replace internal class name references with var_name
-            // e.g. _Tuple.prototype → Tuple.prototype, new _Tuple → new Tuple
-            let body = if m.internal_name != *var_name {
-                body.replace(&m.internal_name, var_name)
-            } else {
-                body.clone()
-            };
-            // super.method() calls in constructors: previously left untouched,
-            // which doesn't even compile once the class becomes a function.
-            // The later `this` → `_this` pass turns .call(this) into .call(_this).
-            let body = rewrite_super_method_calls(&body, parent);
-            // Transform super(...args) → Reflect.construct(Parent, [args], ClassName)
-            // and this → _this for property assignments after super()
-            // Use paren-matching to handle nested parens in super() args
-            let transformed = if let Some(super_pos) = body.find("super(") {
-                let args_start = super_pos + 6; // after "super("
-                // Find matching close paren
-                let mut depth = 1;
-                let mut args_end = args_start;
-                for (i, ch) in body[args_start..].char_indices() {
-                    match ch {
-                        '(' => depth += 1,
-                        ')' => { depth -= 1; if depth == 0 { args_end = args_start + i; break; } }
-                        _ => {}
-                    }
-                }
-                let args = body[args_start..args_end].trim();
-                let super_call_end = args_end + 1; // include closing paren
-                let reflect_call = if args.is_empty() {
-                    format!("var _this = Reflect.construct({parent}, [], new.target || {var_name})")
-                } else {
-                    format!("var _this = Reflect.construct({parent}, [{args}], new.target || {var_name})")
-                };
-                format!("{}{}{}", &body[..super_pos], reflect_call, &body[super_call_end..])
-            } else {
-                // No super call — just wrap body
-                body.clone()
-            };
-            let has_super = body.contains("super(");
-            if has_super {
-                // Replace `this` as whole word with `_this` (handles this.x, this, etc.)
-                let this_re = regex::Regex::new(r"\bthis\b").unwrap();
-                let transformed = this_re.replace_all(&transformed, "_this").to_string();
-                format!("function {var_name}({params}) {{{transformed}\n    return _this;\n  }}")
-            } else {
-                // No super call — just use Reflect.construct
-                format!("function {var_name}({params}) {{\n    return Reflect.construct({parent}, [], {var_name});\n  }}")
-            }
-        } else {
-            // No constructor — default: forward all args to parent via Reflect.construct
-            format!("function {var_name}() {{\n    return Reflect.construct({parent}, Array.prototype.slice.call(arguments), new.target || {var_name});\n  }}")
-        };
-
-        // For Array subclasses, add Symbol.species
-        let species = if parent == "Array" {
-            format!("\n  Object.defineProperty({var_name}, Symbol.species, {{ get: function() {{ return {var_name}; }} }});")
-        } else {
-            String::new()
-        };
-
-        // For class declarations (Pattern C), need `var` since there's no existing assignment
-        let is_class_decl = m.start < code.len()
-            && code[m.start..].starts_with("class ");
-        let decl_prefix = if is_class_decl { "var " } else { "" };
-
-        let replacement = format!(
-            r#"{decl_prefix}{var_name} = (function() {{
-  {constructor_fn}
-  {var_name}.prototype = Object.create({parent}.prototype, {{
-    constructor: {{ value: {var_name}, writable: true, configurable: true }}
-  }});
-  Object.setPrototypeOf({var_name}, {parent});{species}
-  {methods_str}
-  return {var_name};
-}})();"#
-        );
-
-        result = format!("{}{}{}", &result[..m.start], replacement, &result[m.end..]);
-    }
-
-    result
-}
-
-/// Patch esbuild's runtime helpers for Hermes compatibility + mockability.
-///
-/// Two issues:
-/// 1. Hermes bug: `for (let key of arr)` with arrow closures captures by reference,
-///    not by value. All getters end up returning the last key's value.
-///    Fix: rewrite __copyProps to use var + bind.
-///
-/// 2. esbuild creates non-configurable ESM namespace getters, making useMock impossible.
-///    Fix: add configurable:true to __copyProps and __export.
 /// Find the index of the `)` matching the `(` at `open`.
 /// Skips string literals and comments (same discipline as find_matching_brace).
 fn find_paren_close(code: &str, open: usize) -> usize {
@@ -763,28 +355,30 @@ fn find_paren_close(code: &str, open: usize) -> usize {
     j
 }
 
+/// Rewrite esbuild's runtime helpers for mockability.
+///
+/// Since the V1 engine (static_h line, RN 0.84+), these are NOT engine-bug
+/// workarounds anymore: native classes, for-let-of closures, TDZ, and native
+/// super all work (probed July 2026; the class downleveler — old patch 4 —
+/// was deleted then). What remains is the mocking feature set: esbuild emits
+/// non-configurable export getters and a Proxy-destroying __toESM copy, both
+/// of which would make mock() impossible regardless of engine.
+///
+/// Real bundles contain MULTIPLE copies of the helpers: dependencies shipped
+/// as pre-bundled CJS (react-redux et al.) inline their own set, renamed with
+/// a numeric suffix (__copyProps2, ...) and indented deeper. Every patch must
+/// match all occurrences (fixture 04-duplicated-nested-helpers).
 pub fn patch_esbuild_for_hermes(code: &str) -> String {
-    let _original_len = code.len();
-    let code_kb = code.len() / 1024;
-
-    // Real bundles contain MULTIPLE copies of the esbuild helpers: dependencies
-    // shipped as pre-bundled CJS (react-redux et al.) inline their own set,
-    // renamed with a numeric suffix (__copyProps2, __toESM2, ...) and indented
-    // deeper. Patches 1-3 must therefore match every occurrence, suffixed or
-    // not, at any indentation — a first-occurrence-only patch leaves nested
-    // helpers unpatched (found via fixture 04-duplicated-nested-helpers).
-
-    // Patch 1: Fix Hermes for-let-of closure bug in __copyProps + make copied
-    // props configurable for mocking.
+    // Patch 1: add configurable:true to __copyProps getters so mock() can
+    // redefine re-exported bindings. The loop itself is untouched — the
+    // engine's for-let-of semantics are correct now.
     let copyprops_re = regex::Regex::new(
-        r"for \(let key of (__getOwnPropNames\d*)\(from\)\)\n(\s+)if \(!(__hasOwnProp\d*)\.call\(to, key\) && key !== except\)\n\s+(__defProp\d*)\(to, key, \{ get: \(\) => from\[key\], enumerable: !\(desc = (__getOwnPropDesc\d*)\(from, key\)\) \|\| desc\.enumerable \}\);"
+        r"(__defProp\d*)\(to, key, \{ get: \(\) => from\[key\], enumerable: !\(desc = (__getOwnPropDesc\d*)\(from, key\)\) \|\| desc\.enumerable \}\);"
     ).unwrap();
     let code = copyprops_re.replace_all(code, |c: &regex::Captures| {
-        let (gopn, ind_if, hop, dp, gopd) = (&c[1], &c[2], &c[3], &c[4], &c[5]);
-        // The `for` line and closing brace sit one level shallower than the `if`.
-        let ind_for = &ind_if[..ind_if.len().saturating_sub(2)];
+        let (dp, gopd) = (&c[1], &c[2]);
         format!(
-            "var keys = {gopn}(from);\n{ind_for}for (var i = 0; i < keys.length; i++) {{\n{ind_if}var key = keys[i];\n{ind_if}if (!{hop}.call(to, key) && key !== except)\n{ind_if}  {dp}(to, key, {{ get: ((k) => from[k]).bind(null, key), enumerable: !(desc = {gopd}(from, key)) || desc.enumerable, configurable: true }});\n{ind_for}}}"
+            "{dp}(to, key, {{ get: () => from[key], enumerable: !(desc = {gopd}(from, key)) || desc.enumerable, configurable: true }});"
         )
     }).to_string();
 
@@ -816,20 +410,10 @@ pub fn patch_esbuild_for_hermes(code: &str) -> String {
         code
     };
 
-    // Patch 4: Downlevel ALL `class extends Expr` patterns to function-based constructors.
-    // Hermes bugs: (1) TDZ crash with `class X extends Variable` when Variable is local,
-    // (2) super() in Array subclasses discards return value. Fix both by converting all
-    // class-extends to Reflect.construct-based functions.
-    let code = fix_all_class_extends(&code);
+    // (Old patch 4 — downleveling every `class extends` to Reflect.construct
+    // functions, ~400 lines of regex transpiler — was DELETED July 2026: the
+    // V1 engine handles classes natively. See fixtures/class-extends/, which
+    // now guard the ENGINE's class semantics instead of a transform.)
 
-    let code_str = code;
-
-    // Only warn if an unpatched for-let-of pattern is still present (any
-    // suffixed copy counts — nested helpers were missed silently before).
-    let leftover_re = regex::Regex::new(r"for \(let key of __getOwnPropNames\d*\(from\)\)").unwrap();
-    if leftover_re.is_match(&code_str) {
-        eprintln!("WARNING: esbuild for-let-of patch did not match ({code_kb}KB bundle) — Hermes closure bug may cause failures");
-    }
-
-    code_str
+    code
 }

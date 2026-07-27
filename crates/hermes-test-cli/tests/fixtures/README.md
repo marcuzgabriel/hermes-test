@@ -23,20 +23,28 @@ Run: `cargo test -p hermes-test-cli fixture` (~0.2s).
 - **Bumping esbuild:** regenerate the `input.js` files from a real new-version
   bundle (see below); the `expected.js` diffs show exactly what changed.
 
-## class-extends/ — Patch 4: `fix_all_class_extends`
+## class-extends/ — ENGINE CONFORMANCE (patch 4 deleted July 2026)
 
-Hermes bugs: TDZ crash on `class X extends LocalVariable`, and `super()` in
-native subclasses discarding the return value. The transform downlevels every
-class-extends to `Reflect.construct`-based functions.
+These fixtures used to guard a ~400-line regex transpiler that downleveled
+every `class extends` (old patch 4) around legacy-engine bugs: TDZ crash on
+`class X extends LocalVariable`, native `super()` discarding its return.
+The V1 engine (static_h line, `hermes-v250829098.0.14`) fixed all of it —
+probed, then proven by this corpus — so the transform was DELETED and every
+`expected.js` here is a byte-identical pass-through of its `input.js`.
 
-| Fixture | Guards |
+The fixtures remain as the tripwire for engine bumps: `behavior.js` still
+executes each shape in real Hermes. If a future engine regresses class
+semantics, these fail loudly and git history holds the old transform.
+
+| Fixture | Guards (engine-natively, post-deletion) |
 |---|---|
 | `01-no-constructor` | Synthesized default constructor forwards all args to the parent; prototype chain and `constructor` identity intact. |
 | `02-constructor-and-internal-name` | `super(args)` reaches the parent; `this.x` after `super()` lands on the instance; esbuild's `class Name = class _Name` internal-name references rewritten in method/static bodies. |
 | `03-super-chain-new-target` | **The Day 23 bug shape.** 4-level chain with no-constructor classes in the MIDDLE and at the leaf — both downleveling branches must forward `new.target`, or instances silently get the wrong prototype. (A no-ctor class at the *top* of a chain cannot catch this; gap found by mutation-testing the corpus.) |
 | `04-array-subclass` | Hermes native-super bug: subclassing Array works (push/length/indexing). Also documents an engine fact: Hermes ignores `Symbol.species` in Array methods — `map()` returns plain `Array`, matching on-device behavior. |
 | `05-class-declaration-static` | Bare `class Name extends Expr` declarations (pattern C) and `static` methods attached to the class, not the prototype. |
-| `06-super-method-this` | `super.method()` keeps `this` bound to the instance. Guarded two real bugs (found by this fixture, July 2026): in methods the naive `Parent.prototype.method()` rewrite silently rebound `this` to the prototype; in constructors `super.` wasn't rewritten at all — a Hermes compile error. |
+| `06-super-method-this` | `super.method()` keeps `this` bound to the instance (natively; historically guarded two transform bugs — see git history). |
+| `07-native-builtin-subclass` | Error 2-level chain keeps message + per-level props; Map subclass works. On the legacy engine ALL of this was broken and transform-papered; on V1 the engine earns it. Primary engine-bump tripwire. |
 
 ## esbuild-helpers/ — Patches 1–3 on esbuild's runtime helpers
 

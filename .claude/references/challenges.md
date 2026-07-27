@@ -9,10 +9,23 @@
 ### Challenge: esbuild output incompatible with Hermes
 - Hermes previously had bugs with for-let-of closures, class-extends, etc.
 - **Update**: The for-let-of and other minor esbuild patches were removed — modern Hermes
-  (RN 0.85+) handles those correctly. `fix_all_class_extends()` is NOT removed and is still
-  unconditionally applied (`patches.rs` Patch 4) — Hermes's `class X extends Y` bugs (TDZ
-  crash on local/parameter parents, native-`super()` discarding return value on Array
-  subclasses) are still present. See Day 23 for a real bug found in this patch itself.
+  (RN 0.85+) handles those correctly. `fix_all_class_extends()` was long retained
+  (`patches.rs` Patch 4) for Hermes's `class X extends Y` bugs (TDZ crash on
+  local/parameter parents, native-`super()` discarding return value on Array
+  subclasses). See Day 23 for a real bug found in this patch itself.
+- **Update (July 2026, feat/hermes-v1-engine / PR #4)**: `fix_all_class_extends()` is
+  DELETED. The vendored engine moved to the Hermes V1/static_h line
+  (`hermes-v250829098.0.14`, what RN 0.84+ ships), which was probe-verified to handle
+  ALL of it natively: TDZ-extends-local, new.target chains, super.method() binding,
+  and native-builtin subclassing (Error/Map/Set/Array). The class-extends fixtures in
+  `crates/hermes-test-cli/tests/fixtures/` became pass-through engine-conformance
+  tripwires. Remaining patches (`configurable:true`, `__toESM` passthrough, mock
+  require shim, hoist) are mocking FEATURES, not engine workarounds. Porting also
+  surfaced a real harness bug: V1 enforces class-ctor-requires-new, so `spy()` (which
+  ht.mock auto-wraps around mocked classes) became construct-aware via
+  Reflect.construct. Attempted and REVERTED: dropping esbuild's
+  `--supported:async-await=false` — native async broke RTK Query promise settling in
+  the examples suite; investigate harness drain vs native async before retrying.
 
 ## Day 4-6: Hooks, Mocks, React Integration
 ### Challenge: renderHook without React Testing Library

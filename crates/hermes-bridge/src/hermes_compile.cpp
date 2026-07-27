@@ -2,7 +2,7 @@
 // Compiles JS source → Hermes bytecode with full ES6 class support.
 // Zero subprocess overhead, zero temp file I/O.
 
-#include <hermes/BCGen/HBC/BytecodeProviderFromSrc.h>
+#include <hermes/BCGen/HBC/BCProviderFromSrc.h>
 #include <hermes/BCGen/HBC/BytecodeStream.h>
 #include <hermes/Support/MemoryBuffer.h>
 #include "llvh/Support/SHA1.h"
@@ -41,14 +41,16 @@ int hermes_compile(
       source_url ? source_url : "input.js");
 
   hermes::hbc::CompileFlags flags;
-  flags.enableES6Classes = true;
-  flags.enableBlockScoping = true;
+  // V1/static_h: ES6 classes are native (no flag); block scoping still gated.
+  flags.enableES6BlockScoping = true;
   flags.enableGenerator = true;
   flags.includeLibHermes = false;
 
-  auto result = hermes::hbc::BCProviderFromSrc::createBCProviderFromSrc(
+  // V1/static_h: createBCProviderFromSrc is a free function (sourceMap param added).
+  auto result = hermes::hbc::createBCProviderFromSrc(
       std::make_unique<hermes::OwnedMemoryBuffer>(std::move(buf)),
       source_url ? source_url : "input.js",
+      /*sourceMap*/ llvh::StringRef{},
       flags);
 
   if (!result.first) {
@@ -63,8 +65,7 @@ int hermes_compile(
   // Zero hash — not needed for test execution
   hermes::SHA1 hash = {};
 
-  hermes::hbc::BytecodeSerializer serializer(OS);
-  serializer.serialize(*result.first->getBytecodeModule(), hash);
+  hermes::hbc::serializeBytecodeModule(*result.first->getBytecodeModule(), hash, OS);
   OS.flush();
 
   *out_size = bytecodeStr.size();

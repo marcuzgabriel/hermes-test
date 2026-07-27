@@ -151,8 +151,11 @@ See `challenges.md` for the full day-by-day journey.
    shared-top-level-vars limitation still holds for anything bundled together.
 3. esbuild follows symlinks by default (resolves to real path) — but this turned out
    NOT to be the cause of our issue.
-4. `patch_esbuild_for_hermes` has 4 patches including `fix_all_class_extends`. Only the
-   class-extends fix should be applied to small vendor bundles (other patches break).
+4. (historical) `patch_esbuild_for_hermes` had 4 patches including
+   `fix_all_class_extends`; only the class-extends fix could safely apply to small
+   vendor bundles. Since July 2026 (V1 engine, PR #4) the class-extends patch is
+   deleted entirely — the remaining patches are mocking features (configurable
+   getters, __toESM passthrough), not engine workarounds.
 5. Mock vendor must be eval'd AFTER harness (harness sets up __HT_mocks, React, etc.)
 
 ## Operational Notes

@@ -44,11 +44,15 @@ export function spy<F extends (...args: any[]) => any = () => void>(impl?: F): S
 
     // Once-implementations take priority (FIFO)
     let ret: any;
-    if (onceImpls.length > 0) {
-      const onceFn = onceImpls.shift()!;
-      ret = onceFn.apply(this, args);
+    const active = onceImpls.length > 0 ? onceImpls.shift()! : baseImpl;
+    if (active) {
+      // `new SpiedThing()`: construct instead of call. Class constructors
+      // REQUIRE this — the V1 engine enforces "Class constructor invoked
+      // without new" where legacy Hermes was lenient. Forwarding new.target
+      // keeps subclassing of spied classes correct too.
+      ret = new.target ? Reflect.construct(active, args, new.target) : active.apply(this, args);
     } else {
-      ret = baseImpl ? baseImpl.apply(this, args) : undefined;
+      ret = undefined;
     }
 
     returnValues.push(ret);
