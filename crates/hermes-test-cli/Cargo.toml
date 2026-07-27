@@ -16,6 +16,11 @@ regex = "1"
 oxc = { version = "0.132", features = ["semantic"] }
 libc = "0.2"
 sourcemap = "9"
+rolldown = "1.2.0"
+rolldown_common = "1.2.0"
+rolldown_plugin = "1.2.0"
+arcstr = "1.2.0"
+tokio = { version = "1.53.1", features = ["rt-multi-thread"] }
 
 [build-dependencies]
 cc = "1"
