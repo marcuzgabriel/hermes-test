@@ -3,22 +3,15 @@ class Shape {
     this.kind = kind;
   }
 }
-var Circle = (function() {
-  function Circle(radius) {
-    var _this = Reflect.construct(Shape, ["circle"], new.target || Circle);
-    _this.radius = radius;
-  
-    return _this;
+class Circle extends Shape {
+  constructor(radius) {
+    super("circle");
+    this.radius = radius;
   }
-  Circle.prototype = Object.create(Shape.prototype, {
-    constructor: { value: Circle, writable: true, configurable: true }
-  });
-  Object.setPrototypeOf(Circle, Shape);
-  Circle.prototype.area = function() {
+  area() {
     return 3 * this.radius * this.radius;
-  };
-Circle.unit = function() {
+  }
+  static unit() {
     return new Circle(1);
-  };
-  return Circle;
-})();
+  }
+}

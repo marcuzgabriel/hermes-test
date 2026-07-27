@@ -464,6 +464,65 @@ fn fix_all_class_extends(code: &str) -> String {
         return code.to_string();
     }
 
+    // Narrowing (July 2026, probed against the app engine hermes-v0.14.1,
+    // which is byte-identical to the vendored engine minus a version bump):
+    // the engine now handles pure user-class chains natively — TDZ-extends-
+    // local, new.target through chains, and super.method() all verified
+    // fixed. What remains broken is NATIVE-builtin subclassing (Error
+    // silently loses message/props, Map/Set throw, Array partially) AND
+    // native super() into ANY downleveled function (the parent's returned
+    // object is discarded — probed). Therefore downlevel exactly the subtree
+    // rooted at native builtins: direct native parents, anything extending a
+    // downleveled name (fixpoint), aliases of downleveled names, and dotted
+    // parents (cross-module, unknowable — keep legacy treatment). Everything
+    // else keeps real `class` syntax and the engine's own semantics.
+    // Over-downleveling is safe (it IS the legacy behavior, prod-tested);
+    // under-downleveling breaks chains — see fixture 07-native-rooted-subtree.
+    const NATIVE_PARENTS: &[&str] = &[
+        "Object", "Function", "Array", "Error", "TypeError", "RangeError",
+        "SyntaxError", "ReferenceError", "EvalError", "URIError",
+        "AggregateError", "Map", "Set", "WeakMap", "WeakSet", "WeakRef",
+        "RegExp", "Date", "Promise", "ArrayBuffer", "SharedArrayBuffer",
+        "DataView", "Int8Array", "Uint8Array", "Uint8ClampedArray",
+        "Int16Array", "Uint16Array", "Int32Array", "Uint32Array",
+        "Float32Array", "Float64Array", "BigInt64Array", "BigUint64Array",
+        "String", "Number", "Boolean",
+    ];
+    let alias_re = regex::Regex::new(r"var ([\w$]+) = ([\w$]+);").unwrap();
+    let alias_pairs: Vec<(String, String)> = alias_re
+        .captures_iter(code)
+        .map(|c| (c[1].to_string(), c[2].to_string()))
+        .collect();
+    let mut downlevel: std::collections::HashSet<String> = std::collections::HashSet::new();
+    loop {
+        let mut changed = false;
+        for m in &matches {
+            if downlevel.contains(&m.var_name) {
+                continue;
+            }
+            let p = m.parent_expr.as_str();
+            if p.contains('.') || NATIVE_PARENTS.contains(&p) || downlevel.contains(p) {
+                downlevel.insert(m.var_name.clone());
+                downlevel.insert(m.internal_name.clone());
+                changed = true;
+            }
+        }
+        for (alias, target) in &alias_pairs {
+            if downlevel.contains(target) && !downlevel.contains(alias) {
+                downlevel.insert(alias.clone());
+                changed = true;
+            }
+        }
+        if !changed {
+            break;
+        }
+    }
+    matches.retain(|m| downlevel.contains(&m.var_name));
+
+    if matches.is_empty() {
+        return code.to_string();
+    }
+
     // Sort by start position descending so we can replace from end to start
     matches.sort_by(|a, b| b.start.cmp(&a.start));
 

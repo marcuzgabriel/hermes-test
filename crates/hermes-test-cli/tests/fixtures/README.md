@@ -25,9 +25,17 @@ Run: `cargo test -p hermes-test-cli fixture` (~0.2s).
 
 ## class-extends/ — Patch 4: `fix_all_class_extends`
 
-Hermes bugs: TDZ crash on `class X extends LocalVariable`, and `super()` in
-native subclasses discarding the return value. The transform downlevels every
-class-extends to `Reflect.construct`-based functions.
+NARROWED (July 2026): the current engine (vendored == app's hermes-v0.14.1,
+one version-bump commit apart) handles pure user-class chains natively — TDZ
+extends-local, new.target chains, and super.method() all probe fixed. Still
+broken: NATIVE-builtin subclassing (Error loses message/props silently,
+Map/Set throw, Array partially) and native super() into any downleveled
+function (return discarded). So the transform now downlevels ONLY the subtree
+rooted at native builtins (direct native parents, transitively anything
+extending a downleveled name, aliases, and dotted parents as conservative
+fallback); every other class keeps real `class` syntax. Fixtures 01–03/05/06
+are pass-through goldens (expected == input) guarding that we DON'T touch
+user chains; 04 and 07 guard what we still must.
 
 | Fixture | Guards |
 |---|---|
@@ -36,7 +44,8 @@ class-extends to `Reflect.construct`-based functions.
 | `03-super-chain-new-target` | **The Day 23 bug shape.** 4-level chain with no-constructor classes in the MIDDLE and at the leaf — both downleveling branches must forward `new.target`, or instances silently get the wrong prototype. (A no-ctor class at the *top* of a chain cannot catch this; gap found by mutation-testing the corpus.) |
 | `04-array-subclass` | Hermes native-super bug: subclassing Array works (push/length/indexing). Also documents an engine fact: Hermes ignores `Symbol.species` in Array methods — `map()` returns plain `Array`, matching on-device behavior. |
 | `05-class-declaration-static` | Bare `class Name extends Expr` declarations (pattern C) and `static` methods attached to the class, not the prototype. |
-| `06-super-method-this` | `super.method()` keeps `this` bound to the instance. Guarded two real bugs (found by this fixture, July 2026): in methods the naive `Parent.prototype.method()` rewrite silently rebound `this` to the prototype; in constructors `super.` wasn't rewritten at all — a Hermes compile error. |
+| `06-super-method-this` | `super.method()` keeps `this` bound to the instance. Guarded two real bugs (found by this fixture, July 2026): in methods the naive `Parent.prototype.method()` rewrite silently rebound `this` to the prototype; in constructors `super.` wasn't rewritten at all — a Hermes compile error. Post-narrowing: pass-through (native super is correct); the rewrite_super_method_calls path still applies to downleveled (native-rooted) classes. |
+| `07-native-rooted-subtree` | The narrowing boundary. `BaseError extends Error` AND `ChildError extends BaseError` both downlevel (probed: native `super()` into a downleveled function discards its return — the whole subtree converts or none of it); the unrelated `UserChild extends Plain` chain stays a real `class`. In the Topdanmark bundle this splits 13 class-extends sites into 6 downleveled (zod/jwt errors, Tuple extends Array, incl. one transitive) and 7 native (incl. `class Definition extends Parent` — the original TDZ shape). |
 
 ## esbuild-helpers/ — Patches 1–3 on esbuild's runtime helpers
 
