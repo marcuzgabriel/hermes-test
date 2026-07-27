@@ -36,6 +36,12 @@ struct HtMockResolver {
     /// matching is enough to prove delivery. The real port must replicate
     /// the identity-vs-specifier-text split documented in mock-resolution.md.
     wrappers: HashMap<String, String>,
+    /// esbuild --alias parity: (name, target). Exact or name/-prefixed
+    /// specifiers redirect to target (shims, tsconfig aliases).
+    aliases: Vec<(String, String)>,
+    /// Bare-specifier alias targets (@__ht_real_pkg/x -> x) must re-resolve
+    /// from the PROJECT, not from the temp shim dir that imported them.
+    resolve_anchor: String,
 }
 
 impl Plugin for HtMockResolver {
@@ -59,6 +65,38 @@ impl Plugin for HtMockResolver {
                 }
             }
         }
+        for (name, target) in &self.aliases {
+            let rewritten = if args.specifier == name.as_str() {
+                Some(target.clone())
+            } else {
+                args.specifier
+                    .strip_prefix(&format!("{name}/"))
+                    .map(|rest| format!("{target}/{rest}"))
+            };
+            if let Some(new_spec) = rewritten {
+                // Exact file targets (shims) can be answered directly; anything
+                // else re-enters the resolver so package-exports/extension
+                // resolution still happens (rollup-style ctx.resolve).
+                if std::path::Path::new(&new_spec).is_file() {
+                    return Ok(Some(HookResolveIdOutput::from_id(new_spec.as_str())));
+                }
+                let anchor;
+                let importer = if std::path::Path::new(&new_spec).is_absolute() {
+                    args.importer
+                } else {
+                    anchor = format!("{}/__ht_resolve_anchor__.js", self.resolve_anchor);
+                    Some(anchor.as_str())
+                };
+                match _ctx.resolve(&new_spec, importer, None).await {
+                    Ok(Ok(resolved)) => {
+                        return Ok(Some(HookResolveIdOutput::from_id(resolved.id.as_str())));
+                    }
+                    _ => {
+                        return Ok(Some(HookResolveIdOutput::from_id(new_spec.as_str())));
+                    }
+                }
+            }
+        }
         Ok(None)
     }
 }
@@ -66,10 +104,15 @@ impl Plugin for HtMockResolver {
 /// Bundle `entry` into a single IIFE chunk, redirecting mocked imports to
 /// wrapper files. Synchronous facade over rolldown's async API (the CLI is
 /// synchronous throughout).
+///
+/// `externals`: esbuild-parity semantics — exact match, `pkg/…` sub-paths,
+/// and trailing-`*` prefixes.
 pub fn bundle_via_rolldown(
     entry: &Path,
     cwd: &Path,
     wrappers: HashMap<String, String>,
+    externals: Vec<String>,
+    aliases: Vec<(String, String)>,
 ) -> Result<String, String> {
     let rt = tokio::runtime::Builder::new_multi_thread()
         .worker_threads(2)
@@ -78,6 +121,26 @@ pub fn bundle_via_rolldown(
         .map_err(|e| format!("tokio runtime: {e}"))?;
 
     rt.block_on(async move {
+        let ext = std::sync::Arc::new(externals);
+        let is_external = rolldown_common::IsExternal::Fn(Some(Arc::new(move |spec, _importer, _resolved| {
+            let ext = Arc::clone(&ext);
+            let spec = spec.to_string();
+            Box::pin(async move {
+                Ok(ext.iter().any(|e| {
+                    if let Some(prefix) = e.strip_suffix('*') {
+                        spec.starts_with(prefix)
+                    } else {
+                        spec == *e || spec.starts_with(&format!("{e}/"))
+                    }
+                }))
+            })
+        })));
+
+        let mut define = rolldown_utils::indexmap::FxIndexMap::default();
+        define.insert("process.env.NODE_ENV".to_string(), "\"test\"".to_string());
+        define.insert("process.env.JEST_WORKER_ID".to_string(), "\"1\"".to_string());
+        define.insert("global".to_string(), "globalThis".to_string());
+
         let options = BundlerOptions {
             input: Some(vec![InputItem {
                 name: Some("bundle".to_string()),
@@ -85,15 +148,18 @@ pub fn bundle_via_rolldown(
             }]),
             cwd: Some(cwd.to_path_buf()),
             format: Some(OutputFormat::Iife),
+            external: Some(is_external),
+            define: Some(define),
             ..Default::default()
         };
-        let plugins: Vec<SharedPluginable> = vec![Arc::new(HtMockResolver { wrappers })];
+        let resolve_anchor = cwd.to_string_lossy().to_string();
+        let plugins: Vec<SharedPluginable> = vec![Arc::new(HtMockResolver { wrappers, aliases, resolve_anchor })];
         let mut bundler = Bundler::with_plugins(options, plugins)
             .map_err(|e| format!("rolldown bundler construction: {e:?}"))?;
         let out = bundler
             .generate()
             .await
-            .map_err(|e| format!("rolldown bundle: {e:?}"))?;
+            .map_err(|e| format!("rolldown bundle:\n{}", e.into_vec().iter().map(|d| d.to_diagnostic().to_string()).collect::<Vec<_>>().join("\n")))?;
 
         for asset in &out.assets {
             if let Output::Chunk(chunk) = asset {
@@ -145,7 +211,7 @@ mod tests {
             dir.join("analytics.wrapper.js").to_string_lossy().to_string(),
         );
 
-        let code = bundle_via_rolldown(&dir.join("entry.js"), &dir, wrappers).unwrap();
+        let code = bundle_via_rolldown(&dir.join("entry.js"), &dir, wrappers, vec![], vec![]).unwrap();
         assert!(code.contains("WRAPPED"), "wrapper not delivered:\n{code}");
         assert!(
             !code.contains("REAL:"),
@@ -161,5 +227,109 @@ mod tests {
         );
 
         let _ = fs::remove_dir_all(&dir);
+    }
+
+    /// Phase-1 benchmark: bundle the REAL examples app through both pipelines
+    /// on identical inputs. Run explicitly:
+    ///   cargo test -p hermes-test-cli --release bench_rolldown -- --ignored --nocapture
+    ///
+    /// Honesty notes printed with the results: the esbuild leg is the
+    /// production path (Node service + onResolve plugin, wrapper-carrying);
+    /// the rolldown leg delivers the same FILE wrappers via the Rust hook but
+    /// does NOT yet implement specifier-text (alias/package) mocks — those
+    /// bundle their real modules instead, which if anything gives rolldown
+    /// MORE work, not less.
+    #[test]
+    #[ignore]
+    fn bench_rolldown_vs_esbuild_examples_app() {
+        let repo_root = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .parent()
+            .unwrap()
+            .parent()
+            .unwrap()
+            .to_path_buf();
+        let root = repo_root.join("examples/expo-app");
+        let cfg = crate::bundler::read_config(&root);
+        let alias_names: Vec<String> = cfg.aliases.iter().map(|(a, _)| a.clone()).collect();
+        let alias_pairs: Vec<(String, String)> = cfg.aliases.clone();
+        let test_files = crate::bundler::find_test_files(&root);
+        assert!(!test_files.is_empty(), "no example test files found");
+        let mocks = crate::bundler::find_mock_modules_with_alias_pairs(
+            &test_files,
+            &alias_names,
+            &alias_pairs,
+        );
+
+        let (shim_cfg, _wrapper_dir) = crate::bundler::create_wrapper_shims(&root, &cfg);
+        let entry = crate::bundler::generate_entry_with_shallow(
+            &test_files, None, &mocks, &shim_cfg, &[], Some(&root), &[],
+        );
+        let entry_path = root.join(".hermes-test-bench-entry.js");
+        fs::write(&entry_path, &entry).unwrap();
+
+        // esbuild leg: the real production path (min of 3)
+        let mut es_times = Vec::new();
+        let mut es_len = 0usize;
+        for _ in 0..3 {
+            let pm = crate::bundler::create_plugin_mock_wrappers(&test_files, &root, &shim_cfg, &mocks);
+            let t = std::time::Instant::now();
+            let code = crate::bundler::bundle_via_plugin_with_config(
+                &entry_path, &root, &pm.external_mocks, &shim_cfg,
+                &pm.file_wrappers, &pm.text_wrappers,
+            )
+            .expect("esbuild bundle");
+            es_times.push(t.elapsed());
+            es_len = code.len();
+            let _ = fs::remove_dir_all(&pm.dir);
+        }
+
+        // rolldown leg: same entry, same file wrappers, same externals (min of 3)
+        let mut rd_times = Vec::new();
+        let mut rd_len = 0usize;
+        let mut rd_err: Option<String> = None;
+        for _ in 0..3 {
+            let pm = crate::bundler::create_plugin_mock_wrappers(&test_files, &root, &shim_cfg, &mocks);
+            let wrappers: HashMap<String, String> = pm
+                .file_wrappers
+                .iter()
+                .map(|(k, v)| (k.clone(), v.clone()))
+                .collect();
+            let mut externals = pm.external_mocks.clone();
+            externals.extend(shim_cfg.externals.iter().cloned());
+            externals.push("hermes-test".to_string());
+            let t = std::time::Instant::now();
+            let aliases: Vec<(String, String)> = shim_cfg
+                .aliases
+                .iter()
+                .map(|(a, t)| (a.clone(), t.clone()))
+                .collect();
+            match bundle_via_rolldown(&entry_path, &root, wrappers, externals, aliases) {
+                Ok(code) => {
+                    rd_times.push(t.elapsed());
+                    rd_len = code.len();
+                }
+                Err(e) => {
+                    rd_err = Some(e);
+                    break;
+                }
+            }
+            let _ = fs::remove_dir_all(&pm.dir);
+        }
+
+        let _ = fs::remove_file(&entry_path);
+
+        let min = |v: &Vec<std::time::Duration>| v.iter().min().copied().unwrap_or_default();
+        println!("==== phase-1 bundle benchmark: examples app ({} test files) ====", test_files.len());
+        println!(
+            "esbuild (prod path, node service + plugin): min {:?} of {:?}, bundle {} KB",
+            min(&es_times), es_times, es_len / 1024
+        );
+        match rd_err {
+            None => println!(
+                "rolldown (in-process crate, file wrappers): min {:?} of {:?}, bundle {} KB",
+                min(&rd_times), rd_times, rd_len / 1024
+            ),
+            Some(e) => println!("rolldown FAILED (phase-1 finding, not a verdict): {e}"),
+        }
     }
 }

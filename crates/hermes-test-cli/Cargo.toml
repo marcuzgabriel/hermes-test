@@ -21,6 +21,7 @@ rolldown_common = "1.2.0"
 rolldown_plugin = "1.2.0"
 arcstr = "1.2.0"
 tokio = { version = "1.53.1", features = ["rt-multi-thread"] }
+rolldown_utils = "1.2.0"
 
 [build-dependencies]
 cc = "1"
