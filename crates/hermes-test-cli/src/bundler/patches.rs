@@ -344,6 +344,27 @@ fn fix_all_class_extends(code: &str) -> String {
         r"(?:^|[\n;{}\s])class\s+([\w$]+)\s+extends\s+([\w$][\w$.]*)\s*\{"
     ).unwrap();
 
+    // Rewrite super.method(...) calls so `this` stays bound to the instance.
+    // The naive `super.` → `Parent.prototype.` rewrite silently rebinds `this`
+    // to the prototype inside the parent method (and in constructors the
+    // untransformed `super.` doesn't even compile outside a class).
+    fn rewrite_super_method_calls(body: &str, parent: &str) -> String {
+        let no_args = regex::Regex::new(r"super\.([\w$]+)\(\)").unwrap();
+        let body = no_args
+            .replace_all(body, |c: &regex::Captures| {
+                format!("{parent}.prototype.{}.call(this)", &c[1])
+            })
+            .to_string();
+        let with_args = regex::Regex::new(r"super\.([\w$]+)\(").unwrap();
+        let body = with_args
+            .replace_all(&body, |c: &regex::Captures| {
+                format!("{parent}.prototype.{}.call(this, ", &c[1])
+            })
+            .to_string();
+        // Anything left (property reads like `super.x`) keeps the old rewrite.
+        body.replace("super.", &format!("{parent}.prototype."))
+    }
+
     // Helper: find matching close brace from position after opening {
     fn find_class_end(code: &str, body_start: usize) -> usize {
         let mut depth = 1;
@@ -574,7 +595,7 @@ fn fix_all_class_extends(code: &str) -> String {
                 }
 
                 let body = &class_body[abs_body_start..body_end];
-                let body = body.replace("super.", &format!("{parent}.prototype."));
+                let body = rewrite_super_method_calls(body, parent);
                 // Replace ALL references to internal class name with var_name
                 // e.g. _I18n.createInstance → I18n.createInstance, new _Tuple → new Tuple
                 let body = if m.internal_name != *var_name {
@@ -604,6 +625,10 @@ fn fix_all_class_extends(code: &str) -> String {
             } else {
                 body.clone()
             };
+            // super.method() calls in constructors: previously left untouched,
+            // which doesn't even compile once the class becomes a function.
+            // The later `this` → `_this` pass turns .call(this) into .call(_this).
+            let body = rewrite_super_method_calls(&body, parent);
             // Transform super(...args) → Reflect.construct(Parent, [args], ClassName)
             // and this → _this for property assignments after super()
             // Use paren-matching to handle nested parens in super() args

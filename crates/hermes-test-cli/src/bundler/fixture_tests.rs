@@ -17,7 +17,7 @@
 use std::fs;
 use std::path::PathBuf;
 
-use super::patches::patch_esbuild_for_hermes;
+use super::patches::{hoist_mock_modules, inject_mock_require_shim, patch_esbuild_for_hermes};
 use crate::hermes::Runtime;
 
 fn fixtures_root(transform: &str) -> PathBuf {
@@ -99,4 +99,21 @@ fn class_extends_fixtures() {
 #[test]
 fn esbuild_helper_fixtures() {
     run_fixture_dir("esbuild-helpers", patch_esbuild_for_hermes);
+}
+
+// The shim that replaces esbuild's "Dynamic require of X is not supported"
+// throw with the __HT_mocks registry Proxy — how externalized/native modules
+// become mockable (silent-green risk class: if it stops matching, tests run
+// against nothing).
+#[test]
+fn mock_require_shim_fixtures() {
+    run_fixture_dir("mock-require-shim", inject_mock_require_shim);
+}
+
+// Reordering inside bundled test-file bodies: init_*() module initializers
+// are pushed below the last ht.mock() so mocks register before modules
+// capture values at init time.
+#[test]
+fn hoist_mocks_fixtures() {
+    run_fixture_dir("hoist-mocks", hoist_mock_modules);
 }

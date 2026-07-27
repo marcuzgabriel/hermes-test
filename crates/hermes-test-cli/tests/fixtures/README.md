@@ -36,6 +36,7 @@ class-extends to `Reflect.construct`-based functions.
 | `03-super-chain-new-target` | **The Day 23 bug shape.** 4-level chain with no-constructor classes in the MIDDLE and at the leaf — both downleveling branches must forward `new.target`, or instances silently get the wrong prototype. (A no-ctor class at the *top* of a chain cannot catch this; gap found by mutation-testing the corpus.) |
 | `04-array-subclass` | Hermes native-super bug: subclassing Array works (push/length/indexing). Also documents an engine fact: Hermes ignores `Symbol.species` in Array methods — `map()` returns plain `Array`, matching on-device behavior. |
 | `05-class-declaration-static` | Bare `class Name extends Expr` declarations (pattern C) and `static` methods attached to the class, not the prototype. |
+| `06-super-method-this` | `super.method()` keeps `this` bound to the instance. Guarded two real bugs (found by this fixture, July 2026): in methods the naive `Parent.prototype.method()` rewrite silently rebound `this` to the prototype; in constructors `super.` wasn't rewritten at all — a Hermes compile error. |
 
 ## esbuild-helpers/ — Patches 1–3 on esbuild's runtime helpers
 
@@ -49,10 +50,33 @@ Inputs reconstructed byte-exact from a real cached bundle
 | `03-to-esm-passthrough` | 3 | Unpatched `__toESM` copies properties into a fresh object, destroying mock Proxies. Patch adds an early return: `__esModule` modules pass through as the SAME object; plain CJS still gets `default` interop wrapping. |
 | `04-duplicated-nested-helpers` | 1–3 | Dependencies shipped as pre-bundled CJS (react-redux et al.) inline their OWN copy of the helpers, `2`-suffixed and indented deeper. All three patches must fix every copy — first-occurrence-only patching left nested helpers unpatched in production bundles (fixed July 2026, found by this fixture). Engine note: the raw for-let-of closure bug no longer reproduces in current vendored Hermes; what the nested patches still buy is mocking capability (configurable getters, Proxy passthrough). |
 
+## mock-require-shim/ — `inject_mock_require_shim`
+
+Replaces esbuild's "Dynamic require of X is not supported" throw with a Proxy
+over the `__HT_mocks` registry — how externalized/native modules become
+mockable. Silent-green risk class: if the pattern stops matching, tests can run
+against nothing.
+
+| Fixture | Guards |
+|---|---|
+| `01-mock-registry-proxy` | Global-registry lookup, `__esModule` flag, per-file mocks winning at ACCESS time (the ESM hoisting problem), fallback to global, infinite-noop Proxy for unmocked modules (string/length/thenable behavior), `default` interop. |
+
+## hoist-mocks/ — `hoist_mock_modules`
+
+esbuild initializes modules (`init_*()`) where the imports were — before the
+`ht.mock()` calls below them. The transform pushes `init_*()` below the last
+mock so modules that capture values at init time see the mock.
+
+| Fixture | Guards |
+|---|---|
+| `01-init-after-mocks` | `init_*()` calls execute after all `ht.mock()` registrations; `init_hermes*` stays put; statement order otherwise preserved (verified by recorded execution order in Hermes). |
+
 ## Known gaps (candidates for next fixtures)
 
-- `inject_mock_require_shim` and `hoist_mock_modules` have no fixtures yet
-  (silent-green risk class — highest value next).
-- Suspected latent bug: `super.method(x)` in method bodies is rewritten to
-  `Parent.prototype.method(x)` without `.call(this)` — write the fixture first
-  and see.
+- `hoist-mocks`: only the `ht.mock(` spelling is scanned; the
+  `(0, import_hermes_test.mock)(` spelling mentioned in the code comment has
+  no fixture (and possibly no code path — check before writing).
+- `mock-require-shim`: `__HT_mock_aliases` (resolved-path → original-path
+  mapping) is untested.
+- Comment-blindness: a commented-out `ht.mock()` still registers (hardening
+  assessment §5) — fixture would currently FAIL; write it when fixing.
