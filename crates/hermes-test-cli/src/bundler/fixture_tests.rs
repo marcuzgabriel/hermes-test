@@ -91,3 +91,12 @@ fn run_fixture_dir(transform: &str, apply: impl Fn(&str) -> String) {
 fn class_extends_fixtures() {
     run_fixture_dir("class-extends", patch_esbuild_for_hermes);
 }
+
+// Patches 1–3 of patch_esbuild_for_hermes rewrite esbuild's runtime helpers
+// (__copyProps, __export, __toESM). The inputs reproduce the helper text
+// byte-for-byte from a real bundle (examples/expo-app cache) — the patches
+// are exact-text matches, so whitespace drift IS the failure being guarded.
+#[test]
+fn esbuild_helper_fixtures() {
+    run_fixture_dir("esbuild-helpers", patch_esbuild_for_hermes);
+}
