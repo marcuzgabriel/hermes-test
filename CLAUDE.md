@@ -13,7 +13,7 @@ When Claude Code opens this repo, before doing anything else:
 3. Read `website/docs/architecture/mock-resolution.md` for the CURRENT mock delivery model (onResolve receptionist + wrapper brain)
 4. Read `.claude/references/mock-strategies.md` for runtime mock patterns and what's been tried
 5. Read `.claude/references/mock-strategy.md` for detailed strategy history with all 11+ approaches
-6. Read `.claude/references/shadow-wrappers.md` for the LEGACY delivery (shadow wrappers/package shims — HT_RESOLVER=legacy, pending phase-4 removal)
+6. Read `.claude/references/shadow-wrappers.md` for the HISTORICAL delivery (shadow wrappers/package shims — DELETED July 2026, phase 4; kept as design history)
 7. Read `.claude/references/shallow-rendering-fixes.md` for shallow rendering bugs, fixes, and remaining work
 8. Read `.claude/references/challenges.md` for the full journey of challenges and solutions
 
