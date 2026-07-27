@@ -2,6 +2,9 @@ mod hermes;
 mod bundler;
 mod coverage;
 
+#[cfg(test)]
+mod cli_tests;
+
 use clap::{Parser, Subcommand};
 use notify_debouncer_mini::{new_debouncer, DebouncedEventKind};
 use std::path::PathBuf;
@@ -224,25 +227,37 @@ fn eval_file(path: &str) {
 /// runner must never exit 0 having run nothing the user explicitly pointed at.
 fn expand_file_args(files: &[PathBuf], root: &std::path::Path) -> Vec<PathBuf> {
     let cfg = bundler::read_config(root);
+    match try_expand_file_args(files, cfg.test_match.as_deref()) {
+        Ok(out) => out,
+        Err(msg) => {
+            eprintln!("{msg}");
+            std::process::exit(1);
+        }
+    }
+}
+
+/// Core of expand_file_args, separated so the never-run-zero-tests invariant
+/// is unit-testable (the wrapper exits the process on Err).
+fn try_expand_file_args(files: &[PathBuf], test_match: Option<&str>) -> Result<Vec<PathBuf>, String> {
     let mut out = Vec::new();
     for f in files {
         if f.is_dir() {
-            let found = bundler::find_test_files_with_pattern(f, cfg.test_match.as_deref());
+            let found = bundler::find_test_files_with_pattern(f, test_match);
             if found.is_empty() {
-                let suffix = cfg.test_match.as_deref().unwrap_or(".test.ts");
-                eprintln!("\x1b[31mNo test files found in directory:\x1b[0m {}", f.display());
-                eprintln!("  Looking for files matching \x1b[1m*{suffix}\x1b[0m");
-                std::process::exit(1);
+                let suffix = test_match.unwrap_or(".test.ts");
+                return Err(format!(
+                    "\x1b[31mNo test files found in directory:\x1b[0m {}\n  Looking for files matching \x1b[1m*{suffix}\x1b[0m",
+                    f.display()
+                ));
             }
             out.extend(found);
         } else if f.is_file() {
             out.push(f.clone());
         } else {
-            eprintln!("\x1b[31mNo such file or directory:\x1b[0m {}", f.display());
-            std::process::exit(1);
+            return Err(format!("\x1b[31mNo such file or directory:\x1b[0m {}", f.display()));
         }
     }
-    out
+    Ok(out)
 }
 
 fn run_tests(files: &[PathBuf], root: &PathBuf, no_bundle: bool, coverage: bool, update_snapshots: bool) {
@@ -378,10 +393,10 @@ JSON.stringify({
             run_tests_per_file(&rt, &test_files, &root, &cfg, start);
         } else if batch_files.is_empty() {
             // Only isolated files — no shared bundle to build.
-            let (p, f, t, s, iso_failed) =
+            let (p, f, t, s, iso_failed_suites) =
                 run_isolated_relative_mock_files(&isolated_files, &root, &cfg);
-            print_jest_summary(isolated_files.len(), p, f, t, s, start.elapsed().as_secs_f64());
-            if iso_failed || f > 0 {
+            print_jest_summary(isolated_files.len(), iso_failed_suites, p, f, t, s, start.elapsed().as_secs_f64());
+            if iso_failed_suites > 0 || f > 0 {
                 std::process::exit(1);
             }
         } else {
@@ -656,7 +671,7 @@ fn run_tests_single(
 
     // Isolated relative-mock files: each in its own bundle + runtime. Their suite
     // lines print live (same harness), counts merge into the summary below.
-    let (iso_passed, iso_failed_count, iso_total, iso_snapshots, iso_failed) =
+    let (iso_passed, iso_failed_count, iso_total, iso_snapshots, iso_failed_suites) =
         run_isolated_relative_mock_files(isolated_files, root, cfg);
 
     let elapsed = start.elapsed();
@@ -665,13 +680,14 @@ fn run_tests_single(
             let (main_passed, main_failed, main_total, main_snapshots) = parse_result_counts(&json);
             print_jest_summary(
                 test_files.len() + isolated_files.len(),
+                count_failed_suites(&json) + iso_failed_suites,
                 main_passed + iso_passed,
                 main_failed + iso_failed_count,
                 main_total + iso_total,
                 main_snapshots + iso_snapshots,
                 elapsed.as_secs_f64(),
             );
-            if main_failed + iso_failed_count > 0 || iso_failed {
+            if main_failed + iso_failed_count > 0 || iso_failed_suites > 0 {
                 std::process::exit(1);
             }
         }
@@ -843,16 +859,16 @@ fn parse_result_counts(json: &str) -> (u64, u64, u64, u64) {
 /// makes the mock apply at every import site regardless of the importer's specifier
 /// text — but also removes the real module from the bundle, so these files can never
 /// share a bundle with test files that need the real implementation.
-/// Returns (passed, failed, total, snapshots, any_failed).
+/// Returns (passed, failed, total, snapshots, failed_suites).
 fn run_isolated_relative_mock_files(
     files: &[PathBuf],
     root: &PathBuf,
     cfg: &bundler::BundleConfig,
-) -> (u64, u64, u64, u64, bool) {
+) -> (u64, u64, u64, u64, usize) {
     let (mut passed, mut failed, mut total, mut snapshots) = (0u64, 0u64, 0u64, 0u64);
-    let mut any_failed = false;
+    let mut failed_suites = 0usize;
     if files.is_empty() {
-        return (passed, failed, total, snapshots, any_failed);
+        return (passed, failed, total, snapshots, failed_suites);
     }
 
     let alias_names: Vec<String> = cfg.aliases.iter().map(|(a, _)| a.clone()).collect();
@@ -928,7 +944,7 @@ fn run_isolated_relative_mock_files(
                 Err(e) => {
                     let name = file.file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or_default();
                     eprintln!("Bundling failed for {name}: {e}");
-                    any_failed = true;
+                    failed_suites += 1;
                     continue;
                 }
             }
@@ -936,7 +952,7 @@ fn run_isolated_relative_mock_files(
 
         let rt = match hermes::Runtime::new() {
             Ok(r) => r,
-            Err(e) => { eprintln!("Runtime error: {e}"); any_failed = true; continue; }
+            Err(e) => { eprintln!("Runtime error: {e}"); failed_suites += 1; continue; }
         };
         suppress_hermes_stderr(|| {
             if let Err(e) = rt.eval(HARNESS_JS, "hermes-test/harness.js") {
@@ -960,7 +976,7 @@ fn run_isolated_relative_mock_files(
         if let Err(e) = eval_result {
             let name = file.file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or_default();
             eprintln!("Test execution failed for {name}: {e}");
-            any_failed = true;
+            failed_suites += 1;
             continue;
         }
 
@@ -973,16 +989,16 @@ fn run_isolated_relative_mock_files(
                 failed += f;
                 total += t;
                 snapshots += s;
-                if f > 0 { any_failed = true; }
+                if f > 0 { failed_suites += 1; }
             }
             Err(e) => {
                 eprintln!("Failed to read results: {e}");
-                any_failed = true;
+                failed_suites += 1;
             }
         }
     }
 
-    (passed, failed, total, snapshots, any_failed)
+    (passed, failed, total, snapshots, failed_suites)
 }
 
 fn watch_tests(files: &[PathBuf], root: &PathBuf) {
@@ -1106,17 +1122,18 @@ fn watch_tests(files: &[PathBuf], root: &PathBuf) {
                 eprintln!("\x1b[31mInitial watch execution failed: {e}\x1b[0m");
             } else {
                 print_console_logs(&initial_rt);
-                let (ip, if_, it, is_, _iso_failed) =
+                let (ip, if_, it, is_, iso_fs) =
                     run_isolated_relative_mock_files(&initial_isolated, &root, &cfg);
                 let elapsed = initial_start.elapsed();
-                let (mp, mf, mt, ms) = if initial_batch.is_empty() {
-                    (0, 0, 0, 0)
+                let (mp, mf, mt, ms, mfs) = if initial_batch.is_empty() {
+                    (0, 0, 0, 0, 0)
                 } else if let Ok(json) = initial_rt.eval("globalThis.__HT_results", "results") {
-                    parse_result_counts(&json)
+                    let (p, f, t, sn) = parse_result_counts(&json);
+                    (p, f, t, sn, count_failed_suites(&json))
                 } else {
-                    (0, 0, 0, 0)
+                    (0, 0, 0, 0, 0)
                 };
-                print_jest_summary(all_test_files.len(), mp + ip, mf + if_, mt + it, ms + is_, elapsed.as_secs_f64());
+                print_jest_summary(all_test_files.len(), mfs + iso_fs, mp + ip, mf + if_, mt + it, ms + is_, elapsed.as_secs_f64());
             }
         }
         Err(e) => eprintln!("\x1b[31mInitial watch bundle failed: {e}\x1b[0m"),
@@ -1325,17 +1342,18 @@ fn watch_tests(files: &[PathBuf], root: &PathBuf) {
                             eprintln!("\x1b[31mTest execution failed: {e}\x1b[0m");
                         } else {
                             print_console_logs(&watch_rt);
-                            let (ip, if_, it, is_, _iso_failed) =
+                            let (ip, if_, it, is_, iso_fs) =
                                 run_isolated_relative_mock_files(&rerun_isolated, &root, &cfg);
                             let elapsed = rerun_start.elapsed();
-                            let (mp, mf, mt, ms) = if rerun_batch.is_empty() {
-                                (0, 0, 0, 0)
+                            let (mp, mf, mt, ms, mfs) = if rerun_batch.is_empty() {
+                                (0, 0, 0, 0, 0)
                             } else if let Ok(json) = watch_rt.eval("globalThis.__HT_results", "results") {
-                                parse_result_counts(&json)
+                                let (p, f, t, sn) = parse_result_counts(&json);
+                                (p, f, t, sn, count_failed_suites(&json))
                             } else {
-                                (0, 0, 0, 0)
+                                (0, 0, 0, 0, 0)
                             };
-                            print_jest_summary(rerun_files.len(), mp + ip, mf + if_, mt + it, ms + is_, elapsed.as_secs_f64());
+                            print_jest_summary(rerun_files.len(), mfs + iso_fs, mp + ip, mf + if_, mt + it, ms + is_, elapsed.as_secs_f64());
                         }
                     }
                     Err(e) => eprintln!("\x1b[31mBundle failed: {e}\x1b[0m"),
@@ -1383,19 +1401,51 @@ fn print_console_logs(rt: &hermes::Runtime) {
     }
 }
 
-fn print_jest_summary(file_count: usize, passed: u64, failed: u64, total: u64, snapshots: u64, secs: f64) {
-    eprintln!();
-    if failed > 0 {
-        eprintln!(" \x1b[1mTest Suites:\x1b[0m  \x1b[32m{file_count} passed\x1b[0m, {file_count} total");
-        eprintln!(" \x1b[1mTests:\x1b[0m        \x1b[32m{passed} passed\x1b[0m, \x1b[31m{failed} failed\x1b[0m, {total} total");
+/// Count suites (distinct source files) containing at least one failing test
+/// in a __HT_results JSON string.
+fn count_failed_suites(json: &str) -> usize {
+    let inner: String = serde_json::from_str(json).unwrap_or_else(|_| json.to_string());
+    let v: serde_json::Value = match serde_json::from_str(&inner) {
+        Ok(v) => v,
+        Err(_) => return 0,
+    };
+    let mut failed: Vec<&str> = Vec::new();
+    if let Some(tests) = v["tests"].as_array() {
+        for t in tests {
+            if t["status"].as_str() == Some("fail") {
+                let file = t["file"].as_str().unwrap_or("unknown");
+                if !failed.contains(&file) {
+                    failed.push(file);
+                }
+            }
+        }
+    }
+    failed.len()
+}
+
+fn format_jest_summary(file_count: usize, failed_suites: usize, passed: u64, failed: u64, total: u64, snapshots: u64, secs: f64) -> String {
+    let mut out = String::new();
+    if failed_suites > 0 {
+        let passed_suites = file_count.saturating_sub(failed_suites);
+        out.push_str(&format!(" \x1b[1mTest Suites:\x1b[0m  \x1b[32m{passed_suites} passed\x1b[0m, \x1b[31m{failed_suites} failed\x1b[0m, {file_count} total\n"));
     } else {
-        eprintln!(" \x1b[1mTest Suites:\x1b[0m  \x1b[32m{file_count} passed\x1b[0m, {file_count} total");
-        eprintln!(" \x1b[1mTests:\x1b[0m        \x1b[32m{passed} passed\x1b[0m, {total} total");
+        out.push_str(&format!(" \x1b[1mTest Suites:\x1b[0m  \x1b[32m{file_count} passed\x1b[0m, {file_count} total\n"));
+    }
+    if failed > 0 {
+        out.push_str(&format!(" \x1b[1mTests:\x1b[0m        \x1b[32m{passed} passed\x1b[0m, \x1b[31m{failed} failed\x1b[0m, {total} total\n"));
+    } else {
+        out.push_str(&format!(" \x1b[1mTests:\x1b[0m        \x1b[32m{passed} passed\x1b[0m, {total} total\n"));
     }
     if snapshots > 0 {
-        eprintln!(" \x1b[1mSnapshots:\x1b[0m    \x1b[32m{snapshots} passed\x1b[0m, {snapshots} total");
+        out.push_str(&format!(" \x1b[1mSnapshots:\x1b[0m    \x1b[32m{snapshots} passed\x1b[0m, {snapshots} total\n"));
     }
-    eprintln!(" \x1b[1mTime:\x1b[0m         {secs:.2}s");
+    out.push_str(&format!(" \x1b[1mTime:\x1b[0m         {secs:.2}s"));
+    out
+}
+
+fn print_jest_summary(file_count: usize, failed_suites: usize, passed: u64, failed: u64, total: u64, snapshots: u64, secs: f64) {
+    eprintln!();
+    eprintln!("{}", format_jest_summary(file_count, failed_suites, passed, failed, total, snapshots, secs));
 }
 
 fn print_results(json: &str) -> bool {
