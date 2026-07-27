@@ -348,19 +348,11 @@ JSON.stringify({
         let alias_names: Vec<String> = cfg.aliases.iter().map(|(a, _)| a.clone()).collect();
         let alias_pairs: Vec<(String, String)> = cfg.aliases.clone();
 
-        // Mock delivery: the plugin resolver (esbuild JS API onResolve hook) is the
-        // DEFAULT — one bundle, one VM, all mock kinds. HT_RESOLVER=legacy restores
-        // the previous pipeline (shadow trees, package shims, isolated bundles for
-        // relative mocks) as an escape hatch for one release cycle.
-        let plugin_resolver = std::env::var("HT_RESOLVER").map(|v| v != "legacy").unwrap_or(true);
-        let (isolated_files, batch_files): (Vec<PathBuf>, Vec<PathBuf>) = if plugin_resolver {
-            (Vec::new(), test_files.clone())
-        } else {
-            test_files
-                .iter()
-                .cloned()
-                .partition(|f| bundler::has_relative_mock_targets(f))
-        };
+        // Mock delivery: the plugin resolver (esbuild JS API onResolve hook) — one
+        // bundle, one VM, all mock kinds. (The legacy pipeline — shadow trees,
+        // package shims, isolated bundles, HT_RESOLVER flag — was deleted after
+        // the plugin default soaked in prod; phase 4 of the resolver plan.)
+        let batch_files: Vec<PathBuf> = test_files.clone();
 
         let all_mocks = bundler::find_mock_modules_with_alias_pairs(&batch_files, &alias_names, &alias_pairs);
 
@@ -386,31 +378,12 @@ JSON.stringify({
             eprint!("{}", dbg);
         }
 
-        // All files in one batch — shadow wrappers handle aliased mock isolation.
-        // HT_PER_FILE forces per-file isolation as fallback.
-        let force_per_file = std::env::var("HT_PER_FILE").is_ok();
-        if force_per_file {
-            run_tests_per_file(&rt, &test_files, &root, &cfg, start);
-        } else if batch_files.is_empty() {
-            // Only isolated files — no shared bundle to build.
-            let (p, f, t, s, iso_failed_suites) =
-                run_isolated_relative_mock_files(&isolated_files, &root, &cfg);
-            print_jest_summary(isolated_files.len(), iso_failed_suites, p, f, t, s, start.elapsed().as_secs_f64());
-            if iso_failed_suites > 0 || f > 0 {
-                std::process::exit(1);
-            }
-        } else {
-            // split mode is blocked in config.rs validation
-            {
-                run_tests_single(&rt, &batch_files, &root, &all_mocks, &cfg, start, &[], coverage, update_snapshots, &shallow_auto_mocks, &isolated_files, plugin_resolver);
-            }
-        }
+        run_tests_single(&rt, &batch_files, &root, &all_mocks, &cfg, start, &[], coverage, update_snapshots, &shallow_auto_mocks);
     }
 }
 
-/// Single-bundle path: generates one entry, bundles everything together.
-/// `isolated_files` (test files with resolvable test-file-relative mocks) run in
-/// their own bundles afterwards; their results merge into the final summary.
+/// Single-bundle path: generates one entry, bundles everything together via the
+/// onResolve plugin resolver.
 fn run_tests_single(
     rt: &hermes::Runtime,
     test_files: &[PathBuf],
@@ -422,12 +395,8 @@ fn run_tests_single(
     coverage: bool,
     update_snapshots: bool,
     shallow_auto_mocks: &[(String, Vec<String>, Vec<String>)],
-    isolated_files: &[PathBuf],
-    plugin_resolver: bool,
 ) {
-    // Check single-bundle cache FIRST — skip shadow wrapper/shim setup if cached.
-    // Plugin-resolver bundles differ in content, so they get their own cache family.
-    let cache_prefix = if plugin_resolver { "plugin" } else { "single" };
+    let cache_prefix = "plugin";
     let cache_key = bundler::compute_single_bundle_cache_key(test_files, root, mock_modules, cfg);
     let cache_dir = root.join(".hermes-test-cache");
     let cache_path = cache_dir.join(format!("{cache_prefix}-{cache_key}.js"));
@@ -444,23 +413,9 @@ fn run_tests_single(
         // JS cache hit — patched bundle, skip shadow setup + esbuild
         Some(std::fs::read_to_string(&cache_path).unwrap_or_default())
     } else {
-        // Cache miss (or coverage mode) — full pipeline.
-        // Plugin-resolver mode delivers ALL mocks (relative, alias, package) via
-        // the onResolve hook — shadow trees and package shims are skipped entirely.
-        let (wrapper_cfg, wrapper_shim_dir) = bundler::create_wrapper_shims(root, cfg);
-        let (shadow_cfg, shadow_dirs) = if plugin_resolver {
-            (wrapper_cfg.clone(), Vec::new())
-        } else {
-            bundler::create_shadow_wrappers(root, mock_modules, &wrapper_cfg)
-        };
-        let non_aliased_mocks: Vec<String> = mock_modules.iter().filter(|m| {
-            !cfg.aliases.iter().any(|(alias, _)| *m == alias || m.starts_with(&format!("{alias}/")))
-        }).cloned().collect();
-        let (shim_cfg, shim_dir, remaining_externals) = if plugin_resolver {
-            (shadow_cfg.clone(), None, Vec::new())
-        } else {
-            bundler::create_package_shims(root, &non_aliased_mocks, &shadow_cfg)
-        };
+        // Cache miss (or coverage mode) — full pipeline. The onResolve plugin
+        // delivers ALL mocks (relative, alias, package).
+        let (shim_cfg, wrapper_shim_dir) = bundler::create_wrapper_shims(root, cfg);
         let entry_content = bundler::generate_entry_with_shallow(test_files, None, mock_modules, &shim_cfg, transforms, Some(root), shallow_auto_mocks);
         let entry_path = root.join(".hermes-test-entry.js");
         std::fs::write(&entry_path, &entry_content).unwrap_or_else(|e| {
@@ -474,14 +429,13 @@ fn run_tests_single(
                 Ok(p) => p,
                 Err(_) => {
                     let _ = std::fs::remove_file(&entry_path);
-                    for dir in &shadow_dirs { let _ = std::fs::remove_dir_all(dir); }
-                    if let Some(ref d) = shim_dir { let _ = std::fs::remove_dir_all(d); }
                     if let Some(ref d) = wrapper_shim_dir { let _ = std::fs::remove_dir_all(d); }
                     eprintln!("esbuild not found. Install it: bun add -d esbuild");
                     std::process::exit(1);
                 }
             };
-            let sm_result = if plugin_resolver {
+            let _ = &esbuild_path;
+            let sm_result = {
                 let pm = bundler::create_plugin_mock_wrappers(test_files, root, &shim_cfg, mock_modules);
                 let r = bundler::bundle_via_plugin_with_sourcemap(
                     &entry_path, root, &pm.external_mocks, &shim_cfg,
@@ -489,8 +443,6 @@ fn run_tests_single(
                 );
                 let _ = std::fs::remove_dir_all(&pm.dir);
                 r
-            } else {
-                bundler::bundle_esbuild_with_sourcemap(&entry_path, &esbuild_path, &remaining_externals, &shim_cfg)
             };
             match sm_result {
                 Ok(result) => {
@@ -503,8 +455,6 @@ fn run_tests_single(
                 }
                 Err(e) => {
                     let _ = std::fs::remove_file(&entry_path);
-                    for dir in &shadow_dirs { let _ = std::fs::remove_dir_all(dir); }
-                    if let Some(ref d) = shim_dir { let _ = std::fs::remove_dir_all(d); }
                     if let Some(ref d) = wrapper_shim_dir { let _ = std::fs::remove_dir_all(d); }
                     for (_, temp) in transforms { let _ = std::fs::remove_file(temp); }
                     eprintln!("Bundling failed: {e}");
@@ -512,10 +462,10 @@ fn run_tests_single(
                 }
             }
         } else {
-            let bundle_result = if plugin_resolver {
-                // Classify every mock and generate onResolve wrappers; only mocks
-                // with no bundleable real module (natives, shims, unresolvable
-                // specifiers) remain text-externalized.
+            // Classify every mock and generate onResolve wrappers; only mocks
+            // with no bundleable real module (natives, shims, unresolvable
+            // specifiers) remain text-externalized.
+            let bundle_result = {
                 let pm = bundler::create_plugin_mock_wrappers(test_files, root, &shim_cfg, mock_modules);
                 let r = bundler::bundle_via_plugin_with_config(
                     &entry_path, root, &pm.external_mocks, &shim_cfg,
@@ -523,15 +473,11 @@ fn run_tests_single(
                 );
                 let _ = std::fs::remove_dir_all(&pm.dir);
                 r
-            } else {
-                bundler::bundle_auto_with_config(&entry_path, root, &remaining_externals, &shim_cfg)
             };
             match bundle_result {
                 Ok(b) => b,
                 Err(e) => {
                     let _ = std::fs::remove_file(&entry_path);
-                    for dir in &shadow_dirs { let _ = std::fs::remove_dir_all(dir); }
-                    if let Some(ref d) = shim_dir { let _ = std::fs::remove_dir_all(d); }
                     if let Some(ref d) = wrapper_shim_dir { let _ = std::fs::remove_dir_all(d); }
                     for (_, temp) in transforms { let _ = std::fs::remove_file(temp); }
                     eprintln!("Bundling failed: {e}");
@@ -542,8 +488,6 @@ fn run_tests_single(
 
         // Cleanup temp dirs
         let _ = std::fs::remove_file(&entry_path);
-        for dir in &shadow_dirs { let _ = std::fs::remove_dir_all(dir); }
-        if let Some(ref d) = shim_dir { let _ = std::fs::remove_dir_all(d); }
         if let Some(ref d) = wrapper_shim_dir { let _ = std::fs::remove_dir_all(d); }
         for (_, temp) in transforms { let _ = std::fs::remove_file(temp); }
 
@@ -669,25 +613,20 @@ fn run_tests_single(
         }
     }
 
-    // Isolated relative-mock files: each in its own bundle + runtime. Their suite
-    // lines print live (same harness), counts merge into the summary below.
-    let (iso_passed, iso_failed_count, iso_total, iso_snapshots, iso_failed_suites) =
-        run_isolated_relative_mock_files(isolated_files, root, cfg);
-
     let elapsed = start.elapsed();
     match rt.eval("globalThis.__HT_results", "results") {
         Ok(json) => {
             let (main_passed, main_failed, main_total, main_snapshots) = parse_result_counts(&json);
             print_jest_summary(
-                test_files.len() + isolated_files.len(),
-                count_failed_suites(&json) + iso_failed_suites,
-                main_passed + iso_passed,
-                main_failed + iso_failed_count,
-                main_total + iso_total,
-                main_snapshots + iso_snapshots,
+                test_files.len(),
+                count_failed_suites(&json),
+                main_passed,
+                main_failed,
+                main_total,
+                main_snapshots,
                 elapsed.as_secs_f64(),
             );
-            if main_failed + iso_failed_count > 0 || iso_failed_suites > 0 {
+            if main_failed > 0 {
                 std::process::exit(1);
             }
         }
@@ -702,146 +641,6 @@ fn run_tests_single(
     }
 }
 
-/// Per-file bundling: each test file gets its own esbuild invocation with
-/// only its own mocks externalized. Prevents mock interference across files.
-/// The Hermes runtime is reused across files for speed.
-fn run_tests_per_file(
-    _rt: &hermes::Runtime,
-    test_files: &[PathBuf],
-    root: &PathBuf,
-    cfg: &bundler::BundleConfig,
-    start: Instant,
-) {
-    // Phase 1: Parallel esbuild — spawn all bundlers concurrently.
-    // Each file gets a unique entry path to avoid write conflicts.
-    let mut handles: Vec<std::thread::JoinHandle<(PathBuf, Result<String, String>)>> = Vec::new();
-
-    for (i, file) in test_files.iter().enumerate() {
-        let file_slice = &[file.clone()];
-        let file_mocks = bundler::find_mock_modules(file_slice);
-        let entry_content = bundler::generate_entry(file_slice, None, &file_mocks, cfg, &[], Some(root));
-        let entry_path = root.join(format!(".hermes-test-entry-{i}.js"));
-        if let Err(e) = std::fs::write(&entry_path, &entry_content) {
-            eprintln!("Failed to write entry: {e}");
-            continue;
-        }
-
-        let file_clone = file.clone();
-        let entry_clone = entry_path.clone();
-        let root_clone = root.clone();
-        let mocks_clone = file_mocks.clone();
-
-        handles.push(std::thread::spawn(move || {
-            let result = bundler::bundle_auto(&entry_clone, &root_clone, &mocks_clone);
-            let _ = std::fs::remove_file(&entry_clone);
-            (file_clone, result)
-        }));
-    }
-
-    // Collect all bundle results
-    let bundles: Vec<(PathBuf, Result<String, String>)> = handles
-        .into_iter()
-        .map(|h| h.join().expect("esbuild thread panicked"))
-        .collect();
-
-    // Phase 2: Sequential Hermes eval — run each bundle in its own runtime.
-    let mut total_passed = 0usize;
-    let mut total_failed = 0usize;
-    let mut _total_skipped = 0usize;
-    let mut total_count = 0usize;
-    let mut any_failed = false;
-    let mut suites_passed = 0usize;
-    let mut suites_failed = 0usize;
-
-    for (file, bundle_result) in &bundles {
-        let name = file.file_name().map(|n| n.to_string_lossy().to_string())
-            .unwrap_or_default();
-
-        let bundle = match bundle_result {
-            Ok(b) => b,
-            Err(e) => {
-                eprintln!("Bundling failed for {name}: {e}");
-                any_failed = true;
-                continue;
-            }
-        };
-
-        let rt = match hermes::Runtime::new() {
-            Ok(r) => r,
-            Err(e) => { eprintln!("Runtime error: {e}"); any_failed = true; continue; }
-        };
-        suppress_hermes_stderr(|| {
-            if let Err(e) = rt.eval(HARNESS_JS, "hermes-test/harness.js") {
-                eprintln!("Failed to load harness: {e}");
-            }
-        });
-
-        let dummy_path = file.with_extension("js");
-        if let Err(e) = suppress_hermes_stderr(|| {
-            if let Some(bytecode) = bundler::compile_to_bytecode(bundle, &dummy_path) {
-                rt.eval_bytes(&bytecode, "bundle.hbc")
-            } else {
-                rt.eval(bundle, "bundle.js")
-            }
-        }) {
-            eprintln!("Test execution failed for {name}: {e}");
-            any_failed = true;
-            continue;
-        }
-
-        print_console_logs(&rt);
-
-        match rt.eval("globalThis.__HT_results", "results") {
-            Ok(raw) => {
-                let inner: String = serde_json::from_str(&raw).unwrap_or(raw.clone());
-                if let Ok(v) = serde_json::from_str::<serde_json::Value>(&inner) {
-                    let p = v["passed"].as_u64().unwrap_or(0) as usize;
-                    let f = v["failed"].as_u64().unwrap_or(0) as usize;
-                    let s = v["skipped"].as_u64().unwrap_or(0) as usize;
-                    let t = v["total"].as_u64().unwrap_or(0) as usize;
-                    total_passed += p;
-                    total_failed += f;
-                    _total_skipped += s;
-                    total_count += t;
-
-                    if f > 0 {
-                        any_failed = true;
-                        suites_failed += 1;
-                        print_results(&raw);
-                    } else {
-                        suites_passed += 1;
-                        println!("\x1b[32mPASS\x1b[0m  {name} \x1b[2m({t} tests)\x1b[0m");
-                    }
-                }
-            }
-            Err(e) => {
-                eprintln!("Failed to read results: {e}");
-                any_failed = true;
-            }
-        }
-    }
-
-    // Print summary
-    let elapsed = start.elapsed();
-    let total_suites = suites_passed + suites_failed;
-    println!();
-    if suites_failed > 0 {
-        println!(" \x1b[1mTest Suites:\x1b[0m  \x1b[32m{suites_passed} passed\x1b[0m, \x1b[31m{suites_failed} failed\x1b[0m, {total_suites} total");
-    } else {
-        println!(" \x1b[1mTest Suites:\x1b[0m  \x1b[32m{suites_passed} passed\x1b[0m, {total_suites} total");
-    }
-    if total_failed > 0 {
-        println!(" \x1b[1mTests:\x1b[0m        \x1b[32m{total_passed} passed\x1b[0m, \x1b[31m{total_failed} failed\x1b[0m, {total_count} total");
-    } else {
-        println!(" \x1b[1mTests:\x1b[0m        \x1b[32m{total_passed} passed\x1b[0m, {total_count} total");
-    }
-    println!(" \x1b[2mTime:\x1b[0m         {:.2}s", elapsed.as_secs_f64());
-
-    if any_failed {
-        std::process::exit(1);
-    }
-}
-
 /// Parse (passed, failed, total, snapshots) out of a __HT_results JSON string.
 fn parse_result_counts(json: &str) -> (u64, u64, u64, u64) {
     let inner: String = serde_json::from_str(json).unwrap_or_else(|_| json.to_string());
@@ -852,153 +651,6 @@ fn parse_result_counts(json: &str) -> (u64, u64, u64, u64) {
         v["total"].as_u64().unwrap_or(0),
         v["snapshots"].as_u64().unwrap_or(0),
     )
-}
-
-/// Run test files that use test-file-relative ht.mock() specifiers, each in its own
-/// bundle + Hermes runtime. The mocked module is externalized by ABSOLUTE path, which
-/// makes the mock apply at every import site regardless of the importer's specifier
-/// text — but also removes the real module from the bundle, so these files can never
-/// share a bundle with test files that need the real implementation.
-/// Returns (passed, failed, total, snapshots, failed_suites).
-fn run_isolated_relative_mock_files(
-    files: &[PathBuf],
-    root: &PathBuf,
-    cfg: &bundler::BundleConfig,
-) -> (u64, u64, u64, u64, usize) {
-    let (mut passed, mut failed, mut total, mut snapshots) = (0u64, 0u64, 0u64, 0u64);
-    let mut failed_suites = 0usize;
-    if files.is_empty() {
-        return (passed, failed, total, snapshots, failed_suites);
-    }
-
-    let alias_names: Vec<String> = cfg.aliases.iter().map(|(a, _)| a.clone()).collect();
-    let alias_pairs: Vec<(String, String)> = cfg.aliases.clone();
-    let cache_dir = root.join(".hermes-test-cache");
-
-    // Compute cache keys upfront so stale iso-* caches can be pruned in one pass.
-    let keys: Vec<String> = files.iter().map(|f| {
-        let mocks = bundler::find_mock_modules_with_alias_pairs(std::slice::from_ref(f), &alias_names, &alias_pairs);
-        bundler::compute_single_bundle_cache_key(std::slice::from_ref(f), root, &mocks, cfg)
-    }).collect();
-    if let Ok(entries) = std::fs::read_dir(&cache_dir) {
-        for entry in entries.flatten() {
-            let n = entry.file_name();
-            let n = n.to_string_lossy().to_string();
-            if n.starts_with("iso-") && !keys.iter().any(|k| n.contains(k.as_str())) {
-                let _ = std::fs::remove_file(entry.path());
-            }
-        }
-    }
-
-    for (file, cache_key) in files.iter().zip(keys.iter()) {
-        let file_slice = std::slice::from_ref(file);
-        let mocks = bundler::find_mock_modules_with_alias_pairs(file_slice, &alias_names, &alias_pairs);
-        let mut shallow: Vec<(String, Vec<String>, Vec<String>)> = Vec::new();
-        for s in bundler::scan_shallow_auto_mocks_with_pairs(file, &alias_names, &alias_pairs) {
-            shallow.push(s);
-        }
-
-        let cache_path = cache_dir.join(format!("iso-{cache_key}.js"));
-        let bytecode_path = cache_dir.join(format!("iso-{cache_key}.hbc"));
-
-        let mut bytecode: Option<Vec<u8>> = None;
-        let mut js: Option<String> = None;
-        if bytecode_path.exists() {
-            bytecode = std::fs::read(&bytecode_path).ok();
-        }
-        if bytecode.is_none() && cache_path.exists() {
-            js = std::fs::read_to_string(&cache_path).ok();
-        }
-        if bytecode.is_none() && js.is_none() {
-            // Fresh bundle: same pipeline as the single bundle, plus absolute-path
-            // externals for the resolved relative mocks.
-            let (wrapper_cfg, wrapper_shim_dir) = bundler::create_wrapper_shims(root, cfg);
-            let (shadow_cfg, shadow_dirs) = bundler::create_shadow_wrappers(root, &mocks, &wrapper_cfg);
-            let non_aliased: Vec<String> = mocks.iter().filter(|m| {
-                !cfg.aliases.iter().any(|(a, _)| *m == a || m.starts_with(&format!("{a}/")))
-            }).cloned().collect();
-            let (shim_cfg, shim_dir, remaining) = bundler::create_package_shims(root, &non_aliased, &shadow_cfg);
-            let mut externals = remaining.clone();
-            for e in bundler::relative_mock_externals(file_slice) {
-                if !externals.contains(&e) { externals.push(e); }
-            }
-            let entry_content = bundler::generate_entry_with_shallow(file_slice, None, &mocks, &shim_cfg, &[], Some(root), &shallow);
-            let entry_path = root.join(format!(".hermes-test-iso-entry-{cache_key}.js"));
-            let write_ok = std::fs::write(&entry_path, &entry_content).is_ok();
-            let bundle_result = if write_ok {
-                bundler::bundle_auto_with_config(&entry_path, root, &externals, &shim_cfg)
-            } else {
-                Err("failed to write entry file".to_string())
-            };
-            let _ = std::fs::remove_file(&entry_path);
-            for dir in &shadow_dirs { let _ = std::fs::remove_dir_all(dir); }
-            if let Some(ref d) = shim_dir { let _ = std::fs::remove_dir_all(d); }
-            if let Some(ref d) = wrapper_shim_dir { let _ = std::fs::remove_dir_all(d); }
-
-            match bundle_result {
-                Ok(b) => {
-                    let _ = std::fs::create_dir_all(&cache_dir);
-                    let _ = std::fs::write(&cache_path, &b);
-                    js = Some(b);
-                }
-                Err(e) => {
-                    let name = file.file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or_default();
-                    eprintln!("Bundling failed for {name}: {e}");
-                    failed_suites += 1;
-                    continue;
-                }
-            }
-        }
-
-        let rt = match hermes::Runtime::new() {
-            Ok(r) => r,
-            Err(e) => { eprintln!("Runtime error: {e}"); failed_suites += 1; continue; }
-        };
-        suppress_hermes_stderr(|| {
-            if let Err(e) = rt.eval(HARNESS_JS, "hermes-test/harness.js") {
-                eprintln!("Failed to load harness: {e}");
-            }
-        });
-
-        let eval_result = if let Some(bc) = bytecode {
-            rt.eval_bytes(&bc, "bundle.hbc")
-        } else if let Some(ref b) = js {
-            match crate::hermes::compile_bytecode(b, "bundle.js") {
-                Ok(bc) => {
-                    let _ = std::fs::write(&bytecode_path, &bc);
-                    rt.eval_bytes(&bc, "bundle.hbc")
-                }
-                Err(_) => rt.eval(b, "bundle.js"),
-            }
-        } else {
-            continue;
-        };
-        if let Err(e) = eval_result {
-            let name = file.file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or_default();
-            eprintln!("Test execution failed for {name}: {e}");
-            failed_suites += 1;
-            continue;
-        }
-
-        print_console_logs(&rt);
-
-        match rt.eval("globalThis.__HT_results", "results") {
-            Ok(raw) => {
-                let (p, f, t, s) = parse_result_counts(&raw);
-                passed += p;
-                failed += f;
-                total += t;
-                snapshots += s;
-                if f > 0 { failed_suites += 1; }
-            }
-            Err(e) => {
-                eprintln!("Failed to read results: {e}");
-                failed_suites += 1;
-            }
-        }
-    }
-
-    (passed, failed, total, snapshots, failed_suites)
 }
 
 fn watch_tests(files: &[PathBuf], root: &PathBuf) {
@@ -1051,14 +703,7 @@ fn watch_tests(files: &[PathBuf], root: &PathBuf) {
     });
     let alias_names: Vec<String> = cfg.aliases.iter().map(|(a, _)| a.clone()).collect();
     let alias_pairs: Vec<(String, String)> = cfg.aliases.clone();
-    let plugin_resolver = std::env::var("HT_RESOLVER").map(|v| v != "legacy").unwrap_or(true);
-    // Legacy only: relative-mock files bundle in isolation. Plugin mode keeps
-    // everything in the single bundle (onResolve wrappers).
-    let (initial_isolated, initial_batch): (Vec<PathBuf>, Vec<PathBuf>) = if plugin_resolver {
-        (Vec::new(), all_test_files.clone())
-    } else {
-        all_test_files.iter().cloned().partition(|f| bundler::has_relative_mock_targets(f))
-    };
+    let initial_batch: Vec<PathBuf> = all_test_files.clone();
     let mock_modules = bundler::find_mock_modules_with_alias_pairs(&initial_batch, &alias_names, &alias_pairs);
     let initial_start = Instant::now();
 
@@ -1072,27 +717,14 @@ fn watch_tests(files: &[PathBuf], root: &PathBuf) {
         }
     }
 
-    let (wrapper_cfg, wrapper_shim_dir) = bundler::create_wrapper_shims(&root, &cfg);
-    let (shadow_cfg, shadow_dirs) = if plugin_resolver {
-        (wrapper_cfg.clone(), Vec::new())
-    } else {
-        bundler::create_shadow_wrappers(&root, &mock_modules, &wrapper_cfg)
-    };
-    let non_aliased: Vec<String> = mock_modules.iter().filter(|m| {
-        !cfg.aliases.iter().any(|(a, _)| *m == a || m.starts_with(&format!("{a}/")))
-    }).cloned().collect();
-    let (shim_cfg, shim_dir, remaining) = if plugin_resolver {
-        (shadow_cfg.clone(), None, Vec::new())
-    } else {
-        bundler::create_package_shims(&root, &non_aliased, &shadow_cfg)
-    };
+    let (shim_cfg, wrapper_shim_dir) = bundler::create_wrapper_shims(&root, &cfg);
     let entry = bundler::generate_entry_with_shallow(&initial_batch, None, &mock_modules, &shim_cfg, &[], Some(&root), &initial_shallow);
     let entry_path = root.join(".hermes-test-watch-initial-entry.js");
     let _ = std::fs::write(&entry_path, &entry);
 
     let bundle_result = if initial_batch.is_empty() {
         Ok(String::new())
-    } else if plugin_resolver {
+    } else {
         let pm = bundler::create_plugin_mock_wrappers(&initial_batch, &root, &shim_cfg, &mock_modules);
         let r = bundler::bundle_via_plugin_with_config(
             &entry_path, &root, &pm.external_mocks, &shim_cfg,
@@ -1100,12 +732,8 @@ fn watch_tests(files: &[PathBuf], root: &PathBuf) {
         );
         let _ = std::fs::remove_dir_all(&pm.dir);
         r
-    } else {
-        bundler::bundle_auto_with_config(&entry_path, &root, &remaining, &shim_cfg)
     };
     let _ = std::fs::remove_file(&entry_path);
-    for dir in &shadow_dirs { let _ = std::fs::remove_dir_all(dir); }
-    if let Some(ref d) = shim_dir { let _ = std::fs::remove_dir_all(d); }
     if let Some(ref d) = wrapper_shim_dir { let _ = std::fs::remove_dir_all(d); }
 
     match bundle_result {
@@ -1122,8 +750,6 @@ fn watch_tests(files: &[PathBuf], root: &PathBuf) {
                 eprintln!("\x1b[31mInitial watch execution failed: {e}\x1b[0m");
             } else {
                 print_console_logs(&initial_rt);
-                let (ip, if_, it, is_, iso_fs) =
-                    run_isolated_relative_mock_files(&initial_isolated, &root, &cfg);
                 let elapsed = initial_start.elapsed();
                 let (mp, mf, mt, ms, mfs) = if initial_batch.is_empty() {
                     (0, 0, 0, 0, 0)
@@ -1133,7 +759,7 @@ fn watch_tests(files: &[PathBuf], root: &PathBuf) {
                 } else {
                     (0, 0, 0, 0, 0)
                 };
-                print_jest_summary(all_test_files.len(), mfs + iso_fs, mp + ip, mf + if_, mt + it, ms + is_, elapsed.as_secs_f64());
+                print_jest_summary(all_test_files.len(), mfs, mp, mf, mt, ms, elapsed.as_secs_f64());
             }
         }
         Err(e) => eprintln!("\x1b[31mInitial watch bundle failed: {e}\x1b[0m"),
@@ -1270,13 +896,7 @@ fn watch_tests(files: &[PathBuf], root: &PathBuf) {
                 });
                 let alias_names: Vec<String> = cfg.aliases.iter().map(|(a, _)| a.clone()).collect();
                 let alias_pairs: Vec<(String, String)> = cfg.aliases.clone();
-                let plugin_resolver = std::env::var("HT_RESOLVER").map(|v| v != "legacy").unwrap_or(true);
-                // Legacy only: relative-mock files bundle in isolation.
-                let (rerun_isolated, rerun_batch): (Vec<PathBuf>, Vec<PathBuf>) = if plugin_resolver {
-                    (Vec::new(), rerun_files.clone())
-                } else {
-                    rerun_files.iter().cloned().partition(|f| bundler::has_relative_mock_targets(f))
-                };
+                let rerun_batch: Vec<PathBuf> = rerun_files.clone();
                 let mock_modules = bundler::find_mock_modules_with_alias_pairs(&rerun_batch, &alias_names, &alias_pairs);
                 let rerun_start = Instant::now();
 
@@ -1292,27 +912,14 @@ fn watch_tests(files: &[PathBuf], root: &PathBuf) {
                 }
 
                 // Build single bundle
-                let (wrapper_cfg, wrapper_shim_dir) = bundler::create_wrapper_shims(&root, &cfg);
-                let (shadow_cfg, shadow_dirs) = if plugin_resolver {
-                    (wrapper_cfg.clone(), Vec::new())
-                } else {
-                    bundler::create_shadow_wrappers(&root, &mock_modules, &wrapper_cfg)
-                };
-                let non_aliased: Vec<String> = mock_modules.iter().filter(|m| {
-                    !cfg.aliases.iter().any(|(a, _)| *m == a || m.starts_with(&format!("{a}/")))
-                }).cloned().collect();
-                let (shim_cfg, shim_dir, remaining) = if plugin_resolver {
-                    (shadow_cfg.clone(), None, Vec::new())
-                } else {
-                    bundler::create_package_shims(&root, &non_aliased, &shadow_cfg)
-                };
+                let (shim_cfg, wrapper_shim_dir) = bundler::create_wrapper_shims(&root, &cfg);
                 let entry = bundler::generate_entry_with_shallow(&rerun_batch, None, &mock_modules, &shim_cfg, &[], Some(&root), &watch_shallow);
                 let entry_path = root.join(".hermes-test-watch-entry.js");
                 let _ = std::fs::write(&entry_path, &entry);
 
                 let bundle_result = if rerun_batch.is_empty() {
                     Ok(String::new())
-                } else if plugin_resolver {
+                } else {
                     let pm = bundler::create_plugin_mock_wrappers(&rerun_batch, &root, &shim_cfg, &mock_modules);
                     let r = bundler::bundle_via_plugin_with_config(
                         &entry_path, &root, &pm.external_mocks, &shim_cfg,
@@ -1320,12 +927,8 @@ fn watch_tests(files: &[PathBuf], root: &PathBuf) {
                     );
                     let _ = std::fs::remove_dir_all(&pm.dir);
                     r
-                } else {
-                    bundler::bundle_auto_with_config(&entry_path, &root, &remaining, &shim_cfg)
                 };
                 let _ = std::fs::remove_file(&entry_path);
-                for dir in &shadow_dirs { let _ = std::fs::remove_dir_all(dir); }
-                if let Some(ref d) = shim_dir { let _ = std::fs::remove_dir_all(d); }
                 if let Some(ref d) = wrapper_shim_dir { let _ = std::fs::remove_dir_all(d); }
 
                 match bundle_result {
@@ -1342,8 +945,6 @@ fn watch_tests(files: &[PathBuf], root: &PathBuf) {
                             eprintln!("\x1b[31mTest execution failed: {e}\x1b[0m");
                         } else {
                             print_console_logs(&watch_rt);
-                            let (ip, if_, it, is_, iso_fs) =
-                                run_isolated_relative_mock_files(&rerun_isolated, &root, &cfg);
                             let elapsed = rerun_start.elapsed();
                             let (mp, mf, mt, ms, mfs) = if rerun_batch.is_empty() {
                                 (0, 0, 0, 0, 0)
@@ -1353,7 +954,7 @@ fn watch_tests(files: &[PathBuf], root: &PathBuf) {
                             } else {
                                 (0, 0, 0, 0, 0)
                             };
-                            print_jest_summary(rerun_files.len(), mfs + iso_fs, mp + ip, mf + if_, mt + it, ms + is_, elapsed.as_secs_f64());
+                            print_jest_summary(rerun_files.len(), mfs, mp, mf, mt, ms, elapsed.as_secs_f64());
                         }
                     }
                     Err(e) => eprintln!("\x1b[31mBundle failed: {e}\x1b[0m"),

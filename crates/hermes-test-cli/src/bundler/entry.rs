@@ -54,17 +54,6 @@ fn walk_dir(dir: &Path, files: &mut Vec<PathBuf>, pattern: Option<&str>) {
     }
 }
 
-/// Scan test files for ht.mock() and ht.shallow() calls and return module paths.
-/// ht.shallow() scans the target component file and adds all its internal imports
-/// so shadow wrappers are created for them.
-pub fn find_mock_modules(test_files: &[PathBuf]) -> Vec<String> {
-    find_mock_modules_with_aliases(test_files, &[])
-}
-
-pub fn find_mock_modules_with_aliases(test_files: &[PathBuf], aliases: &[String]) -> Vec<String> {
-    find_mock_modules_with_alias_pairs(test_files, aliases, &[])
-}
-
 pub fn find_mock_modules_with_alias_pairs(test_files: &[PathBuf], aliases: &[String], alias_pairs: &[(String, String)]) -> Vec<String> {
     let mut mocks = Vec::new();
     let mut unmocks = Vec::new();
@@ -334,27 +323,6 @@ pub fn find_relative_mock_targets(file: &Path) -> Vec<(String, PathBuf)> {
     out
 }
 
-/// True if the file has at least one test-file-relative ht.mock() that resolves to a
-/// real file. Such files must be bundled in isolation: the mocked module is
-/// externalized by absolute path (catching every importer's specifier), which would
-/// otherwise take the real module away from other test files in a shared bundle.
-pub fn has_relative_mock_targets(file: &Path) -> bool {
-    !find_relative_mock_targets(file).is_empty()
-}
-
-/// esbuild --external args for resolved relative mocks: absolute paths match
-/// post-resolution, externalizing the module regardless of importer specifier text.
-pub fn relative_mock_externals(test_files: &[PathBuf]) -> Vec<String> {
-    let mut out = Vec::new();
-    for f in test_files {
-        for (_, abs) in find_relative_mock_targets(f) {
-            let s = abs.to_string_lossy().to_string();
-            if !out.contains(&s) { out.push(s); }
-        }
-    }
-    out
-}
-
 /// Everything the plugin bundler needs to deliver ALL mock kinds through the
 /// onResolve hook (Phase 2 — replaces shadow trees and package shims in plugin mode).
 pub struct PluginMockSet {
@@ -418,7 +386,7 @@ pub fn create_plugin_mock_wrappers(
     cfg: &BundleConfig,
     mock_modules: &[String],
 ) -> PluginMockSet {
-    let dir = super::shadow::hermes_temp_root(project_root).join("plugin-wrappers");
+    let dir = super::shims::hermes_temp_root(project_root).join("plugin-wrappers");
     let _ = std::fs::remove_dir_all(&dir);
     let _ = std::fs::create_dir_all(&dir);
 

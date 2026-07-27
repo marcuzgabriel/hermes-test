@@ -197,6 +197,17 @@ without a resolution-time hook).
 4. Only then delete: shadow trees, package shims, iso partition +
    run_isolated_relative_mock_files, multi-VM path. Deletion is the trophy at
    the end, not the move itself.
+   **PHASE 4 DONE (July 2026, feat/delete-legacy-resolver, stacked on the V1
+   engine PR): −956 lines net.** Deleted: shadow trees + package shims
+   (shadow.rs 534→134 lines, renamed shims.rs — only config-shim helpers
+   remain), run_isolated_relative_mock_files, run_tests_per_file, the iso
+   partition in run/watch, the HT_RESOLVER and HT_PER_FILE flags, and the
+   now-unreachable CLI bundling entry points (bundle_auto*,
+   bundle_esbuild_with_sourcemap, compile_to_bytecode). The onResolve plugin
+   is the only resolver. main.rs: 1478→1129 lines. Gate held: plugin default
+   soaked in prod (1.2.0/1.2.1 in Topdanmark CI for weeks). Gauntlet: 16 Rust
+   tests, examples 24 suites, watch smoke, Topdanmark 291/1812 cold 7.61s /
+   warm 0.86s / coverage 74.8%.
 
 Payoff: one bundle, one VM always; three delivery subsystems deleted; relative /
 alias / package mocks become one code path; Day 24's iso machinery retires after
