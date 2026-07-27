@@ -1137,7 +1137,7 @@ fn watch_tests(files: &[PathBuf], root: &PathBuf) {
     };
 
     // Watch loop
-    let mut current_depgraph = depgraph;
+    let current_depgraph = depgraph;
 
     loop {
         match rx.recv() {
