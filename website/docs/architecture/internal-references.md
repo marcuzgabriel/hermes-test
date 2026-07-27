@@ -21,6 +21,8 @@ Use them to understand **why** choices were made, not only **what** exists in co
 | [Decisions](https://github.com/marcuzgabriel/hermes-test/blob/main/.claude/references/decisions.md) | Settled architectural decisions and non-goals | Before proposing alternatives |
 | [Roadmap](https://github.com/marcuzgabriel/hermes-test/blob/main/.claude/references/roadmap.md) | Time-based milestones and priorities | When sequencing implementation |
 | [Challenges](https://github.com/marcuzgabriel/hermes-test/blob/main/.claude/references/challenges.md) | Day-by-day debugging history and solutions | When a regression looks familiar |
+| [Bundler file map](https://github.com/marcuzgabriel/hermes-test/blob/main/.claude/references/bundler-file-map.md) | Two-line role of every file in `bundler/`, plus the rolldown rejection verdict | Before touching bundling or mock delivery |
+| [Rolldown evaluation](https://github.com/marcuzgabriel/hermes-test/blob/main/.claude/references/rolldown-evaluation-summary.md) | Why the rolldown port was rejected: benchmarks, the eager-evaluation wall, resume blueprint | Before proposing a bundler change |
 
 ## Mocking and rendering references
 

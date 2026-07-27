@@ -46,6 +46,29 @@ This keeps startup and reruns fast while preserving RN runtime behavior.
 - Fewer moving parts than traditional Jest+Babel stacks
 - Better confidence for Hermes-specific behavior
 
+## Bundler file map
+
+Where each pipeline step lives in `crates/hermes-test-cli/src/bundler/`:
+
+- **`mod.rs`** — Module wiring only: declares submodules and re-exports.
+  `main.rs` just calls `bundler::bundle_tests(...)`.
+- **`config.rs`** — Parses `hermes-test.config.json` + tsconfig into `BundleConfig` (root, testMatch, shims, aliases, externals, coverageThreshold).
+  The single source for "what the user configured."
+- **`entry.rs`** — Generates the synthetic entry module: discovers test files, scans for `ht.mock`/`ht.unmock`/`ht.shallow` directives.
+  Writes the mock **wrapper** files — the "brain": Proxies consulting the per-file mock registry at access time.
+- **`esbuild.rs`** — Drives bundling: spawns Node with `plugin_build.cjs`, assembles esbuild options (es2016, `async-await=false`, aliases, externals, loaders, sourcemaps).
+  Returns the bundle for eval + caching.
+- **`plugin_build.cjs`** — Node-side esbuild JS-API build script; its `onResolve` hook is the "receptionist."
+  Routes imports of mocked modules to wrapper files, everything else to the real file.
+- **`patches.rs`** — Post-processes esbuild output for Hermes: `__toESM` interop fix, `hoist_mock_modules`, require-shim injection.
+  Every patch is covered by a golden fixture.
+- **`shims.rs`** — Native-module shim registration: maps RN native packages to externalized stand-ins.
+  Real native code never enters the bundle.
+- **`fixture_tests.rs`** — Golden-fixture corpus for `patches.rs`: expected-output text match plus behavior assertions run in real Hermes.
+  Text can look right and still behave wrong — always assert behavior.
+
+See [Mock resolution](./mock-resolution) for the receptionist/brain design these files implement.
+
 See also:
 
 - [Auto-detection](./auto-detection)
