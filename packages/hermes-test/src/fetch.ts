@@ -206,7 +206,20 @@ export const HttpResponse = {
 // Per-test overrides — now just delegates to mockFetch (auto-overwrite handles dedup)
 // Kept for backwards compatibility with existing tests using mock.fetch.overwrite()
 export function mockFetchUse(...newHandlers: MockHandler[]): void {
-  mockFetch(...newHandlers);
+  // Per-test overrides go into overrideHandlers (checked before base handlers)
+  // so mockFetchReset() can undo them. Delegating to mockFetch() here — as a
+  // v1.0 refactor briefly did — silently REPLACED the base handler instead,
+  // making reset() a no-op and leaking overrides into later tests (the
+  // years-long "async-data-fetcher flake" was exactly this, deterministic).
+  for (const nh of newHandlers) {
+    for (let i = overrideHandlers.length - 1; i >= 0; i--) {
+      const h = overrideHandlers[i];
+      if (h.method === nh.method && String(h.url) === String(nh.url)) {
+        overrideHandlers.splice(i, 1);
+      }
+    }
+    overrideHandlers.push(nh);
+  }
 }
 
 // Reset per-test overrides (like MSW server.resetHandlers())
