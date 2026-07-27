@@ -685,45 +685,110 @@ fn fix_all_class_extends(code: &str) -> String {
 ///
 /// 2. esbuild creates non-configurable ESM namespace getters, making useMock impossible.
 ///    Fix: add configurable:true to __copyProps and __export.
+/// Find the index of the `)` matching the `(` at `open`.
+/// Skips string literals and comments (same discipline as find_matching_brace).
+fn find_paren_close(code: &str, open: usize) -> usize {
+    let bytes = code.as_bytes();
+    let mut depth = 0;
+    let mut j = open;
+    while j < bytes.len() {
+        match bytes[j] {
+            b'(' => depth += 1,
+            b')' => {
+                depth -= 1;
+                if depth == 0 {
+                    return j;
+                }
+            }
+            b'"' | b'\'' | b'`' => {
+                let quote = bytes[j];
+                j += 1;
+                while j < bytes.len() {
+                    if bytes[j] == b'\\' {
+                        j += 1;
+                    } else if bytes[j] == quote {
+                        break;
+                    }
+                    j += 1;
+                }
+            }
+            b'/' => {
+                if j + 1 < bytes.len() {
+                    if bytes[j + 1] == b'/' {
+                        while j < bytes.len() && bytes[j] != b'\n' {
+                            j += 1;
+                        }
+                        continue;
+                    } else if bytes[j + 1] == b'*' {
+                        j += 2;
+                        while j + 1 < bytes.len() {
+                            if bytes[j] == b'*' && bytes[j + 1] == b'/' {
+                                j += 1;
+                                break;
+                            }
+                            j += 1;
+                        }
+                    }
+                }
+            }
+            _ => {}
+        }
+        j += 1;
+    }
+    j
+}
+
 pub fn patch_esbuild_for_hermes(code: &str) -> String {
     let _original_len = code.len();
     let code_kb = code.len() / 1024;
 
-    // Patch 1: Fix Hermes for-let-of closure bug in __copyProps
-    let code = code.replacen(
-        "for (let key of __getOwnPropNames(from))\n        if (!__hasOwnProp.call(to, key) && key !== except)\n          __defProp(to, key, { get: () => from[key], enumerable: !(desc = __getOwnPropDesc(from, key)) || desc.enumerable });",
-        "var keys = __getOwnPropNames(from);\n      for (var i = 0; i < keys.length; i++) {\n        var key = keys[i];\n        if (!__hasOwnProp.call(to, key) && key !== except)\n          __defProp(to, key, { get: ((k) => from[k]).bind(null, key), enumerable: !(desc = __getOwnPropDesc(from, key)) || desc.enumerable, configurable: true });\n      }",
-        1,
-    );
+    // Real bundles contain MULTIPLE copies of the esbuild helpers: dependencies
+    // shipped as pre-bundled CJS (react-redux et al.) inline their own set,
+    // renamed with a numeric suffix (__copyProps2, __toESM2, ...) and indented
+    // deeper. Patches 1-3 must therefore match every occurrence, suffixed or
+    // not, at any indentation — a first-occurrence-only patch leaves nested
+    // helpers unpatched (found via fixture 04-duplicated-nested-helpers).
 
-    // Patch 2: Make __export configurable for useMock
-    let code = code.replacen(
+    // Patch 1: Fix Hermes for-let-of closure bug in __copyProps + make copied
+    // props configurable for mocking.
+    let copyprops_re = regex::Regex::new(
+        r"for \(let key of (__getOwnPropNames\d*)\(from\)\)\n(\s+)if \(!(__hasOwnProp\d*)\.call\(to, key\) && key !== except\)\n\s+(__defProp\d*)\(to, key, \{ get: \(\) => from\[key\], enumerable: !\(desc = (__getOwnPropDesc\d*)\(from, key\)\) \|\| desc\.enumerable \}\);"
+    ).unwrap();
+    let code = copyprops_re.replace_all(code, |c: &regex::Captures| {
+        let (gopn, ind_if, hop, dp, gopd) = (&c[1], &c[2], &c[3], &c[4], &c[5]);
+        // The `for` line and closing brace sit one level shallower than the `if`.
+        let ind_for = &ind_if[..ind_if.len().saturating_sub(2)];
+        format!(
+            "var keys = {gopn}(from);\n{ind_for}for (var i = 0; i < keys.length; i++) {{\n{ind_if}var key = keys[i];\n{ind_if}if (!{hop}.call(to, key) && key !== except)\n{ind_if}  {dp}(to, key, {{ get: ((k) => from[k]).bind(null, key), enumerable: !(desc = {gopd}(from, key)) || desc.enumerable, configurable: true }});\n{ind_for}}}"
+        )
+    }).to_string();
+
+    // Patch 2: Make __export configurable for useMock (all copies).
+    let code = code.replace(
         "{ get: all[name], enumerable: true }",
         "{ get: all[name], enumerable: true, configurable: true }",
-        1,
     );
 
     // Patch 3: Make __toESM return mock Proxies directly (skip copy).
     // Our __require returns Proxies with __esModule=true for externalized modules.
     // __toESM normally copies properties into a new object, which destroys Proxy behavior.
-    // Fix: insert early return at the start of __toESM.
+    // Fix: insert early return at the start of every __toESM variant.
     // Note: esbuild may rename `mod` to `mod2`, `mod3` etc. to avoid conflicts.
     let code = {
-        let toesm_re = regex::Regex::new(r"var __toESM = \((\w+), isNodeMode, target\) => \(").unwrap();
-        if let Some(caps) = toesm_re.captures(&code) {
-            let mod_var = caps[1].to_string();
-            let patched = toesm_re.replace(&code, |_caps: &regex::Captures| {
-                format!("var __toESM = ({mod_var}, isNodeMode, target) => ({mod_var} && {mod_var}.__esModule ? {mod_var} : (")
-            }).to_string();
-            // Add closing paren for the ternary — right before the final ");".
-            patched.replacen(
-                &format!("{mod_var}\n  ));"),
-                &format!("{mod_var}\n  )));"),
-                1,
-            )
-        } else {
-            code
+        let toesm_re = regex::Regex::new(r"var __toESM\d* = \((\w+), isNodeMode, target\) => \(").unwrap();
+        let headers: Vec<(usize, String)> = toesm_re
+            .captures_iter(&code)
+            .map(|c| (c.get(0).unwrap().end(), c[1].to_string()))
+            .collect();
+        let mut code = code;
+        // Patch from last to first so earlier byte offsets stay valid.
+        for (hdr_end, mod_var) in headers.iter().rev() {
+            let open = hdr_end - 1; // the `(` opening the arrow body
+            let close = find_paren_close(&code, open);
+            code.insert(close, ')');
+            code.insert_str(open + 1, &format!("{mod_var} && {mod_var}.__esModule ? {mod_var} : ("));
         }
+        code
     };
 
     // Patch 4: Downlevel ALL `class extends Expr` patterns to function-based constructors.
@@ -734,8 +799,10 @@ pub fn patch_esbuild_for_hermes(code: &str) -> String {
 
     let code_str = code;
 
-    // Only warn if the unpatched for-let-of pattern is still present
-    if code_str.contains("for (let key of __getOwnPropNames(from))") {
+    // Only warn if an unpatched for-let-of pattern is still present (any
+    // suffixed copy counts — nested helpers were missed silently before).
+    let leftover_re = regex::Regex::new(r"for \(let key of __getOwnPropNames\d*\(from\)\)").unwrap();
+    if leftover_re.is_match(&code_str) {
         eprintln!("WARNING: esbuild for-let-of patch did not match ({code_kb}KB bundle) — Hermes closure bug may cause failures");
     }
 

@@ -47,16 +47,12 @@ Inputs reconstructed byte-exact from a real cached bundle
 | `01-copy-props-for-let-of` | 1 | Hermes for-let-of closure bug: unpatched, every re-export getter returns the LAST key's value. Patch binds each key by value and adds `configurable:true`. |
 | `02-export-configurable` | 2 | esbuild's `__export` getters are non-configurable — replacing an export (mocking) would throw. Patch makes them redefinable. |
 | `03-to-esm-passthrough` | 3 | Unpatched `__toESM` copies properties into a fresh object, destroying mock Proxies. Patch adds an early return: `__esModule` modules pass through as the SAME object; plain CJS still gets `default` interop wrapping. |
+| `04-duplicated-nested-helpers` | 1–3 | Dependencies shipped as pre-bundled CJS (react-redux et al.) inline their OWN copy of the helpers, `2`-suffixed and indented deeper. All three patches must fix every copy — first-occurrence-only patching left nested helpers unpatched in production bundles (fixed July 2026, found by this fixture). Engine note: the raw for-let-of closure bug no longer reproduces in current vendored Hermes; what the nested patches still buy is mocking capability (configurable getters, Proxy passthrough). |
 
 ## Known gaps (candidates for next fixtures)
 
 - `inject_mock_require_shim` and `hoist_mock_modules` have no fixtures yet
   (silent-green risk class — highest value next).
-- Real bundles can contain a SECOND set of helpers (`__copyProps2`, from
-  dependencies pre-bundled with their own esbuild). Patches 1–3 use
-  `replacen(.., 1)` — first occurrence only — so nested helpers stay unpatched,
-  and the `2`-suffixed spelling also evades the warning check. Needs a
-  duplicated-helpers fixture + a fix.
 - Suspected latent bug: `super.method(x)` in method bodies is rewritten to
   `Parent.prototype.method(x)` without `.call(this)` — write the fixture first
   and see.
