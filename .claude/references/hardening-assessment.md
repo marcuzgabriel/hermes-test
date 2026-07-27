@@ -79,11 +79,27 @@ Both issues found in the review were silent-green:
    expand_file_args() expands directory args via find_test_files_with_pattern
    (respecting testMatch) and HARD-ERRORS on nonexistent paths and on directories
    containing no test files. Wired into both run and watch entry points.
-2. **Fixture tests for patches.rs transforms** (small): golden-file tests running
-   representative class-extends shapes (with/without constructor, 2- and 3-level
-   chains, Array subclass, `this.constructor.name` pattern) through
-   `fix_all_class_extends` + the other patches, asserting on output AND on executed
-   behavior in Hermes. Same for `inject_mock_require_shim` and `hoist_mock_modules`.
+2. **Fixture tests for patches.rs transforms**: DONE (test/fixture-corpus, July
+   2026). crates/hermes-test-cli/tests/fixtures/ — 11 fixtures across 4 groups
+   (class-extends, esbuild-helpers, mock-require-shim, hoist-mocks), each
+   input.js/expected.js golden pair PLUS behavior.js executed in real Hermes
+   via the embedded Runtime (text-match alone missed a blessed-broken-output
+   case in mutation testing; the Hermes layer caught it). Bless mode:
+   HT_UPDATE_FIXTURES=1. See tests/fixtures/README.md for the per-fixture map.
+   Writing the corpus found and fixed THREE production bugs in one day:
+   (a) pre-bundled CJS deps (react-redux) inline their own `2`-suffixed esbuild
+   helpers — patches 1-3 were first-occurrence-only, so nested copies shipped
+   unpatched (non-configurable getters, Proxy-destroying __toESM2);
+   (b) super.method() in methods rebound `this` to the prototype;
+   (c) super.method() in constructors wasn't rewritten at all → Hermes compile
+   error. Engine facts documented in fixtures: Hermes ignores Symbol.species
+   in Array methods; the raw for-let-of closure bug no longer reproduces in
+   current vendored Hermes (nested-helper patches matter for mockability).
+   Also: src/cli_tests.rs unit-tests the never-run-zero-tests invariant from
+   item 1 (try_expand_file_args) + result parsing + summary formatting, and
+   CI runs `cargo test -p hermes-test-cli`.
+   MERGE GATE: Topdanmark parity run before test/fixture-corpus → main
+   (patches now modify react-redux internals and class output).
 3. **Class downleveling: do NOT re-attempt an AST port.** SETTLED (July 2026,
    maintainer decision). OXC/AST approaches were tried multiple times and failed;
    the documented reasons (SWC: scoped thread-locals, helper injection incompatible
@@ -103,8 +119,10 @@ Both issues found in the review were silent-green:
    crate code after prune; full gauntlet green in both resolver modes.
    NOT deleted (deliberate): the legacy resolver path (shadow trees, package
    shims, iso runner) behind HT_RESOLVER=legacy — phase 4, after release soak.
-5. **De-flake async-data-fetcher example** and fix the print_jest_summary suite
-   line.
+5. **De-flake async-data-fetcher example** (still open — fails near-every run
+   now, noise in exactly the validation signal). print_jest_summary suite line:
+   FIXED (test/fixture-corpus) — count_failed_suites() from results JSON, iso
+   runner returns failed-suite count, honest "N passed, M failed, T total".
 6. **Comment-aware mock scanning** (nice-to-have): strip comments before the
    ht.mock regex pass, or move scanning to OXC once (3) lands.
 

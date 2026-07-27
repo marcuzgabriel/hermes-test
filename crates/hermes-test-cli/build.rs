@@ -32,6 +32,7 @@ fn main() {
         bridge_build.include(inc);
     }
     bridge_build
+        .warnings(false)
         .flag("-Wno-non-virtual-dtor")
         .flag("-fexceptions")
         .flag("-frtti")
@@ -48,6 +49,7 @@ fn main() {
         .define("HERMESVM_GC_HADES", None)
         .define("HERMESVM_HEAP_SEGMENT_SIZE_KB", "4096")
         .define("HERMESVM_INDIRECT_THREADING", None)
+        .warnings(false)
         .flag("-Wno-non-virtual-dtor")
         .flag("-fexceptions")
         .flag("-frtti")
@@ -60,6 +62,7 @@ fn main() {
     // Also need hermes/lib for internal headers
     compile_build.include(hermes_dir.join("lib"));
     compile_build
+        .warnings(false)
         .flag("-Wno-non-virtual-dtor")
         .flag("-fexceptions")
         .flag("-frtti")
