@@ -5,7 +5,13 @@ fn main() {
     let manifest_dir = PathBuf::from(env::var("CARGO_MANIFEST_DIR").unwrap());
     let repo_root = manifest_dir.parent().unwrap().parent().unwrap();
     let hermes_dir = repo_root.join("vendor/hermes");
-    let hermes_build = hermes_dir.join("build");
+    // HERMES_BUILD_DIR (relative to vendor/hermes) lets containers/CI keep a
+    // separate cmake build tree from the host's (e.g. build-linux vs build).
+    let hermes_build = match env::var("HERMES_BUILD_DIR") {
+        Ok(d) if !d.is_empty() => hermes_dir.join(d),
+        _ => hermes_dir.join("build"),
+    };
+    println!("cargo:rerun-if-env-changed=HERMES_BUILD_DIR");
     let bridge_dir = repo_root.join("crates/hermes-bridge");
 
     let common_includes: Vec<std::path::PathBuf> = vec![
@@ -154,6 +160,15 @@ fn main() {
     };
     for lib in &base_libs {
         println!("cargo:rustc-link-lib={hermes_link_kind}={lib}");
+    }
+
+    // Linux: V1's composite archives overlap (hermesapi / hermesvm_a /
+    // hermesVMRuntime share objects like the debugger RuntimeTaskRunner), and
+    // whole-archive force-pulls every object from each — lld then reports
+    // duplicate symbols. The definitions are identical (same source build);
+    // let the linker keep the first.
+    if !cfg!(target_os = "macos") {
+        println!("cargo:rustc-link-arg=-Wl,-z,muldefs");
     }
 
     // System libraries

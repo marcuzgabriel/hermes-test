@@ -131,10 +131,18 @@ Both issues found in the review were silent-green:
    crate code after prune; full gauntlet green in both resolver modes.
    NOT deleted (deliberate): the legacy resolver path (shadow trees, package
    shims, iso runner) behind HT_RESOLVER=legacy — phase 4, after release soak.
-5. **De-flake async-data-fetcher example** (still open — fails near-every run
-   now, noise in exactly the validation signal). print_jest_summary suite line:
-   FIXED (test/fixture-corpus) — count_failed_suites() from results JSON, iso
-   runner returns failed-suite count, honest "N passed, M failed, T total".
+5. **async-data-fetcher "flake": FIXED (July 2026, c68a1be) — and it was never
+   a flake.** Measured 20/20 deterministic in isolation, probed: a v1.0
+   refactor aliased mock.fetch.overwrite to auto-overwriting mockFetch(),
+   which replaced BASE handlers while reset() only cleared the unused
+   overrideHandlers list — a test's 500 override leaked into every later
+   test. overwrite() now pushes real per-test overrides (MSW semantics);
+   0/20 after, examples 1211/1211 fully green for the first time.
+   Lesson recorded: "timing-flaky" was an unverified label that survived two
+   releases — measure flake rates in isolation before accepting the label.
+   print_jest_summary suite line: FIXED (test/fixture-corpus) —
+   count_failed_suites() from results JSON, honest "N passed, M failed, T
+   total".
 6. **Comment-aware mock scanning** (nice-to-have): strip comments before the
    ht.mock regex pass, or move scanning to OXC once (3) lands.
 

@@ -9,6 +9,7 @@ on:
 jobs:
   test:
     strategy:
+      fail-fast: false # one platform's failure must not cancel the other's signal
       matrix:
         os: [macos-14, ubuntu-latest]
     runs-on: ${{ matrix.os }}
