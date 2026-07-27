@@ -221,7 +221,7 @@ See `examples/expo-app/src/prod-tests/`. Copy hook locally, use `useSelector` fr
 - `console.log/warn/error` — installed via JSI
 
 ### Hermes quirks (not bugs, just different from Node)
-- `toLocaleString('da-DK')` — no thousands separator: `1000000` not `1.000.000`
+- `toLocaleString('da-DK')` — thousands separator WORKS on the V1 engine (`1.000.000`); the old no-separator quirk was legacy-engine only
 - Date locale — abbreviated months: `jan.` not `januar`
 - `NaN` comparison — `toBe(NaN)` fails, use `Number.isNaN()`
 - No DOM — UI component imports crash (AnimatedPressable, rive, etc.)
