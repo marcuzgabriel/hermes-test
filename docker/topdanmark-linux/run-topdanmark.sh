@@ -4,9 +4,11 @@ set -euo pipefail
 HERMES_REPO="${HERMES_REPO:-/work/hermes-test}"
 TOPDANMARK_REPO="${TOPDANMARK_REPO:-/work/mobile-insurance-app-expo}"
 TOPDANMARK_APP_PATH="${TOPDANMARK_APP_PATH:-apps/topdanmark}"
-HERMES_COMMIT="${HERMES_COMMIT:-fd0e1d3ed}"
+HERMES_COMMIT="${HERMES_COMMIT:-hermes-v250829098.0.14}" # V1/static_h line (matches ci.yml/release.yml pin)
 HERMES_BUILD_JOBS="${HERMES_BUILD_JOBS:-4}"
-HERMES_BUILD_DIR="${HERMES_BUILD_DIR:-build}"
+HERMES_BUILD_DIR="${HERMES_BUILD_DIR:-build-linux}" # separate from the host's macOS build/
+export HERMES_BUILD_DIR # consumed by crates/hermes-test-cli/build.rs
+export CARGO_TARGET_DIR="${CARGO_TARGET_DIR:-${HERMES_REPO}/target-linux}" # don't clobber host target/
 SKIP_HERMES_INSTALL="${SKIP_HERMES_INSTALL:-0}"
 SKIP_TOPDANMARK_INSTALL="${SKIP_TOPDANMARK_INSTALL:-${SKIP_INSTALL:-0}}"
 TOPDANMARK_IGNORE_SCRIPTS="${TOPDANMARK_IGNORE_SCRIPTS:-1}"
@@ -157,5 +159,5 @@ fi
 popd >/dev/null
 
 pushd "${TOPDANMARK_REPO}/${TOPDANMARK_APP_PATH}" >/dev/null
-TZ="${TZ:-Europe/Copenhagen}" "${HERMES_REPO}/target/release/hermes-test" "$@"
+TZ="${TZ:-Europe/Copenhagen}" "${CARGO_TARGET_DIR}/release/hermes-test" "$@"
 popd >/dev/null

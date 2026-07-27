@@ -94,9 +94,10 @@ Mocks with no bundleable real module — native packages, config externals, shim
 packages, `react-native` — are externalized instead and resolved by the runtime
 require shim, exactly as before.
 
-## Escape hatch
+## History
 
-`HT_RESOLVER=legacy` restores the previous delivery pipeline (shadow directory
-trees, package shims, isolated bundles for relative mocks). It is kept for one
-release cycle as a safety valve and will be removed after the plugin resolver has
-soaked in production.
+The previous delivery pipeline (shadow directory trees, package shims, isolated
+bundles for relative mocks, `HT_RESOLVER=legacy`) was removed in July 2026
+after the plugin resolver soaked in production — the onResolve plugin is the
+only resolver. The historical design is preserved in the repo's
+`.claude/references/shadow-wrappers.md`.
