@@ -84,11 +84,13 @@ const CODE_EXT = /\.(m?[jt]sx?|c[jt]s|json)$/i;
 const assetPlugin = {
   name: 'ht-assets',
   setup(build) {
-    build.onResolve({ filter: /\.[a-z0-9]+$/i }, (args) => {
+    build.onResolve({ filter: /^[./].*\.[a-z0-9]+$/i }, (args) => {
+      // Relative/absolute file imports only (`./Fonts/X.ttf`, `../img/a.png`). Bare package
+      // specifiers are left to esbuild — a dotted last segment there (`pkg/v1.2`) is a path,
+      // not an extension.
       if (CODE_EXT.test(args.path) || args.namespace === 'ht-asset') return undefined;
-      // Only file-ish specifiers: relative, absolute, or package paths with an extension.
       const ext = args.path.slice(args.path.lastIndexOf('.') + 1).toLowerCase();
-      if (opts.loader['.' + ext] || ext.length > 5) return undefined;
+      if (opts.loader['.' + ext]) return undefined; // explicit loader wins
       return { path: args.path, namespace: 'ht-asset' };
     });
     build.onLoad({ filter: /.*/, namespace: 'ht-asset' }, () => ({

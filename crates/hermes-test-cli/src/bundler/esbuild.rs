@@ -271,8 +271,8 @@ pub(crate) fn assemble_esbuild_args(
         if cfg.externals.iter().any(|e| e == module_name) {
             continue;
         }
+        // Exact module only: a shim for `pkg` must not swallow a real `pkg/sub` import.
         args.push(format!("--external:{module_name}"));
-        args.push(format!("--external:{module_name}/*"));
     }
 
     // Mock module externals
