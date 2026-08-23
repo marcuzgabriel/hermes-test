@@ -85,13 +85,18 @@ const assetPlugin = {
   name: 'ht-assets',
   setup(build) {
     build.onResolve({ filter: /^[./].*\.[a-z0-9]+$/i }, (args) => {
-      // Relative/absolute file imports only (`./Fonts/X.ttf`, `../img/a.png`). Bare package
-      // specifiers are left to esbuild — a dotted last segment there (`pkg/v1.2`) is a path,
-      // not an extension.
+      // Relative/absolute imports whose last segment has a dot. That is NOT enough to call it an
+      // asset: `../useOverviewCards.topdanmark`, `./Button.ios`, `./api.native` are code files
+      // whose real extension esbuild adds. So only treat it as an asset when a file with exactly
+      // this name exists on disk and its extension is not a code extension.
       if (CODE_EXT.test(args.path) || args.namespace === 'ht-asset') return undefined;
       const ext = args.path.slice(args.path.lastIndexOf('.') + 1).toLowerCase();
       if (opts.loader['.' + ext]) return undefined; // explicit loader wins
-      return { path: args.path, namespace: 'ht-asset' };
+      const abs = path.isAbsolute(args.path) ? args.path : path.resolve(args.resolveDir || cfg.resolveDir, args.path);
+      let isFile = false;
+      try { isFile = fs.statSync(abs).isFile(); } catch { isFile = false; }
+      if (!isFile) return undefined; // not a real file → esbuild resolves it (adds .ts/.tsx/…)
+      return { path: abs, namespace: 'ht-asset' };
     });
     build.onLoad({ filter: /.*/, namespace: 'ht-asset' }, () => ({
       contents: 'module.exports = {};',
