@@ -332,84 +332,12 @@ if (typeof globalThis.MessageChannel === 'undefined') {
   }
 })();
 
-// Web API polyfills — needed for RTK Query's fetchBaseQuery
+// Web API polyfills — the ones React Native's InitializeCore installs (Libraries/Core/setUpXHR.js).
+// Headers / Request / Response come from `whatwg-fetch` and AbortController / AbortSignal from
+// `abort-controller` — the exact packages RN requires — bundled into the harness by bundle.mjs
+// (see src/rn-globals.ts). The hand-written RN-shape mirrors below are for globals RN implements
+// in Flow files we cannot bundle (URL / URLSearchParams / FormData).
 (function () {
-  // AbortController / AbortSignal
-  if (typeof globalThis.AbortController === 'undefined') {
-    function AbortSignal() {
-      this.aborted = false;
-      this._listeners = [];
-    }
-    AbortSignal.prototype.addEventListener = function (type, fn) {
-      this._listeners.push(fn);
-    };
-    AbortSignal.prototype.removeEventListener = function (type, fn) {
-      this._listeners = this._listeners.filter(function (f) {
-        return f !== fn;
-      });
-    };
-
-    function AbortController() {
-      this.signal = new AbortSignal();
-    }
-    AbortController.prototype.abort = function () {
-      this.signal.aborted = true;
-      for (var i = 0; i < this.signal._listeners.length; i++) {
-        try {
-          this.signal._listeners[i]();
-        } catch (e) {}
-      }
-    };
-
-    globalThis.AbortController = AbortController;
-    globalThis.AbortSignal = AbortSignal;
-  }
-
-  // Headers
-  if (typeof globalThis.Headers === 'undefined') {
-    function Headers(init) {
-      this._map = {};
-      if (init) {
-        if (typeof init.forEach === 'function') {
-          init.forEach(
-            function (v, k) {
-              this._map[k.toLowerCase()] = v;
-            }.bind(this),
-          );
-        } else {
-          var keys = Object.keys(init);
-          for (var i = 0; i < keys.length; i++) {
-            this._map[keys[i].toLowerCase()] = init[keys[i]];
-          }
-        }
-      }
-    }
-    Headers.prototype.get = function (k) {
-      return this._map[k.toLowerCase()] || null;
-    };
-    Headers.prototype.has = function (k) {
-      return k.toLowerCase() in this._map;
-    };
-    Headers.prototype.set = function (k, v) {
-      this._map[k.toLowerCase()] = v;
-    };
-    Headers.prototype.append = function (k, v) {
-      k = k.toLowerCase();
-      this._map[k] = this._map[k] ? this._map[k] + ', ' + v : v;
-    };
-    Headers.prototype.delete = function (k) {
-      delete this._map[k.toLowerCase()];
-    };
-    Headers.prototype.forEach = function (fn) {
-      var keys = Object.keys(this._map);
-      for (var i = 0; i < keys.length; i++) fn(this._map[keys[i]], keys[i], this);
-    };
-    Headers.prototype.entries = function () {
-      return Object.entries(this._map);
-    };
-    globalThis.Headers = Headers;
-  }
-
   // URLSearchParams — always install BEFORE URL: native Hermes version may not parse correctly
   {
     function URLSearchParams(init) {
@@ -609,16 +537,6 @@ if (typeof globalThis.MessageChannel === 'undefined') {
     globalThis.FormData = FormData;
   }
 
-  // Request (minimal — RTK Query checks typeof Request)
-  if (typeof globalThis.Request === 'undefined') {
-    globalThis.Request = function Request(url, init) {
-      this.url = typeof url === 'string' ? url : url.href;
-      this.method = (init && init.method) || 'GET';
-      this.headers = new globalThis.Headers(init && init.headers);
-      this.body = init && init.body;
-    };
-  }
-
   // Stub fetch (mockFetch will override with handler-based implementation)
   if (typeof globalThis.fetch === 'undefined') {
     globalThis.fetch = function () {
@@ -628,19 +546,4 @@ if (typeof globalThis.MessageChannel === 'undefined') {
     };
   }
 
-  // Response (minimal)
-  if (typeof globalThis.Response === 'undefined') {
-    globalThis.Response = function Response(body, init) {
-      this.body = body;
-      this.status = (init && init.status) || 200;
-      this.ok = this.status >= 200 && this.status < 300;
-      this.headers = new globalThis.Headers(init && init.headers);
-    };
-    globalThis.Response.prototype.json = function () {
-      return Promise.resolve(JSON.parse(this.body));
-    };
-    globalThis.Response.prototype.text = function () {
-      return Promise.resolve(String(this.body));
-    };
-  }
 })();

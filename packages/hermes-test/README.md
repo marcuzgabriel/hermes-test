@@ -515,11 +515,21 @@ Any import with a non-code extension (fonts, images, audio, …) is loaded as an
 
 ### React Native globals
 
-The harness installs what React Native itself installs in `InitializeCore` — `FormData`,
-`URL` / `URLSearchParams` (same shapes as `Libraries/Network/FormData.js` and
-`Libraries/Blob/URL.js`, userinfo stripped from `host`), `Headers`, `AbortController`, timers —
-and deliberately nothing RN lacks (for example `TextDecoder`), so code that would throw on a
-device throws in your tests too.
+The harness installs what React Native itself installs in `InitializeCore`
+(`Libraries/Core/setUpXHR.js`), from the same sources where possible — nothing to install or
+configure on your side:
+
+| Global | Source |
+|---|---|
+| `Headers`, `Request`, `Response` | `whatwg-fetch` — the package RN requires verbatim (bundled into the harness) |
+| `AbortController`, `AbortSignal` | `abort-controller` — the package RN requires (bundled into the harness) |
+| `fetch` | hermes-test's handler-based mock (`ht.mock.fetch`) — whatwg-fetch's XHR fetch is not installed |
+| `FormData`, `URL`, `URLSearchParams` | small mirrors of RN's own Flow implementations (`Libraries/Network/FormData.js`, `Libraries/Blob/URL.js`; userinfo stripped from `host`, no host for non-http schemes) |
+| `console` | full RN surface (`assert`, `group`, `table`, `time`, …) |
+
+Deliberately nothing RN lacks (for example `TextDecoder`), so code that would throw on a device
+throws in your tests too. If your app installs its own polyfills at startup, they win — the
+harness only fills globals that are absent.
 
 ## Coverage
 

@@ -13,6 +13,10 @@ await build({
   target: 'es2020',
   minify: false,
   platform: 'neutral',
+  // neutral platform ignores package "main"/"module" unless told; needed for the RN-global
+  // packages (whatwg-fetch, abort-controller) bundled from node_modules.
+  mainFields: ['module', 'main'],
+  conditions: ['import', 'default'],
   banner: { js: polyfills },
   external: ['react'],
   // react is externalized — resolved at runtime from globalThis.__HT_React.

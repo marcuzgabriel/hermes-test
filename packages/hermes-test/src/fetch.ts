@@ -65,9 +65,13 @@ function fakeFetch(input: any, init?: any): any {
     url = input;
   } else if (input && typeof input === 'object') {
     url = input.url || input.href || String(input);
-    // If init wasn't provided, pull from the Request object
+    // If init wasn't provided, pull from the Request object. A spec Request (whatwg-fetch,
+    // what RN ships) keeps its body in _bodyInit/_bodyText rather than a `.body` property.
     if (!init && input.method) {
-      init = { method: input.method, headers: input.headers, body: input.body };
+      const body = input._bodyInit !== undefined ? input._bodyInit
+        : input._bodyText !== undefined ? input._bodyText
+        : input.body;
+      init = { method: input.method, headers: input.headers, body };
     }
   } else {
     url = String(input);

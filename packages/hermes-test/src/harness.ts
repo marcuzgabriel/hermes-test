@@ -29,9 +29,29 @@
       if (msg.includes('An unhandled error occurred processing a request for the endpoint')) return;
       p('\x1b[31m✗ ' + msg + '\x1b[0m');
     },
+    // The rest of the console surface React Native's console polyfill provides
+    // (@react-native/js-polyfills/console.js). Libraries call these (event-target-shim uses
+    // console.assert); missing methods were a TypeError, not a no-op.
+    assert: (cond: any, ...args: any[]) => {
+      if (!cond) p('\x1b[31m✗ Assertion failed' + (args.length ? ': ' + fmt(...args) : '') + '\x1b[0m');
+    },
+    trace: (...args: any[]) => p(fmt(...args)),
+    dir: (...args: any[]) => p(fmt(...args)),
+    table: (...args: any[]) => p(fmt(...args)),
+    group: (...args: any[]) => { if (args.length) p(fmt(...args)); },
+    groupCollapsed: (...args: any[]) => { if (args.length) p(fmt(...args)); },
+    groupEnd: () => {},
+    time: () => {},
+    timeEnd: () => {},
+    timeLog: () => {},
+    count: () => {},
+    countReset: () => {},
   };
 })();
 
+import { installReactNativeGlobals } from './rn-globals';
+// Install RN's web-API globals before anything else in the harness or the user bundle runs.
+installReactNativeGlobals();
 import { expect, _setSnapshotContext, getSnapshotCount } from './expect';
 import { spy, spyOn, clearAllMocks } from './spy';
 import { renderHook, act, waitFor } from './hooks';
