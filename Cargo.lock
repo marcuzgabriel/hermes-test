@@ -380,7 +380,7 @@ checksum = "2304e00983f87ffb38b55b444b5e3b60a884b5d30c0fca7d82fe33449bbe55ea"
 
 [[package]]
 name = "hermes-test-cli"
-version = "1.2.1"
+version = "1.3.0"
 dependencies = [
  "cc",
  "clap",
@@ -756,6 +756,7 @@ checksum = "3fecf76aaae6c29dd8dcde82e8a526ba8e7859ecfa98a2b8b5d54fc17965a241"
 dependencies = [
  "oxc_allocator",
  "oxc_ast",
+ "oxc_ast_visit",
  "oxc_diagnostics",
  "oxc_parser",
  "oxc_regular_expression",

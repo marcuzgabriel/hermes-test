@@ -29,9 +29,29 @@
       if (msg.includes('An unhandled error occurred processing a request for the endpoint')) return;
       p('\x1b[31m✗ ' + msg + '\x1b[0m');
     },
+    // The rest of the console surface React Native's console polyfill provides
+    // (@react-native/js-polyfills/console.js). Libraries call these (event-target-shim uses
+    // console.assert); missing methods were a TypeError, not a no-op.
+    assert: (cond: any, ...args: any[]) => {
+      if (!cond) p('\x1b[31m✗ Assertion failed' + (args.length ? ': ' + fmt(...args) : '') + '\x1b[0m');
+    },
+    trace: (...args: any[]) => p(fmt(...args)),
+    dir: (...args: any[]) => p(fmt(...args)),
+    table: (...args: any[]) => p(fmt(...args)),
+    group: (...args: any[]) => { if (args.length) p(fmt(...args)); },
+    groupCollapsed: (...args: any[]) => { if (args.length) p(fmt(...args)); },
+    groupEnd: () => {},
+    time: () => {},
+    timeEnd: () => {},
+    timeLog: () => {},
+    count: () => {},
+    countReset: () => {},
   };
 })();
 
+import { installReactNativeGlobals } from './rn-globals';
+// Install RN's web-API globals before anything else in the harness or the user bundle runs.
+installReactNativeGlobals();
 import { expect, _setSnapshotContext, getSnapshotCount } from './expect';
 import { spy, spyOn, clearAllMocks } from './spy';
 import { renderHook, act, waitFor } from './hooks';
@@ -71,6 +91,8 @@ type TestEntry = {
   options: TestOptions;
   group?: string;
   file?: string;
+  /** Full require path of the file that registered the test (for __snapshots__ placement). */
+  filePath?: string;
 };
 
 type TestResult = {
@@ -99,6 +121,7 @@ function test(name: string, fn: TestFn, options?: TestOptions): void {
     options: options ?? {},
     group: currentGroup,
     file: (globalThis as any).__currentTestFile,
+    filePath: (globalThis as any).__currentTestFilePath,
   });
 }
 
@@ -431,8 +454,11 @@ function runTests(): TestResult[] {
 
     // Set up snapshot context for this test
     {
-      // Use full file path (set by entry code) for correct snapshot directory
-      const filePath = (globalThis as any).__currentTestFilePath || entry.file || 'unknown';
+      // Use the full file path captured at registration time. __currentTestFilePath is set by
+      // the entry code while each test file is *required*; by the time tests run it holds the
+      // LAST file's path, so reading it here attributed every snapshot to the last file in the
+      // run (see examples/expo-app snapshot.test.tsx → timer-control.test.ts.snap history).
+      const filePath = entry.filePath || (globalThis as any).__currentTestFilePath || entry.file || 'unknown';
       // Strip leading ./ if present
       const clean = filePath.startsWith('./') ? filePath.substring(2) : filePath;
       const lastSlash = clean.lastIndexOf('/');

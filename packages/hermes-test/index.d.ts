@@ -51,6 +51,9 @@ export interface Assertion<T = unknown> {
   toBeTruthy(): void;
   toBeFalsy(): void;
   toBeGreaterThan(n: number): void;
+  toBeGreaterThanOrEqual(n: number): void;
+  toBeLessThanOrEqual(n: number): void;
+  toHaveProperty(path: string | Array<string | number>, value?: unknown): void;
   toBeLessThan(n: number): void;
   toBeInstanceOf(cls: new (...args: any[]) => any): void;
   toHaveLength(n: number): void;
@@ -69,6 +72,8 @@ export interface Assertion<T = unknown> {
   toHaveBeenCalledTimes(n: number): void;
   toHaveBeenCalledWith(...args: any[]): void;
   toHaveBeenLastCalledWith(...args: any[]): void;
+  toHaveBeenCalledOnce(): void;
+  toHaveBeenNthCalledWith(n: number, ...args: any[]): void;
 
   // Element matchers (for render() results)
   toBeRendered(): void;

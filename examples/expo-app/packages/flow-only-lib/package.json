@@ -1,0 +1,7 @@
+{
+  "name": "flow-only-lib",
+  "version": "0.0.1",
+  "private": true,
+  "main": "index.js",
+  "description": "Example-only package written in Flow syntax (like @react-native-masked-view). esbuild cannot parse it, so it must be shimmed via hermes-test.config.json \"shims\"."
+}

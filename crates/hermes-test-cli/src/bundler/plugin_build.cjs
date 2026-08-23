@@ -77,6 +77,40 @@ function wrapperFor(base) {
   return undefined;
 }
 
+// Anything imported with a non-code extension is an asset (fonts from @expo/vector-icons,
+// images, audio, …). Metro treats those as assets; esbuild would fail with "No loader is
+// configured". One catch-all instead of a per-extension loader list.
+const CODE_EXT = /\.(m?[jt]sx?|c[jt]s|json)$/i;
+const assetPlugin = {
+  name: 'ht-assets',
+  setup(build) {
+    build.onResolve({ filter: /^[./].*\.[a-z0-9]+$/i }, (args) => {
+      // Relative/absolute file imports only (`./Fonts/X.ttf`, `../img/a.png`). Bare package
+      // specifiers are left to esbuild — a dotted last segment there (`pkg/v1.2`) is a path,
+      // not an extension.
+      if (CODE_EXT.test(args.path) || args.namespace === 'ht-asset') return undefined;
+      const ext = args.path.slice(args.path.lastIndexOf('.') + 1).toLowerCase();
+      if (opts.loader['.' + ext]) return undefined; // explicit loader wins
+      return { path: args.path, namespace: 'ht-asset' };
+    });
+    build.onLoad({ filter: /.*/, namespace: 'ht-asset' }, () => ({
+      contents: 'module.exports = {};',
+      loader: 'js',
+    }));
+  },
+};
+
+// `react-native/<subpath>` is always external (Flow syntax, native). When `react-native` itself is
+// shimmed via an esbuild alias (built-in wrapper shim), the alias would also rewrite subpaths to
+// `<shim-file>/<subpath>` and fail resolution — e.g. expo/src/winter/runtime.native.ts imports
+// `react-native/Libraries/Core/InitializeCore`. Plugins see the raw specifier before aliasing.
+const rnSubpathPlugin = {
+  name: 'ht-rn-subpaths',
+  setup(build) {
+    build.onResolve({ filter: /^react-native\// }, (args) => ({ path: args.path, external: true }));
+  },
+};
+
 const mockPlugin = {
   name: 'ht-mocks',
   setup(build) {
@@ -121,8 +155,9 @@ const mockPlugin = {
 
 // No mocked targets → no interception needed → skip the plugin entirely so no
 // import pays a Go→JS round trip.
-opts.plugins =
-  Object.keys(wrappers).length > 0 || Object.keys(textWrappers).length > 0 ? [mockPlugin] : [];
+// The asset catch-all is cheap (onResolve filter is a plain extension regex) and always on.
+opts.plugins = [rnSubpathPlugin, assetPlugin];
+if (Object.keys(wrappers).length > 0 || Object.keys(textWrappers).length > 0) opts.plugins.push(mockPlugin);
 
 esbuild
   .build(opts)

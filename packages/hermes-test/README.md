@@ -116,8 +116,10 @@ expect(val).toMatchObject(sub)     expect(val).toMatchSnapshot()
 expect(val).toBeTruthy()           expect(val).toBeFalsy()
 expect(val).toBeDefined()          expect(val).toBeUndefined()
 expect(val).toBeNull()             expect(val).toBeGreaterThan(n)
+expect(val).toBeGreaterThanOrEqual(n) expect(val).toBeLessThanOrEqual(n)
 expect(val).toContain(item)        expect(val).toContainEqual(item)
 expect(val).toMatch(/regex/)       expect(val).toBeCloseTo(n, precision)
+expect(obj).toHaveProperty('a.b', v) expect(val).toHaveLength(n)
 expect(fn).toThrow('msg')          expect(val).not.toBe(other)
 
 // Asymmetric matchers
@@ -495,15 +497,41 @@ Example config with shims:
 }
 ```
 
-You can also write custom shims for app-specific native modules:
+You can also write custom shims for app-specific native modules — or for any package the
+bundler cannot parse (Flow syntax, font/media assets). A configured shim **externalizes the real
+package** (it is never bundled) and serves your file to every importer at runtime:
 
 ```json
 {
   "shims": {
-    "react-native-keychain": "./test/shims/keychain.js"
+    "react-native-keychain": "./test/shims/keychain.js",
+    "@react-native-masked-view/masked-view": "./test/shims/masked-view.js"
   }
 }
 ```
+
+Any import with a non-code extension (fonts, images, audio, …) is loaded as an empty module, so
+`@expo/vector-icons`-style `require('./Fonts/X.ttf')` never breaks a bundle.
+
+### React Native globals
+
+The harness installs what React Native itself installs in `InitializeCore`
+(`Libraries/Core/setUpXHR.js`), from the same sources where possible — nothing to install or
+configure on your side:
+
+| Global | Source |
+|---|---|
+| `Headers`, `Request`, `Response` | `whatwg-fetch` — the package RN requires verbatim (bundled into the harness) |
+| `AbortController`, `AbortSignal` | `abort-controller` — the package RN requires (bundled into the harness) |
+| `fetch` | hermes-test's handler-based mock (`ht.mock.fetch`) — whatwg-fetch's XHR fetch is not installed |
+| `FormData`, `URL`, `URLSearchParams` | small mirrors of RN's own Flow implementations (`Libraries/Network/FormData.js`, `Libraries/Blob/URL.js`; userinfo stripped from `host`, no host for non-http schemes) |
+| `Blob`, `File` | RN-shaped mirrors (`Libraries/Blob`) |
+| `console` | full RN surface (`assert`, `group`, `table`, `time`, …) |
+| **Expo projects**: `TextDecoder`, WHATWG `URL`, `structuredClone`, spec `FormData` | the project's own `expo/src/winter/runtime.native.ts` is run before tests — same as `expo/src/Expo.fx` at app start; any SDK; `"expoRuntime": false` to disable |
+
+Deliberately nothing RN lacks (for example `TextDecoder`), so code that would throw on a device
+throws in your tests too. If your app installs its own polyfills at startup, they win — the
+harness only fills globals that are absent.
 
 ## Coverage
 

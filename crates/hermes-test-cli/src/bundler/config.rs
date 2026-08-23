@@ -12,6 +12,9 @@ pub struct BundleConfig {
     pub split: bool,
     pub test_match: Option<String>, // e.g. ".hermes.test.ts" — only discover matching files
     pub coverage_threshold: Option<f64>, // e.g. 65.0 — fail if total coverage below this %
+    /// Install Expo's "winter" runtime globals (TextDecoder, WHATWG URL, structuredClone, …) from the
+    /// project's own `expo` package when present — what `expo/src/Expo.fx` does at app start. Default true.
+    pub expo_runtime: bool,
 }
 
 /// Strip JS-style comments (// and /* */) from JSON-like content.
@@ -105,6 +108,7 @@ pub fn read_config(project_root: &Path) -> BundleConfig {
         aliases: Vec::new(), externals: Vec::new(), shims: Vec::new(),
         wrapper_shims: Vec::new(), root: None, split: false, test_match: None,
         coverage_threshold: None,
+        expo_runtime: true,
     };
 
     // Find hermes-test.config.json — check project root, then walk up
@@ -183,9 +187,14 @@ pub fn read_config(project_root: &Path) -> BundleConfig {
         config.coverage_threshold = Some(val);
     }
 
+    // "expoRuntime" — set false to skip installing Expo's winter runtime globals
+    if let Some(val) = json["expoRuntime"].as_bool() {
+        config.expo_runtime = val;
+    }
+
     // Validate config keys — reject unknown keys with a clear error
     let known_keys = ["root", "tsconfig", "externals", "external", "shims",
-                       "testMatch", "coverageThreshold"];
+                       "testMatch", "coverageThreshold", "expoRuntime"];
     if let Some(obj) = json.as_object() {
         let unknown: Vec<&String> = obj.keys()
             .filter(|k| !known_keys.contains(&k.as_str()))

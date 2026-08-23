@@ -332,84 +332,12 @@ if (typeof globalThis.MessageChannel === 'undefined') {
   }
 })();
 
-// Web API polyfills — needed for RTK Query's fetchBaseQuery
+// Web API polyfills — the ones React Native's InitializeCore installs (Libraries/Core/setUpXHR.js).
+// Headers / Request / Response come from `whatwg-fetch` and AbortController / AbortSignal from
+// `abort-controller` — the exact packages RN requires — bundled into the harness by bundle.mjs
+// (see src/rn-globals.ts). The hand-written RN-shape mirrors below are for globals RN implements
+// in Flow files we cannot bundle (URL / URLSearchParams / FormData).
 (function () {
-  // AbortController / AbortSignal
-  if (typeof globalThis.AbortController === 'undefined') {
-    function AbortSignal() {
-      this.aborted = false;
-      this._listeners = [];
-    }
-    AbortSignal.prototype.addEventListener = function (type, fn) {
-      this._listeners.push(fn);
-    };
-    AbortSignal.prototype.removeEventListener = function (type, fn) {
-      this._listeners = this._listeners.filter(function (f) {
-        return f !== fn;
-      });
-    };
-
-    function AbortController() {
-      this.signal = new AbortSignal();
-    }
-    AbortController.prototype.abort = function () {
-      this.signal.aborted = true;
-      for (var i = 0; i < this.signal._listeners.length; i++) {
-        try {
-          this.signal._listeners[i]();
-        } catch (e) {}
-      }
-    };
-
-    globalThis.AbortController = AbortController;
-    globalThis.AbortSignal = AbortSignal;
-  }
-
-  // Headers
-  if (typeof globalThis.Headers === 'undefined') {
-    function Headers(init) {
-      this._map = {};
-      if (init) {
-        if (typeof init.forEach === 'function') {
-          init.forEach(
-            function (v, k) {
-              this._map[k.toLowerCase()] = v;
-            }.bind(this),
-          );
-        } else {
-          var keys = Object.keys(init);
-          for (var i = 0; i < keys.length; i++) {
-            this._map[keys[i].toLowerCase()] = init[keys[i]];
-          }
-        }
-      }
-    }
-    Headers.prototype.get = function (k) {
-      return this._map[k.toLowerCase()] || null;
-    };
-    Headers.prototype.has = function (k) {
-      return k.toLowerCase() in this._map;
-    };
-    Headers.prototype.set = function (k, v) {
-      this._map[k.toLowerCase()] = v;
-    };
-    Headers.prototype.append = function (k, v) {
-      k = k.toLowerCase();
-      this._map[k] = this._map[k] ? this._map[k] + ', ' + v : v;
-    };
-    Headers.prototype.delete = function (k) {
-      delete this._map[k.toLowerCase()];
-    };
-    Headers.prototype.forEach = function (fn) {
-      var keys = Object.keys(this._map);
-      for (var i = 0; i < keys.length; i++) fn(this._map[keys[i]], keys[i], this);
-    };
-    Headers.prototype.entries = function () {
-      return Object.entries(this._map);
-    };
-    globalThis.Headers = Headers;
-  }
-
   // URLSearchParams — always install BEFORE URL: native Hermes version may not parse correctly
   {
     function URLSearchParams(init) {
@@ -526,25 +454,35 @@ if (typeof globalThis.MessageChannel === 'undefined') {
     globalThis.URLSearchParams = URLSearchParams;
   }
 
-  // URL — always install: Hermes has a built-in URL that doesn't parse searchParams correctly
+  // URL — always install: Hermes has a built-in URL that doesn't parse searchParams correctly.
+  // Shape follows React Native's own polyfill (Libraries/Blob/URL.js): http(s) host/hostname/
+  // origin/pathname, userinfo (`user:pass@host`) stripped from host, `protocol` for any scheme.
+  // Non-http schemes get host '' exactly like RN does on device — do not "improve" that here.
   {
     function URL(url, base) {
       if (base && url.indexOf('://') === -1) {
         url = base.replace(/\/$/, '') + '/' + url.replace(/^\//, '');
       }
       this.href = url;
-      var match = url.match(/^(https?:)\/\/([^/:?#]+)(:\d+)?(\/[^?#]*)?(\?[^#]*)?(#.*)?$/);
+      var protoMatch = url.match(/^([a-zA-Z][a-zA-Z\d+\-.]*):/);
+      var match = url.match(/^(https?:)\/\/(?:([^@/?#]*)@)?([^/:?#]+)(:\d+)?(\/[^?#]*)?(\?[^#]*)?(#.*)?$/);
       if (match) {
         this.protocol = match[1];
-        this.hostname = match[2];
-        this.port = match[3] ? match[3].slice(1) : '';
-        this.pathname = match[4] || '/';
-        this.search = match[5] || '';
-        this.hash = match[6] || '';
+        var userinfo = match[2] || '';
+        var sep = userinfo.indexOf(':');
+        this.username = sep === -1 ? userinfo : userinfo.slice(0, sep);
+        this.password = sep === -1 ? '' : userinfo.slice(sep + 1);
+        this.hostname = match[3];
+        this.port = match[4] ? match[4].slice(1) : '';
+        this.pathname = match[5] || '/';
+        this.search = match[6] || '';
+        this.hash = match[7] || '';
         this.host = this.hostname + (this.port ? ':' + this.port : '');
         this.origin = this.protocol + '//' + this.host;
       } else {
-        this.protocol = '';
+        this.protocol = protoMatch ? protoMatch[1] + ':' : '';
+        this.username = '';
+        this.password = '';
         this.hostname = '';
         this.port = '';
         this.pathname = url;
@@ -558,17 +496,82 @@ if (typeof globalThis.MessageChannel === 'undefined') {
     URL.prototype.toString = function () {
       return this.href;
     };
+    URL.prototype.toJSON = function () {
+      return this.href;
+    };
     globalThis.URL = URL;
   }
 
-  // Request (minimal — RTK Query checks typeof Request)
-  if (typeof globalThis.Request === 'undefined') {
-    globalThis.Request = function Request(url, init) {
-      this.url = typeof url === 'string' ? url : url.href;
-      this.method = (init && init.method) || 'GET';
-      this.headers = new globalThis.Headers(init && init.headers);
-      this.body = init && init.body;
+  // Blob / File — React Native installs these (Libraries/Blob/Blob.js, File.js) backed by a native
+  // blob store. Here: the same public shape (parts of strings/Blobs, size, type, slice, close) with
+  // the data kept in JS. Like RN's iOS implementation, typed arrays / ArrayBuffers are rejected as
+  // parts — code relying on that passing here would fail on a device.
+  if (typeof globalThis.Blob === 'undefined') {
+    function Blob(parts, options) {
+      parts = parts || [];
+      var text = '';
+      for (var i = 0; i < parts.length; i++) {
+        var part = parts[i];
+        if (typeof part === 'string') text += part;
+        else if (part instanceof Blob) text += part._text;
+        else throw new Error('Cannot create Blob from parts of type ' + Object.prototype.toString.call(part) + ' (React Native accepts strings and Blobs only)');
+      }
+      this._text = text;
+      this._type = (options && options.type) || '';
+    }
+    Object.defineProperty(Blob.prototype, 'size', { get: function () { return this._text.length; } });
+    Object.defineProperty(Blob.prototype, 'type', { get: function () { return this._type; } });
+    Object.defineProperty(Blob.prototype, 'data', { get: function () { return { size: this._text.length, type: this._type, blobId: 'ht-blob' }; } });
+    Blob.prototype.slice = function (start, end, contentType) {
+      return new Blob([this._text.slice(start, end)], { type: contentType || '' });
     };
+    Blob.prototype.text = function () { return Promise.resolve(this._text); };
+    Blob.prototype.close = function () { this._text = ''; };
+    globalThis.Blob = Blob;
+
+    function File(parts, name, options) {
+      Blob.call(this, parts, options);
+      this.name = name;
+      this.lastModified = (options && options.lastModified) || Date.now();
+    }
+    File.prototype = Object.create(Blob.prototype);
+    File.prototype.constructor = File;
+    globalThis.File = File;
+  }
+
+  // FormData — React Native installs its own (Libraries/Network/FormData.js) in InitializeCore;
+  // Hermes has none. Same API as RN: append / getAll / getParts. Installed only if absent so a
+  // project-level polyfill wins.
+  if (typeof globalThis.FormData === 'undefined') {
+    function FormData() {
+      this._parts = [];
+    }
+    FormData.prototype.append = function (key, value) {
+      this._parts.push([key, value]);
+    };
+    FormData.prototype.getAll = function (key) {
+      return this._parts
+        .filter(function (p) { return p[0] === key; })
+        .map(function (p) { return p[1]; });
+    };
+    FormData.prototype.getParts = function () {
+      return this._parts.map(function (p) {
+        var name = p[0];
+        var value = p[1];
+        var headers = { 'content-disposition': 'form-data; name="' + name + '"' };
+        if (typeof value === 'object' && !Array.isArray(value) && value) {
+          if (typeof value.name === 'string') {
+            headers['content-disposition'] += '; filename="' + value.name.replace(/"/g, '%22') + '"';
+          }
+          if (typeof value.type === 'string') {
+            headers['content-type'] = value.type;
+          }
+          return Object.assign({}, value, { headers: headers, fieldName: name });
+        }
+        return { string: String(value), headers: headers, fieldName: name };
+      });
+    };
+    globalThis.FormData = FormData;
   }
 
   // Stub fetch (mockFetch will override with handler-based implementation)
@@ -580,19 +583,4 @@ if (typeof globalThis.MessageChannel === 'undefined') {
     };
   }
 
-  // Response (minimal)
-  if (typeof globalThis.Response === 'undefined') {
-    globalThis.Response = function Response(body, init) {
-      this.body = body;
-      this.status = (init && init.status) || 200;
-      this.ok = this.status >= 200 && this.status < 300;
-      this.headers = new globalThis.Headers(init && init.headers);
-    };
-    globalThis.Response.prototype.json = function () {
-      return Promise.resolve(JSON.parse(this.body));
-    };
-    globalThis.Response.prototype.text = function () {
-      return Promise.resolve(String(this.body));
-    };
-  }
 })();

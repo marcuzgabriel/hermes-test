@@ -138,6 +138,8 @@ pub(crate) fn assemble_esbuild_args(
         "--loader:.jpg=empty".into(),
         "--loader:.gif=empty".into(),
         "--loader:.svg=empty".into(),
+        // Every other non-code extension (fonts, media, …) is handled by the asset catch-all in
+        // plugin_build.cjs — no list to maintain here.
     ]; // console is a global in Hermes, not externalized
 
     if sourcemap_inline {
@@ -260,6 +262,17 @@ pub(crate) fn assemble_esbuild_args(
         } else if !ext.ends_with('*') {
             args.push(format!("--external:{ext}/*"));
         }
+    }
+
+    // User file shims ("shims": {"pkg": "./path/to/shim.js"}) replace a module at runtime
+    // via __HT_mocks — so the real package must NOT be bundled, otherwise esbuild inlines it
+    // (and chokes on its assets / Flow syntax) and the shim silently never applies.
+    for (module_name, _) in &cfg.shims {
+        if cfg.externals.iter().any(|e| e == module_name) {
+            continue;
+        }
+        // Exact module only: a shim for `pkg` must not swallow a real `pkg/sub` import.
+        args.push(format!("--external:{module_name}"));
     }
 
     // Mock module externals

@@ -24,8 +24,8 @@ There are 1472+ passing tests. Study them. Follow the same patterns. Do NOT inve
 ### Expect Matchers
 - `toBe`, `toEqual`, `toBeDefined`, `toBeUndefined`, `toBeNull`
 - `toBeTruthy`, `toBeFalsy`
-- `toBeGreaterThan`, `toBeLessThan`
-- `toHaveLength`, `toBeInstanceOf`
+- `toBeGreaterThan`, `toBeLessThan`, `toBeGreaterThanOrEqual`, `toBeLessThanOrEqual`
+- `toHaveLength`, `toBeInstanceOf`, `toHaveProperty(path, value?)` (dotted or array path)
 - `toContain` (arrays and strings), `toContainEqual` (deep equality in arrays)
 - `toBeCloseTo(expected, precision?)` — floating-point comparison
 - `toMatch(regex | string)` — string matching
@@ -34,7 +34,7 @@ There are 1472+ passing tests. Study them. Follow the same patterns. Do NOT inve
 
 #### Spy-specific matchers
 - `wasCalled()`, `wasCalledOnce()`, `wasCalledTimes(n)`, `wasCalledWith(...args)`, `wasLastCalledWith(...args)`, `wasNeverCalled()`
-- Jest aliases: `toHaveBeenCalled()`, `toHaveBeenCalledTimes(n)`, `toHaveBeenCalledWith(...)`, `toHaveBeenLastCalledWith(...)`
+- Jest aliases: `toHaveBeenCalled()`, `toHaveBeenCalledTimes(n)`, `toHaveBeenCalledWith(...)`, `toHaveBeenLastCalledWith(...)`, `toHaveBeenCalledOnce()`, `toHaveBeenNthCalledWith(n, ...)`
 
 #### Asymmetric matchers
 - `expect.anything()` — matches any value except `null` and `undefined`

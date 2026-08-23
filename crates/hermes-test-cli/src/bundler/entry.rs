@@ -755,6 +755,24 @@ pub fn generate_entry_with_shallow(
         }
     }
 
+    // Expo projects: install Expo's "winter" runtime globals — TextDecoder, TextDecoderStream,
+    // TextEncoderStream, WHATWG URL/URLSearchParams (whatwg-url-minimum), structuredClone and the
+    // FormData spec patch — by running the project's OWN `expo/src/winter/runtime.native.ts`,
+    // exactly what `expo/src/Expo.fx` does at app start. Zero code to maintain here and always
+    // the user's Expo version. Bare React Native projects (no `expo`) get RN's set only.
+    if cfg.expo_runtime {
+        if let Some(runtime) = find_expo_winter_runtime(project_root, cfg) {
+            // Expo >= 57 would also install `expo/fetch` (native, via expo-modules-core). Tests
+            // keep hermes-test's handler-based mock fetch: use Expo's own opt-out
+            // (EXPO_PUBLIC_USE_RN_FETCH=1, the same switch an app would use to keep RN's fetch)
+            // and re-assert our fetch afterwards for good measure.
+            entry.push_str(&format!(
+                "(function () {{\n  var p = globalThis.process = globalThis.process || {{ env: {{}} }}; p.env = p.env || {{}};\n  if (p.env.EXPO_PUBLIC_USE_RN_FETCH === undefined) p.env.EXPO_PUBLIC_USE_RN_FETCH = '1';\n  var htFetch = globalThis.fetch;\n  try {{ require('{}'); }} catch (e) {{ console.warn('hermes-test: could not install the Expo runtime globals (expo/src/winter): ' + (e && e.message ? e.message : e)); }}\n  if (htFetch) globalThis.fetch = htFetch;\n}})();\n",
+                runtime.to_string_lossy().replace('\\', "/")
+            ));
+        }
+    }
+
     // Pre-register mock module placeholders BEFORE anything loads.
     // Each placeholder is a live Proxy that checks __HT_file_mocks on every property
     // access. This is critical: shared modules (e.g. keyValueStorage) cache the result
@@ -982,4 +1000,21 @@ pub fn collect_source_mtimes(dir: &Path, out: &mut Vec<(String, u64)>) {
             }
         }
     }
+}
+
+/// Locate `expo/src/winter/runtime.native.ts` in the project's (or configured root's) node_modules.
+fn find_expo_winter_runtime(project_root: Option<&Path>, cfg: &BundleConfig) -> Option<PathBuf> {
+    let mut bases: Vec<PathBuf> = Vec::new();
+    if let Some(p) = project_root { bases.push(p.to_path_buf()); }
+    if let Some(r) = &cfg.root {
+        let r = if r.is_absolute() { r.clone() } else { project_root.map(|p| p.join(r)).unwrap_or(r.clone()) };
+        bases.push(r);
+    }
+    for base in bases {
+        let candidate = base.join("node_modules/expo/src/winter/runtime.native.ts");
+        if candidate.is_file() {
+            return Some(candidate.canonicalize().unwrap_or(candidate));
+        }
+    }
+    None
 }
