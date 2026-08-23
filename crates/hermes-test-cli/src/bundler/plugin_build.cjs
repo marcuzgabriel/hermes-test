@@ -77,6 +77,27 @@ function wrapperFor(base) {
   return undefined;
 }
 
+// Anything imported with a non-code extension is an asset (fonts from @expo/vector-icons,
+// images, audio, …). Metro treats those as assets; esbuild would fail with "No loader is
+// configured". One catch-all instead of a per-extension loader list.
+const CODE_EXT = /\.(m?[jt]sx?|c[jt]s|json)$/i;
+const assetPlugin = {
+  name: 'ht-assets',
+  setup(build) {
+    build.onResolve({ filter: /\.[a-z0-9]+$/i }, (args) => {
+      if (CODE_EXT.test(args.path) || args.namespace === 'ht-asset') return undefined;
+      // Only file-ish specifiers: relative, absolute, or package paths with an extension.
+      const ext = args.path.slice(args.path.lastIndexOf('.') + 1).toLowerCase();
+      if (opts.loader['.' + ext] || ext.length > 5) return undefined;
+      return { path: args.path, namespace: 'ht-asset' };
+    });
+    build.onLoad({ filter: /.*/, namespace: 'ht-asset' }, () => ({
+      contents: 'module.exports = {};',
+      loader: 'js',
+    }));
+  },
+};
+
 const mockPlugin = {
   name: 'ht-mocks',
   setup(build) {
@@ -121,8 +142,9 @@ const mockPlugin = {
 
 // No mocked targets → no interception needed → skip the plugin entirely so no
 // import pays a Go→JS round trip.
-opts.plugins =
-  Object.keys(wrappers).length > 0 || Object.keys(textWrappers).length > 0 ? [mockPlugin] : [];
+// The asset catch-all is cheap (onResolve filter is a plain extension regex) and always on.
+opts.plugins = [assetPlugin];
+if (Object.keys(wrappers).length > 0 || Object.keys(textWrappers).length > 0) opts.plugins.push(mockPlugin);
 
 esbuild
   .build(opts)

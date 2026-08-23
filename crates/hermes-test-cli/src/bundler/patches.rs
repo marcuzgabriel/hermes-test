@@ -42,349 +42,178 @@ pub fn inject_mock_require_shim(code: &str) -> String {
     }).to_string()
 }
 
-/// Hoist mock() calls before init_*() calls in esbuild's bundled output.
-/// Hoist mock() calls before init_*() / require() calls so that when a module's
-/// initializer runs (e.g. `const { dispatch, getState } = store`), the mock is already
-/// registered in __HT_file_mocks and the shadow-wrapper Proxy returns the mock value.
+/// Hoist `ht.mock()` calls above `init_*()` / `require_*()` calls inside every test-file module
+/// body in esbuild's bundled output.
+///
+/// esbuild initializes imported modules (`init_x()`) where the `import` statements were — i.e.
+/// BEFORE the `ht.mock(...)` calls written below them ever run. A module that captures values at
+/// init time (`const { dispatch } = store`) would grab the real thing. So, per test-file body,
+/// every `init_*()` statement (except hermes-test's own `init_hermes*`) that appears before the
+/// last `ht.mock(...)` statement is moved to just after it.
+///
+/// Implemented on the OXC AST (already a dependency, already parsing the bundle for coverage):
+/// the parser handles strings, template literals, comments and regex literals — the hand-written
+/// brace/quote scanner this replaced mis-tokenized `"` inside `/[<>:"\/]/` and could run to the
+/// end of the bundle (slice panic at the old `patches.rs:76`).
 pub fn hoist_mock_modules(code: &str) -> String {
-    // Pattern: (0, import_hermes_test.mock)("path", () => ({ ... }));
-    // or: (0, import_hermes_test2.mock)("path", () => ({ ... }));
-    // We need to find these, extract them, and move them before init_*() calls.
+    use oxc::allocator::Allocator;
+    use oxc::ast::ast::*;
+    use oxc::ast_visit::{walk, Visit};
+    use oxc::parser::Parser;
+    use oxc::span::{GetSpan, SourceType};
 
-    let mut result = String::with_capacity(code.len());
-    let bytes = code.as_bytes();
-    let len = bytes.len();
-    let mut i = 0;
-
-    // Process each __commonJS or __esm block that contains test files
-    // Look for the function body pattern: `"filename.test.ts"(exports) {` or `"filename.test.ts"() {`
-    while i < len {
-        // Find test file function bodies inside __commonJS/__esm
-        // Pattern: "something.test.ts"(exports) { or "something.test.ts"() {
-        if let Some(pos) = code[i..].find(".test.ts\"(") {
-            let abs_pos = i + pos;
-            // Find the opening brace of this function body
-            if let Some(brace_offset) = code[abs_pos..].find('{') {
-                let body_start = abs_pos + brace_offset + 1;
-                // Find the end of this function body by counting braces
-                let body_end = find_matching_brace(code, body_start);
-                if body_end > body_start {
-                    // Copy everything up to body_start
-                    result.push_str(&code[i..body_start]);
-
-                    // Process this function body: extract mock() calls and hoist them
-                    let body = &code[body_start..body_end];
-                    let hoisted = hoist_mocks_in_body(body);
-                    if std::env::var("HT_DEBUG_BUNDLE").is_ok() && hoisted != body {
-                        eprintln!("[HT_HOIST] Modified body at offset {abs_pos} (body len: {})", body.len());
-                    }
-                    result.push_str(&hoisted);
-
-                    i = body_end;
-                    continue;
-                }
-            }
-            // Couldn't process, copy up to and past this match (`.test.ts"(` is 10 bytes;
-            // `abs_pos` already includes `pos`).
-            let skip_to = (abs_pos + 10).min(len);
-            result.push_str(&code[i..skip_to]);
-            i = skip_to;
-        } else {
-            // No more test file blocks
-            result.push_str(&code[i..]);
-            break;
-        }
+    // Cheap pre-check: nothing to hoist without a mock call anywhere.
+    if !code.contains("ht.mock(") {
+        return code.to_string();
     }
 
-    result
-}
+    let allocator = Allocator::default();
+    let ret = Parser::new(&allocator, code, SourceType::mjs()).parse();
+    if !ret.errors.is_empty() {
+        eprintln!(
+            "Warning: hermes-test could not parse the bundle to hoist ht.mock() calls ({} error(s)); \
+             mocks may register after the modules they target initialize. First: {}",
+            ret.errors.len(),
+            ret.errors[0]
+        );
+        return code.to_string();
+    }
 
-/// Find the position of the matching closing brace for an opening brace at `start`.
-/// `start` should be the position right after the opening `{`.
-/// Returns the position of the closing `}`; if the body is unterminated (or the scanner
-/// loses sync) it returns `code.len()` — never past the end, so callers can slice safely.
-///
-/// Skips string literals, line/block comments AND regex literals. A regex literal such as
-/// `/[<>:"\/]/` contains a quote that must not open a phantom string — before this was
-/// handled, one such literal in a test body derailed the scan to the end of the bundle and
-/// the `j += 1` after the string loop produced `len + 1` → slice panic (`patches.rs:76`).
-pub fn find_matching_brace(code: &str, start: usize) -> usize {
-    let bytes = code.as_bytes();
-    let len = bytes.len();
-    let mut depth = 1;
-    let mut j = start;
-    // Last significant (non-whitespace) byte seen, for the regex-vs-division decision.
-    let mut prev_sig: u8 = b'{';
-    // Bytes of the last identifier seen, so `return /re/` and `typeof /re/` read as regex.
-    let mut last_ident_start: usize = usize::MAX;
-    let mut last_ident_end: usize = 0;
+    /// Does this object-literal key name a test file? (`"src/x.test.ts"(exports) {` …)
+    fn is_test_file_key(key: &str) -> bool {
+        let stem = key.rsplit('/').next().unwrap_or(key);
+        let mut parts = stem.rsplitn(3, '.');
+        let ext = parts.next().unwrap_or("");
+        let kind = parts.next().unwrap_or("");
+        matches!(ext, "ts" | "tsx" | "js" | "jsx" | "mjs" | "cjs") && matches!(kind, "test" | "spec")
+    }
 
-    while j < len && depth > 0 {
-        let c = bytes[j];
-        match c {
-            b'{' => {
-                depth += 1;
-                prev_sig = c;
-            }
-            b'}' => {
-                depth -= 1;
-                if depth == 0 {
-                    return j;
-                }
-                prev_sig = c;
-            }
-            b'"' | b'\'' | b'`' => {
-                // Skip string literals
-                let quote = c;
-                j += 1;
-                while j < len {
-                    if bytes[j] == b'\\' {
-                        j += 1; // skip escaped char
-                    } else if bytes[j] == quote {
-                        break;
-                    }
-                    j += 1;
-                }
-                prev_sig = quote;
-            }
-            b'/' => {
-                if j + 1 < len && bytes[j + 1] == b'/' {
-                    // Line comment
-                    while j < len && bytes[j] != b'\n' {
-                        j += 1;
-                    }
-                    continue;
-                } else if j + 1 < len && bytes[j + 1] == b'*' {
-                    // Block comment
-                    j += 2;
-                    while j + 1 < len {
-                        if bytes[j] == b'*' && bytes[j + 1] == b'/' {
-                            j += 1;
-                            break;
+    // (start, end, replacement) edits for each test-file function body (span inside the braces).
+    struct Collector<'s> {
+        source: &'s str,
+        edits: Vec<(usize, usize, String)>,
+    }
+
+    impl<'a, 's> Visit<'a> for Collector<'s> {
+        fn visit_object_property(&mut self, prop: &ObjectProperty<'a>) {
+            let key = match &prop.key {
+                PropertyKey::StringLiteral(lit) => Some(lit.value.as_str()),
+                PropertyKey::StaticIdentifier(id) => Some(id.name.as_str()),
+                _ => None,
+            };
+            if let (Some(key), Expression::FunctionExpression(func)) = (key, &prop.value) {
+                if is_test_file_key(key) {
+                    if let Some(body) = &func.body {
+                        if let Some(edit) = hoist_in_body(self.source, body) {
+                            self.edits.push(edit);
                         }
-                        j += 1;
+                        // Test-file bodies don't nest; no need to descend.
+                        return;
                     }
-                } else if regex_can_start_here(prev_sig, code, last_ident_start, last_ident_end) {
-                    // Regex literal: skip to the unescaped closing `/` that is not inside a
-                    // character class, then past the flags.
-                    j += 1;
-                    let mut in_class = false;
-                    while j < len {
-                        let r = bytes[j];
-                        if r == b'\\' {
-                            j += 1;
-                        } else if r == b'[' {
-                            in_class = true;
-                        } else if r == b']' {
-                            in_class = false;
-                        } else if r == b'/' && !in_class {
-                            break;
-                        } else if r == b'\n' {
-                            // Unterminated regex on this line — give up on it, it was division.
-                            break;
-                        }
-                        j += 1;
-                    }
-                    while j + 1 < len && bytes[j + 1].is_ascii_alphabetic() {
-                        j += 1;
-                    }
-                    prev_sig = b')'; // a regex literal is a value, like a closed expression
-                } else {
-                    prev_sig = c; // division operator
                 }
             }
-            b' ' | b'\t' | b'\n' | b'\r' => {}
-            _ => {
-                if c.is_ascii_alphanumeric() || c == b'_' || c == b'$' {
-                    if last_ident_end != j {
-                        last_ident_start = j;
-                    }
-                    last_ident_end = j + 1;
-                }
-                prev_sig = c;
-            }
+            walk::walk_object_property(self, prop);
         }
-        j += 1;
     }
-    j.min(len)
-}
 
-/// Decide whether a `/` at the current position starts a regex literal (vs. division),
-/// from the previous significant byte and the previous identifier.
-fn regex_can_start_here(prev_sig: u8, code: &str, ident_start: usize, ident_end: usize) -> bool {
-    // After an identifier / number / closing bracket / string, `/` is division —
-    // unless the identifier is a keyword that takes an expression.
-    let after_value = prev_sig.is_ascii_alphanumeric()
-        || prev_sig == b'_'
-        || prev_sig == b'$'
-        || prev_sig == b')'
-        || prev_sig == b']'
-        || prev_sig == b'"'
-        || prev_sig == b'\''
-        || prev_sig == b'`';
-    if !after_value {
-        return true;
-    }
-    if ident_start != usize::MAX && ident_end <= code.len() && ident_start < ident_end {
-        // The identifier must be the thing immediately before `/` (prev_sig was its last byte).
-        let ident = &code[ident_start..ident_end];
-        if prev_sig == code.as_bytes()[ident_end - 1] {
-            return matches!(
-                ident,
-                "return" | "typeof" | "instanceof" | "in" | "of" | "new" | "delete" | "void"
-                    | "throw" | "case" | "do" | "else" | "yield" | "await"
-            );
-        }
-    }
-    false
-}
+    /// Compute the rewritten text for one function body, or None when nothing moves.
+    fn hoist_in_body(source: &str, body: &FunctionBody<'_>) -> Option<(usize, usize, String)> {
+        let body_start = body.span.start as usize + 1; // after `{`
+        let body_end = body.span.end as usize - 1; // before `}`
+        let text = &source[body_start..body_end];
 
-/// Extract a balanced parenthesized expression starting at `start` (position of opening paren).
-/// Returns the position after the closing paren (including trailing semicolon/newline).
-fn extract_call_end(code: &str, start: usize) -> usize {
-    let bytes = code.as_bytes();
-    let mut depth = 0;
-    let mut j = start;
-    while j < bytes.len() {
-        match bytes[j] {
-            b'(' => depth += 1,
-            b')' => {
-                depth -= 1;
-                if depth == 0 {
-                    j += 1;
-                    // Skip trailing semicolon and newline
-                    while j < bytes.len() && (bytes[j] == b';' || bytes[j] == b'\n' || bytes[j] == b'\r' || bytes[j] == b' ') {
-                        j += 1;
-                    }
-                    return j;
-                }
-            }
-            b'"' | b'\'' | b'`' => {
-                let quote = bytes[j];
-                j += 1;
-                while j < bytes.len() {
-                    if bytes[j] == b'\\' {
-                        j += 1;
-                    } else if bytes[j] == quote {
-                        break;
-                    }
-                    j += 1;
-                }
-            }
-            _ => {}
-        }
-        j += 1;
-    }
-    j
-}
+        let mut last_mock_end: Option<usize> = None; // relative to body_start
+        let mut inits: Vec<(usize, usize)> = Vec::new(); // (start, end) relative to body_start
 
-/// Within a single function body, move init_*() calls for non-hermes modules to AFTER
-/// the last mock() call. This ensures that:
-/// 1. Variable declarations (mockDispatch, mockGetState etc.) execute before mock() factories
-/// 2. mock() registers its mock values before modules initialize (init_*() runs)
-/// 3. When a module's initializer captures values like `const { dispatch } = store`, the mock is live
-///
-/// Strategy: "push init_* calls down" rather than "pull mock() calls up".
-/// This preserves the relative order of variable declarations and mock() calls.
-pub fn hoist_mocks_in_body(body: &str) -> String {
-    // Find all ht.mock() calls to determine if hoisting is needed
-    // After bundling, ht.mock("path", ...) stays as-is (ht is a global)
-    let mock_pattern = "ht.mock(";
-    if !body.contains(mock_pattern) {
-        if std::env::var("HT_DEBUG_BUNDLE").is_ok() {
-            eprintln!("[HOIST_BODY] no mock calls found in body (len={})", body.len());
+        for stmt in &body.statements {
+            let Statement::ExpressionStatement(es) = stmt else { continue };
+            let Expression::CallExpression(call) = &es.expression else { continue };
+            let span = es.span();
+            let (s, e) = ((span.start as usize) - body_start, (span.end as usize) - body_start);
+            match &call.callee {
+                // ht.mock(...)
+                Expression::StaticMemberExpression(m)
+                    if m.property.name == "mock"
+                        && matches!(&m.object, Expression::Identifier(id) if id.name == "ht") =>
+                {
+                    last_mock_end = Some(last_mock_end.map_or(e, |p| p.max(e)));
+                }
+                // init_foo()  (esbuild ESM initializer) — but never hermes-test's own.
+                Expression::Identifier(id)
+                    if id.name.starts_with("init_")
+                        && !id.name.starts_with("init_hermes")
+                        && call.arguments.is_empty() =>
+                {
+                    inits.push((s, e));
+                }
+                _ => {}
+            }
         }
-        return body.to_string();
+
+        let last_mock_end = last_mock_end?;
+        // Extend the insertion point past a trailing newline so hoisted inits land on their own
+        // lines (mirrors the historical text transform).
+        let mut insert_at = last_mock_end;
+        if text.as_bytes().get(insert_at) == Some(&b'\n') {
+            insert_at += 1;
+        }
+        let moving: Vec<(usize, usize)> = inits.into_iter().filter(|&(s, _)| s < last_mock_end).collect();
+        if moving.is_empty() {
+            return None;
+        }
+
+        // Each moved statement takes its leading indentation and trailing newline with it.
+        let ranges: Vec<(usize, usize, &str)> = moving
+            .iter()
+            .map(|&(s, e)| {
+                let bytes = text.as_bytes();
+                let mut rs = s;
+                while rs > 0 && (bytes[rs - 1] == b' ' || bytes[rs - 1] == b'\t') {
+                    rs -= 1;
+                }
+                let mut re = e;
+                if bytes.get(re) == Some(&b'\n') {
+                    re += 1;
+                }
+                (rs, re, &text[rs..re])
+            })
+            .collect();
+
+        let mut out = String::with_capacity(text.len() + 16);
+        let mut collected = String::new();
+        let mut pos = 0;
+        for &(rs, re, t) in &ranges {
+            out.push_str(&text[pos..rs]);
+            collected.push_str(t);
+            if !t.ends_with('\n') {
+                collected.push('\n');
+            }
+            pos = re;
+        }
+        out.push_str(&text[pos..insert_at.max(pos)]);
+        out.push_str(&collected);
+        out.push_str(&text[insert_at.max(pos)..]);
+        Some((body_start, body_end, out))
+    }
+
+    let mut collector = Collector { source: code, edits: Vec::new() };
+    collector.visit_program(&ret.program);
+    if collector.edits.is_empty() {
+        return code.to_string();
     }
     if std::env::var("HT_DEBUG_BUNDLE").is_ok() {
-        eprintln!("[HOIST_BODY] found mock calls, body len={}", body.len());
+        eprintln!("[HT_HOIST] rewrote {} test-file bodies", collector.edits.len());
     }
 
-    // Find the last ht.mock() call's end position
-    let mut last_mock_end = 0;
-    let mut search_start = 0;
-    while let Some(pos) = body[search_start..].find(mock_pattern) {
-        let abs_pos = search_start + pos;
-        // "ht.mock(" — the opening paren is at the end of the pattern
-        let outer_call_start = abs_pos + mock_pattern.len() - 1;
-        let outer_end = extract_call_end(body, outer_call_start);
-        // Extend to include trailing semicolon and newline
-        let mut end = outer_end;
-        let bytes = body.as_bytes();
-        if end < bytes.len() && bytes[end] == b';' { end += 1; }
-        if end < bytes.len() && bytes[end] == b'\n' { end += 1; }
-        if end > last_mock_end { last_mock_end = end; }
-        search_start = outer_end;
+    // Apply edits back-to-front so earlier offsets stay valid.
+    let mut edits = collector.edits;
+    edits.sort_by_key(|e| std::cmp::Reverse(e.0));
+    let mut out = code.to_string();
+    for (s, e, replacement) in edits {
+        out.replace_range(s..e, &replacement);
     }
-
-    if last_mock_end == 0 {
-        if std::env::var("HT_DEBUG_BUNDLE").is_ok() {
-            eprintln!("[HOIST_BODY] last_mock_end=0, no mocks found");
-        }
-        return body.to_string();
-    }
-
-    if std::env::var("HT_DEBUG_BUNDLE").is_ok() {
-        eprintln!("[HOIST_BODY] last_mock_end={}", last_mock_end);
-    }
-
-    // Find init_*() calls that appear BEFORE last_mock_end and are not init_hermes*
-    // These need to be moved to AFTER last_mock_end.
-    // Note: Rust regex crate doesn't support lookahead, so we filter out hermes* manually.
-    // Pattern: `      init_SomeName();\n` (with leading whitespace)
-    let init_re = match regex::Regex::new(r"(?m)^([ \t]*)(init_\w+)\(\);?\n?") {
-        Ok(re) => re,
-        Err(_) => return body.to_string(),
-    };
-
-    // Collect init_* ranges that are before last_mock_end and are not hermes-test internals
-    let mut init_ranges: Vec<(usize, usize, &str)> = Vec::new();
-    for m in init_re.find_iter(body) {
-        // Skip hermes-test internal inits like init_hermes_test
-        let text = m.as_str().trim_start();
-        if text.starts_with("init_hermes") { continue; }
-        if m.start() < last_mock_end {
-            init_ranges.push((m.start(), m.end(), m.as_str()));
-        }
-    }
-
-    if std::env::var("HT_DEBUG_BUNDLE").is_ok() {
-        eprintln!("[HOIST_BODY] init_ranges count={}", init_ranges.len());
-        for (s, e, t) in &init_ranges {
-            eprintln!("[HOIST_BODY]   init at {}..{}: {:?}", s, e, t.trim());
-        }
-    }
-
-    if init_ranges.is_empty() {
-        return body.to_string();
-    }
-
-    // Rebuild body: copy everything, skipping init_* calls before last_mock_end,
-    // then insert the collected init_* calls right after last_mock_end.
-    let mut result = String::with_capacity(body.len() + 64);
-    let mut pos = 0;
-    let mut collected_inits = String::new();
-
-    for &(start, end, text) in &init_ranges {
-        result.push_str(&body[pos..start]);
-        collected_inits.push_str(text);
-        if !text.ends_with('\n') { collected_inits.push('\n'); }
-        pos = end;
-    }
-
-    // Copy up to last_mock_end (might include some content after the last init_* we skipped)
-    // We need to handle the case where last_mock_end > pos
-    result.push_str(&body[pos..last_mock_end]);
-
-    // Insert collected init_* calls after all mock() calls
-    result.push_str(&collected_inits);
-
-    // Copy the rest
-    result.push_str(&body[last_mock_end..]);
-
-    result
+    out
 }
-
 
 /// Find the index of the `)` matching the `(` at `open`.
 /// Skips string literals and comments (same discipline as find_matching_brace).

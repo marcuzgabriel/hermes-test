@@ -8,8 +8,8 @@
       var mockDispatch = function() {};
       ht.mock("../store", () => ({ dispatch: mockDispatch }));
       ht.mock("../api", () => ({ load: () => 1 }));
-            init_store();
+      init_store();
       init_counter();
-globalThis.__fixtureOrder.push("body-end");
+      globalThis.__fixtureOrder.push("body-end");
     }
   });

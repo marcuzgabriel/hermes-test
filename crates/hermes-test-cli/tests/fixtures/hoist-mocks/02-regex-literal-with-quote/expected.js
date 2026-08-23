@@ -6,8 +6,8 @@
     "src/snake.test.ts"(exports) {
       init_hermes_test();
       ht.mock("../fs", () => ({ read: () => "x" }));
-            init_snake();
-globalThis.__fixtureOrder.push(/[<>:"\/\\|?*]/.test("a:b") ? "regex-ok" : "regex-broken");
+      init_snake();
+      globalThis.__fixtureOrder.push(/[<>:"\/\\|?*]/.test("a:b") ? "regex-ok" : "regex-broken");
       globalThis.__fixtureOrder.push(10 / 2 === 5 ? "div-ok" : "div-broken");
       globalThis.__fixtureOrder.push("snake-end");
     }
@@ -16,7 +16,7 @@ globalThis.__fixtureOrder.push(/[<>:"\/\\|?*]/.test("a:b") ? "regex-ok" : "regex
     "src/other.test.ts"(exports) {
       init_hermes_test();
       ht.mock("../api", () => ({ load: () => 1 }));
-            init_other();
-globalThis.__fixtureOrder.push("other-end");
+      init_other();
+      globalThis.__fixtureOrder.push("other-end");
     }
   });

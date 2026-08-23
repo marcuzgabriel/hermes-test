@@ -510,9 +510,8 @@ package** (it is never bundled) and serves your file to every importer at runtim
 }
 ```
 
-Assets are loaded as empty modules out of the box: `.png .jpg .jpeg .gif .svg .webp .bmp`,
-fonts `.ttf .otf .woff .woff2 .eot`, media `.mp3 .mp4 .wav` — so `@expo/vector-icons` style
-`require('./Fonts/X.ttf')` never breaks a bundle.
+Any import with a non-code extension (fonts, images, audio, …) is loaded as an empty module, so
+`@expo/vector-icons`-style `require('./Fonts/X.ttf')` never breaks a bundle.
 
 ### React Native globals
 

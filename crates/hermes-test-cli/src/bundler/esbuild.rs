@@ -138,20 +138,8 @@ pub(crate) fn assemble_esbuild_args(
         "--loader:.jpg=empty".into(),
         "--loader:.gif=empty".into(),
         "--loader:.svg=empty".into(),
-        "--loader:.jpeg=empty".into(),
-        "--loader:.webp=empty".into(),
-        "--loader:.bmp=empty".into(),
-        // Fonts: @expo/vector-icons & co. `require('./Fonts/X.ttf')` — Metro treats these as
-        // assets; without a loader one icon import fails the whole bundle.
-        "--loader:.ttf=empty".into(),
-        "--loader:.otf=empty".into(),
-        "--loader:.woff=empty".into(),
-        "--loader:.woff2=empty".into(),
-        "--loader:.eot=empty".into(),
-        // Media assets (expo-av / expo-audio requires)
-        "--loader:.mp3=empty".into(),
-        "--loader:.mp4=empty".into(),
-        "--loader:.wav=empty".into(),
+        // Every other non-code extension (fonts, media, …) is handled by the asset catch-all in
+        // plugin_build.cjs — no list to maintain here.
     ]; // console is a global in Hermes, not externalized
 
     if sourcemap_inline {
