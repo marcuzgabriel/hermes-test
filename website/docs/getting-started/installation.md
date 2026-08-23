@@ -44,7 +44,14 @@ Create this file at your project root:
 - `shims`: module replacements (built-in `hermes-test/shims/*` or local file path)
 - `coverageThreshold`: minimum coverage percentage for `--coverage`
 
-Start minimal, then add externals/shims only when your project needs them.
+Start minimal, then add externals/shims only when your project needs them. Out of the box:
+
+- **Assets** — relative imports with a non-code extension (`.ttf`, `.png`, `.mp3`, …) resolve to
+  an empty module, so `@expo/vector-icons`-style font requires never break a bundle.
+- **React Native globals** — `Headers`/`Request`/`Response` (from `whatwg-fetch`),
+  `AbortController`/`AbortSignal` (from `abort-controller`), `FormData`, `URL`,
+  `URLSearchParams` and the full `console` surface are installed by the harness, the same way
+  React Native's `InitializeCore` installs them on device. See [Runtime globals](../architecture/runtime-globals).
 
 ## Supported config keys
 

@@ -18,6 +18,14 @@ expect(value).toContain(item);
 expect(value).toContainEqual(item);
 expect(value).toMatch(/regex/);
 expect(value).toBeCloseTo(number, precision);
+expect(value).toBeGreaterThan(n);
+expect(value).toBeGreaterThanOrEqual(n);
+expect(value).toBeLessThan(n);
+expect(value).toBeLessThanOrEqual(n);
+expect(value).toHaveLength(n);
+expect(value).toBeInstanceOf(Class);
+expect(object).toHaveProperty('a.b.c');          // dotted or array path
+expect(object).toHaveProperty(['list', 0, 'id'], 'x'); // optional expected value
 expect(value).toMatchObject(partial);
 expect(value).toMatchSnapshot();
 expect(fn).toThrow('message');
@@ -39,6 +47,8 @@ expect(spyFn).toHaveBeenCalled();
 expect(spyFn).toHaveBeenCalledTimes(2);
 expect(spyFn).toHaveBeenCalledWith('a', 1);
 expect(spyFn).toHaveBeenLastCalledWith('b');
+expect(spyFn).toHaveBeenCalledOnce();
+expect(spyFn).toHaveBeenNthCalledWith(2, 'b'); // 1-based call index
 ```
 
 ## Element matchers

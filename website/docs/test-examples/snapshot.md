@@ -21,4 +21,8 @@ test('matches badge snapshot', ({expect}) => {
 });
 ```
 
+Snapshots are stored next to the test file that registered them:
+`<dir>/__snapshots__/<test-file-name>.snap`, keyed by `group > test name`. Update with
+`hermes-test --update-snapshots`.
+
 Tip: keep snapshots focused and avoid snapshotting huge trees with unstable data.

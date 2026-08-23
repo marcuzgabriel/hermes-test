@@ -52,6 +52,7 @@ const sidebars: SidebarsConfig = {
         'architecture/coverage',
         'architecture/auto-detection',
         'architecture/shims',
+        'architecture/runtime-globals',
       ],
     },
     {
