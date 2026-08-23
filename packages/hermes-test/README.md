@@ -116,8 +116,10 @@ expect(val).toMatchObject(sub)     expect(val).toMatchSnapshot()
 expect(val).toBeTruthy()           expect(val).toBeFalsy()
 expect(val).toBeDefined()          expect(val).toBeUndefined()
 expect(val).toBeNull()             expect(val).toBeGreaterThan(n)
+expect(val).toBeGreaterThanOrEqual(n) expect(val).toBeLessThanOrEqual(n)
 expect(val).toContain(item)        expect(val).toContainEqual(item)
 expect(val).toMatch(/regex/)       expect(val).toBeCloseTo(n, precision)
+expect(obj).toHaveProperty('a.b', v) expect(val).toHaveLength(n)
 expect(fn).toThrow('msg')          expect(val).not.toBe(other)
 
 // Asymmetric matchers
@@ -495,15 +497,30 @@ Example config with shims:
 }
 ```
 
-You can also write custom shims for app-specific native modules:
+You can also write custom shims for app-specific native modules — or for any package the
+bundler cannot parse (Flow syntax, font/media assets). A configured shim **externalizes the real
+package** (it is never bundled) and serves your file to every importer at runtime:
 
 ```json
 {
   "shims": {
-    "react-native-keychain": "./test/shims/keychain.js"
+    "react-native-keychain": "./test/shims/keychain.js",
+    "@react-native-masked-view/masked-view": "./test/shims/masked-view.js"
   }
 }
 ```
+
+Assets are loaded as empty modules out of the box: `.png .jpg .jpeg .gif .svg .webp .bmp`,
+fonts `.ttf .otf .woff .woff2 .eot`, media `.mp3 .mp4 .wav` — so `@expo/vector-icons` style
+`require('./Fonts/X.ttf')` never breaks a bundle.
+
+### React Native globals
+
+The harness installs what React Native itself installs in `InitializeCore` — `FormData`,
+`URL` / `URLSearchParams` (same shapes as `Libraries/Network/FormData.js` and
+`Libraries/Blob/URL.js`, userinfo stripped from `host`), `Headers`, `AbortController`, timers —
+and deliberately nothing RN lacks (for example `TextDecoder`), so code that would throw on a
+device throws in your tests too.
 
 ## Coverage
 

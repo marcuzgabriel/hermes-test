@@ -84,9 +84,11 @@ pub fn hoist_mock_modules(code: &str) -> String {
                     continue;
                 }
             }
-            // Couldn't process, copy up to and past this match
-            result.push_str(&code[i..abs_pos + pos + 10]);
-            i = abs_pos + pos + 10;
+            // Couldn't process, copy up to and past this match (`.test.ts"(` is 10 bytes;
+            // `abs_pos` already includes `pos`).
+            let skip_to = (abs_pos + 10).min(len);
+            result.push_str(&code[i..skip_to]);
+            i = skip_to;
         } else {
             // No more test file blocks
             result.push_str(&code[i..]);
@@ -99,25 +101,43 @@ pub fn hoist_mock_modules(code: &str) -> String {
 
 /// Find the position of the matching closing brace for an opening brace at `start`.
 /// `start` should be the position right after the opening `{`.
-/// Returns the position of the closing `}`.
+/// Returns the position of the closing `}`; if the body is unterminated (or the scanner
+/// loses sync) it returns `code.len()` — never past the end, so callers can slice safely.
+///
+/// Skips string literals, line/block comments AND regex literals. A regex literal such as
+/// `/[<>:"\/]/` contains a quote that must not open a phantom string — before this was
+/// handled, one such literal in a test body derailed the scan to the end of the bundle and
+/// the `j += 1` after the string loop produced `len + 1` → slice panic (`patches.rs:76`).
 pub fn find_matching_brace(code: &str, start: usize) -> usize {
     let bytes = code.as_bytes();
+    let len = bytes.len();
     let mut depth = 1;
     let mut j = start;
-    while j < bytes.len() && depth > 0 {
-        match bytes[j] {
-            b'{' => depth += 1,
+    // Last significant (non-whitespace) byte seen, for the regex-vs-division decision.
+    let mut prev_sig: u8 = b'{';
+    // Bytes of the last identifier seen, so `return /re/` and `typeof /re/` read as regex.
+    let mut last_ident_start: usize = usize::MAX;
+    let mut last_ident_end: usize = 0;
+
+    while j < len && depth > 0 {
+        let c = bytes[j];
+        match c {
+            b'{' => {
+                depth += 1;
+                prev_sig = c;
+            }
             b'}' => {
                 depth -= 1;
                 if depth == 0 {
                     return j;
                 }
+                prev_sig = c;
             }
             b'"' | b'\'' | b'`' => {
                 // Skip string literals
-                let quote = bytes[j];
+                let quote = c;
                 j += 1;
-                while j < bytes.len() {
+                while j < len {
                     if bytes[j] == b'\\' {
                         j += 1; // skip escaped char
                     } else if bytes[j] == quote {
@@ -125,34 +145,98 @@ pub fn find_matching_brace(code: &str, start: usize) -> usize {
                     }
                     j += 1;
                 }
+                prev_sig = quote;
             }
             b'/' => {
-                // Skip comments
-                if j + 1 < bytes.len() {
-                    if bytes[j + 1] == b'/' {
-                        // Line comment
-                        while j < bytes.len() && bytes[j] != b'\n' {
-                            j += 1;
-                        }
-                        continue;
-                    } else if bytes[j + 1] == b'*' {
-                        // Block comment
-                        j += 2;
-                        while j + 1 < bytes.len() {
-                            if bytes[j] == b'*' && bytes[j + 1] == b'/' {
-                                j += 1;
-                                break;
-                            }
-                            j += 1;
-                        }
+                if j + 1 < len && bytes[j + 1] == b'/' {
+                    // Line comment
+                    while j < len && bytes[j] != b'\n' {
+                        j += 1;
                     }
+                    continue;
+                } else if j + 1 < len && bytes[j + 1] == b'*' {
+                    // Block comment
+                    j += 2;
+                    while j + 1 < len {
+                        if bytes[j] == b'*' && bytes[j + 1] == b'/' {
+                            j += 1;
+                            break;
+                        }
+                        j += 1;
+                    }
+                } else if regex_can_start_here(prev_sig, code, last_ident_start, last_ident_end) {
+                    // Regex literal: skip to the unescaped closing `/` that is not inside a
+                    // character class, then past the flags.
+                    j += 1;
+                    let mut in_class = false;
+                    while j < len {
+                        let r = bytes[j];
+                        if r == b'\\' {
+                            j += 1;
+                        } else if r == b'[' {
+                            in_class = true;
+                        } else if r == b']' {
+                            in_class = false;
+                        } else if r == b'/' && !in_class {
+                            break;
+                        } else if r == b'\n' {
+                            // Unterminated regex on this line — give up on it, it was division.
+                            break;
+                        }
+                        j += 1;
+                    }
+                    while j + 1 < len && bytes[j + 1].is_ascii_alphabetic() {
+                        j += 1;
+                    }
+                    prev_sig = b')'; // a regex literal is a value, like a closed expression
+                } else {
+                    prev_sig = c; // division operator
                 }
             }
-            _ => {}
+            b' ' | b'\t' | b'\n' | b'\r' => {}
+            _ => {
+                if c.is_ascii_alphanumeric() || c == b'_' || c == b'$' {
+                    if last_ident_end != j {
+                        last_ident_start = j;
+                    }
+                    last_ident_end = j + 1;
+                }
+                prev_sig = c;
+            }
         }
         j += 1;
     }
-    j
+    j.min(len)
+}
+
+/// Decide whether a `/` at the current position starts a regex literal (vs. division),
+/// from the previous significant byte and the previous identifier.
+fn regex_can_start_here(prev_sig: u8, code: &str, ident_start: usize, ident_end: usize) -> bool {
+    // After an identifier / number / closing bracket / string, `/` is division —
+    // unless the identifier is a keyword that takes an expression.
+    let after_value = prev_sig.is_ascii_alphanumeric()
+        || prev_sig == b'_'
+        || prev_sig == b'$'
+        || prev_sig == b')'
+        || prev_sig == b']'
+        || prev_sig == b'"'
+        || prev_sig == b'\''
+        || prev_sig == b'`';
+    if !after_value {
+        return true;
+    }
+    if ident_start != usize::MAX && ident_end <= code.len() && ident_start < ident_end {
+        // The identifier must be the thing immediately before `/` (prev_sig was its last byte).
+        let ident = &code[ident_start..ident_end];
+        if prev_sig == code.as_bytes()[ident_end - 1] {
+            return matches!(
+                ident,
+                "return" | "typeof" | "instanceof" | "in" | "of" | "new" | "delete" | "void"
+                    | "throw" | "case" | "do" | "else" | "yield" | "await"
+            );
+        }
+    }
+    false
 }
 
 /// Extract a balanced parenthesized expression starting at `start` (position of opening paren).

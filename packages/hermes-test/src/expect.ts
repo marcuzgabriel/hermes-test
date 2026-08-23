@@ -294,6 +294,49 @@ function createAssertion(actual: any, negated: boolean): any {
       );
     },
 
+    toBeGreaterThanOrEqual(n: number) {
+      assert(
+        actual >= n,
+        negated
+          ? `Expected ${actual} not to be greater than or equal to ${n}`
+          : `Expected ${actual} to be greater than or equal to ${n}`,
+      );
+    },
+
+    toBeLessThanOrEqual(n: number) {
+      assert(
+        actual <= n,
+        negated
+          ? `Expected ${actual} not to be less than or equal to ${n}`
+          : `Expected ${actual} to be less than or equal to ${n}`,
+      );
+    },
+
+    toHaveProperty(path: string | Array<string | number>, value?: any) {
+      const parts = Array.isArray(path) ? path : String(path).split('.');
+      let cur: any = actual;
+      let found = true;
+      for (const part of parts) {
+        if (cur !== null && cur !== undefined && (typeof cur === 'object' || typeof cur === 'function') && part in cur) {
+          cur = cur[part];
+        } else {
+          found = false;
+          break;
+        }
+      }
+      const checkValue = arguments.length > 1;
+      const ok = found && (!checkValue || deepEqual(cur, value));
+      const label = parts.join('.');
+      assert(
+        ok,
+        negated
+          ? `Expected object not to have property "${label}"${checkValue ? ` with value ${formatValue(value)}` : ''}`
+          : found && checkValue
+            ? `Expected property "${label}" to equal ${formatValue(value)}, received ${formatValue(cur)}`
+            : `Expected object to have property "${label}", received ${formatValue(actual)}`,
+      );
+    },
+
     toContain(item: any) {
       const contains = Array.isArray(actual)
         ? actual.some((v: any) => deepEqual(v, item))
@@ -451,6 +494,22 @@ function createAssertion(actual: any, negated: boolean): any {
     },
     toHaveBeenLastCalledWith(...args: any[]) {
       return this.wasLastCalledWith(...args);
+    },
+    toHaveBeenCalledOnce() {
+      return this.wasCalledOnce();
+    },
+    toHaveBeenNthCalledWith(n: number, ...args: any[]) {
+      const s = actual as Spy;
+      const call = s && s.calls ? s.calls[n - 1] : undefined;
+      const matches = call !== undefined && deepEqual(call, args);
+      assert(
+        matches,
+        negated
+          ? `Expected spy not to have been called with ${formatValue(args)} on call ${n}`
+          : call === undefined
+            ? `Expected spy to have been called at least ${n} times, but it was called ${s && s.calls ? s.calls.length : 0} times`
+            : `Expected call ${n} to be ${formatValue(args)}, received ${formatValue(call)}`,
+      );
     },
 
     // --- Element matchers (for render() HTNode results) ---

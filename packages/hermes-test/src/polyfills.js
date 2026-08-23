@@ -526,25 +526,35 @@ if (typeof globalThis.MessageChannel === 'undefined') {
     globalThis.URLSearchParams = URLSearchParams;
   }
 
-  // URL — always install: Hermes has a built-in URL that doesn't parse searchParams correctly
+  // URL — always install: Hermes has a built-in URL that doesn't parse searchParams correctly.
+  // Shape follows React Native's own polyfill (Libraries/Blob/URL.js): http(s) host/hostname/
+  // origin/pathname, userinfo (`user:pass@host`) stripped from host, `protocol` for any scheme.
+  // Non-http schemes get host '' exactly like RN does on device — do not "improve" that here.
   {
     function URL(url, base) {
       if (base && url.indexOf('://') === -1) {
         url = base.replace(/\/$/, '') + '/' + url.replace(/^\//, '');
       }
       this.href = url;
-      var match = url.match(/^(https?:)\/\/([^/:?#]+)(:\d+)?(\/[^?#]*)?(\?[^#]*)?(#.*)?$/);
+      var protoMatch = url.match(/^([a-zA-Z][a-zA-Z\d+\-.]*):/);
+      var match = url.match(/^(https?:)\/\/(?:([^@/?#]*)@)?([^/:?#]+)(:\d+)?(\/[^?#]*)?(\?[^#]*)?(#.*)?$/);
       if (match) {
         this.protocol = match[1];
-        this.hostname = match[2];
-        this.port = match[3] ? match[3].slice(1) : '';
-        this.pathname = match[4] || '/';
-        this.search = match[5] || '';
-        this.hash = match[6] || '';
+        var userinfo = match[2] || '';
+        var sep = userinfo.indexOf(':');
+        this.username = sep === -1 ? userinfo : userinfo.slice(0, sep);
+        this.password = sep === -1 ? '' : userinfo.slice(sep + 1);
+        this.hostname = match[3];
+        this.port = match[4] ? match[4].slice(1) : '';
+        this.pathname = match[5] || '/';
+        this.search = match[6] || '';
+        this.hash = match[7] || '';
         this.host = this.hostname + (this.port ? ':' + this.port : '');
         this.origin = this.protocol + '//' + this.host;
       } else {
-        this.protocol = '';
+        this.protocol = protoMatch ? protoMatch[1] + ':' : '';
+        this.username = '';
+        this.password = '';
         this.hostname = '';
         this.port = '';
         this.pathname = url;
@@ -558,7 +568,45 @@ if (typeof globalThis.MessageChannel === 'undefined') {
     URL.prototype.toString = function () {
       return this.href;
     };
+    URL.prototype.toJSON = function () {
+      return this.href;
+    };
     globalThis.URL = URL;
+  }
+
+  // FormData — React Native installs its own (Libraries/Network/FormData.js) in InitializeCore;
+  // Hermes has none. Same API as RN: append / getAll / getParts. Installed only if absent so a
+  // project-level polyfill wins.
+  if (typeof globalThis.FormData === 'undefined') {
+    function FormData() {
+      this._parts = [];
+    }
+    FormData.prototype.append = function (key, value) {
+      this._parts.push([key, value]);
+    };
+    FormData.prototype.getAll = function (key) {
+      return this._parts
+        .filter(function (p) { return p[0] === key; })
+        .map(function (p) { return p[1]; });
+    };
+    FormData.prototype.getParts = function () {
+      return this._parts.map(function (p) {
+        var name = p[0];
+        var value = p[1];
+        var headers = { 'content-disposition': 'form-data; name="' + name + '"' };
+        if (typeof value === 'object' && !Array.isArray(value) && value) {
+          if (typeof value.name === 'string') {
+            headers['content-disposition'] += '; filename="' + value.name.replace(/"/g, '%22') + '"';
+          }
+          if (typeof value.type === 'string') {
+            headers['content-type'] = value.type;
+          }
+          return Object.assign({}, value, { headers: headers, fieldName: name });
+        }
+        return { string: String(value), headers: headers, fieldName: name };
+      });
+    };
+    globalThis.FormData = FormData;
   }
 
   // Request (minimal — RTK Query checks typeof Request)

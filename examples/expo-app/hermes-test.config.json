@@ -12,6 +12,9 @@
     "react-redux": "hermes-test/shims/react-redux",
     "@reduxjs/toolkit/query/react": "hermes-test/shims/rtk-query",
     "@reduxjs/toolkit/query": "hermes-test/shims/rtk-query-core",
-    "@reduxjs/toolkit": "hermes-test/shims/reduxjs-toolkit"
+    "@reduxjs/toolkit": "hermes-test/shims/reduxjs-toolkit",
+    // A user shim (file path): externalizes the real package and serves this file instead.
+    // See src/examples/user-shim.test.ts — the real package is Flow syntax esbuild can't parse.
+    "flow-only-lib": "./src/shims/flow-only-lib.js"
   }
 }

@@ -138,6 +138,20 @@ pub(crate) fn assemble_esbuild_args(
         "--loader:.jpg=empty".into(),
         "--loader:.gif=empty".into(),
         "--loader:.svg=empty".into(),
+        "--loader:.jpeg=empty".into(),
+        "--loader:.webp=empty".into(),
+        "--loader:.bmp=empty".into(),
+        // Fonts: @expo/vector-icons & co. `require('./Fonts/X.ttf')` — Metro treats these as
+        // assets; without a loader one icon import fails the whole bundle.
+        "--loader:.ttf=empty".into(),
+        "--loader:.otf=empty".into(),
+        "--loader:.woff=empty".into(),
+        "--loader:.woff2=empty".into(),
+        "--loader:.eot=empty".into(),
+        // Media assets (expo-av / expo-audio requires)
+        "--loader:.mp3=empty".into(),
+        "--loader:.mp4=empty".into(),
+        "--loader:.wav=empty".into(),
     ]; // console is a global in Hermes, not externalized
 
     if sourcemap_inline {
@@ -260,6 +274,17 @@ pub(crate) fn assemble_esbuild_args(
         } else if !ext.ends_with('*') {
             args.push(format!("--external:{ext}/*"));
         }
+    }
+
+    // User file shims ("shims": {"pkg": "./path/to/shim.js"}) replace a module at runtime
+    // via __HT_mocks — so the real package must NOT be bundled, otherwise esbuild inlines it
+    // (and chokes on its assets / Flow syntax) and the shim silently never applies.
+    for (module_name, _) in &cfg.shims {
+        if cfg.externals.iter().any(|e| e == module_name) {
+            continue;
+        }
+        args.push(format!("--external:{module_name}"));
+        args.push(format!("--external:{module_name}/*"));
     }
 
     // Mock module externals

@@ -71,6 +71,8 @@ type TestEntry = {
   options: TestOptions;
   group?: string;
   file?: string;
+  /** Full require path of the file that registered the test (for __snapshots__ placement). */
+  filePath?: string;
 };
 
 type TestResult = {
@@ -99,6 +101,7 @@ function test(name: string, fn: TestFn, options?: TestOptions): void {
     options: options ?? {},
     group: currentGroup,
     file: (globalThis as any).__currentTestFile,
+    filePath: (globalThis as any).__currentTestFilePath,
   });
 }
 
@@ -431,8 +434,11 @@ function runTests(): TestResult[] {
 
     // Set up snapshot context for this test
     {
-      // Use full file path (set by entry code) for correct snapshot directory
-      const filePath = (globalThis as any).__currentTestFilePath || entry.file || 'unknown';
+      // Use the full file path captured at registration time. __currentTestFilePath is set by
+      // the entry code while each test file is *required*; by the time tests run it holds the
+      // LAST file's path, so reading it here attributed every snapshot to the last file in the
+      // run (see examples/expo-app snapshot.test.tsx → timer-control.test.ts.snap history).
+      const filePath = entry.filePath || (globalThis as any).__currentTestFilePath || entry.file || 'unknown';
       // Strip leading ./ if present
       const clean = filePath.startsWith('./') ? filePath.substring(2) : filePath;
       const lastSlash = clean.lastIndexOf('/');

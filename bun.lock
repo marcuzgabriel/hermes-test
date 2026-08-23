@@ -11,6 +11,7 @@
       "dependencies": {
         "@reduxjs/toolkit": "^2.12.0",
         "@tanstack/react-query": "^5.100.14",
+        "flow-only-lib": "file:./packages/flow-only-lib",
         "metro": "^0.82.0",
         "metro-config": "^0.82.0",
         "metro-resolver": "^0.82.0",
@@ -31,7 +32,7 @@
     },
     "packages/hermes-test": {
       "name": "hermes-test",
-      "version": "1.1.5",
+      "version": "1.3.0",
       "bin": {
         "hermes-test": "bin/hermes-test.js",
       },
@@ -45,9 +46,9 @@
         "typescript": "^5.4.0",
       },
       "optionalDependencies": {
-        "@hermes-test/darwin-arm64": "1.1.5",
-        "@hermes-test/darwin-x64": "1.1.5",
-        "@hermes-test/linux-x64": "1.1.5",
+        "@hermes-test/darwin-arm64": "1.3.0",
+        "@hermes-test/darwin-x64": "1.3.0",
+        "@hermes-test/linux-x64": "1.3.0",
       },
       "peerDependencies": {
         "react": ">=18",
@@ -143,9 +144,9 @@
 
     "@esbuild/win32-x64": ["@esbuild/win32-x64@0.25.12", "", { "os": "win32", "cpu": "x64" }, "sha512-alJC0uCZpTFrSL0CCDjcgleBXPnCrEAhTBILpeAp7M/OFgoqtAetfBzX0xM00MUsVVPpVjlPuMbREqnZCXaTnA=="],
 
-    "@hermes-test/darwin-arm64": ["@hermes-test/darwin-arm64@1.1.5", "", { "os": "darwin", "cpu": "arm64" }, "sha512-0Pis1T6Dmg9xDAj/vbd7klTkD+SJE7sY/wbhVGxWeYwS5T/MiiZq1PtC/MDqON/rjjbvGdDYveiumm3fINOXqg=="],
+    "@hermes-test/darwin-arm64": ["@hermes-test/darwin-arm64@1.3.0", "", { "os": "darwin", "cpu": "arm64" }, "sha512-EtI1Lu4rWFzKJahshHdI3C1UwRomut1I5uMfiXDxO0crPLO64tblONTouteVCPKMAy2j9nNpPc5dowa8VzUsDg=="],
 
-    "@hermes-test/linux-x64": ["@hermes-test/linux-x64@1.1.5", "", { "os": "linux", "cpu": "x64" }, "sha512-2eiZe7b2TfCU7V0E43rJmTlatCKB1lwexNqL5tAPnMWEAiOxtsFBYYSnGpM135oh0Ib/bdOzRbxE5VDp9txZsA=="],
+    "@hermes-test/linux-x64": ["@hermes-test/linux-x64@1.3.0", "", { "os": "linux", "cpu": "x64" }, "sha512-3+NxkN5L2iqliwk6wX3bfQZtwKMgp1pTWBD85e4K+ySaSab/SQ/tvkv6ytHd7i/87kyxPneHcsbUwtCwEYKURw=="],
 
     "@jest/schemas": ["@jest/schemas@29.6.3", "", { "dependencies": { "@sinclair/typebox": "^0.27.8" } }, "sha512-mo5j5X+jIZmJQveBKeS/clAueipV7KgiX1vMgCxam1RNYiqE1w62n0/tJJnHtjW8ZHcQco5gY85jA3mi0L+nSA=="],
 
@@ -490,6 +491,8 @@
     "finalhandler/debug": ["debug@2.6.9", "", { "dependencies": { "ms": "2.0.0" } }, "sha512-bC7ElrdJaJnPbAP+1EotYvqZsb3ecl5wi6Bfi6BJTUcNowp6cvspg0jXznRTKDjm/E7AdgFBVeAPVMNcKGsHMA=="],
 
     "hermes-test-example/esbuild": ["esbuild@0.28.0", "", { "optionalDependencies": { "@esbuild/aix-ppc64": "0.28.0", "@esbuild/android-arm": "0.28.0", "@esbuild/android-arm64": "0.28.0", "@esbuild/android-x64": "0.28.0", "@esbuild/darwin-arm64": "0.28.0", "@esbuild/darwin-x64": "0.28.0", "@esbuild/freebsd-arm64": "0.28.0", "@esbuild/freebsd-x64": "0.28.0", "@esbuild/linux-arm": "0.28.0", "@esbuild/linux-arm64": "0.28.0", "@esbuild/linux-ia32": "0.28.0", "@esbuild/linux-loong64": "0.28.0", "@esbuild/linux-mips64el": "0.28.0", "@esbuild/linux-ppc64": "0.28.0", "@esbuild/linux-riscv64": "0.28.0", "@esbuild/linux-s390x": "0.28.0", "@esbuild/linux-x64": "0.28.0", "@esbuild/netbsd-arm64": "0.28.0", "@esbuild/netbsd-x64": "0.28.0", "@esbuild/openbsd-arm64": "0.28.0", "@esbuild/openbsd-x64": "0.28.0", "@esbuild/openharmony-arm64": "0.28.0", "@esbuild/sunos-x64": "0.28.0", "@esbuild/win32-arm64": "0.28.0", "@esbuild/win32-ia32": "0.28.0", "@esbuild/win32-x64": "0.28.0" }, "bin": { "esbuild": "bin/esbuild" } }, "sha512-sNR9MHpXSUV/XB4zmsFKN+QgVG82Cc7+/aaxJ8Adi8hyOac+EXptIp45QBPaVyX3N70664wRbTcLTOemCAnyqw=="],
+
+    "hermes-test-example/flow-only-lib": ["flow-only-lib@file:examples/expo-app/packages/flow-only-lib", {}],
 
     "hermes-test-example/react": ["react@19.2.0", "", {}, "sha512-tmbWg6W31tQLeB5cdIBOicJDJRR2KzXsV7uSK9iNfLWQ5bIZfxuPEHp7M8wiHyHnn0DD1i7w3Zmin0FtkrwoCQ=="],
 
