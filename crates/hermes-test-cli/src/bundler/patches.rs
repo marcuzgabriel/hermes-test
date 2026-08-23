@@ -67,6 +67,7 @@ pub fn hoist_mock_modules(code: &str) -> String {
         return code.to_string();
     }
 
+    let t0 = std::time::Instant::now();
     let allocator = Allocator::default();
     let ret = Parser::new(&allocator, code, SourceType::mjs()).parse();
     if !ret.errors.is_empty() {
@@ -202,7 +203,12 @@ pub fn hoist_mock_modules(code: &str) -> String {
         return code.to_string();
     }
     if std::env::var("HT_DEBUG_BUNDLE").is_ok() {
-        eprintln!("[HT_HOIST] rewrote {} test-file bodies", collector.edits.len());
+        eprintln!(
+            "[HT_HOIST] rewrote {} test-file bodies in {:?} (bundle {} KB)",
+            collector.edits.len(),
+            t0.elapsed(),
+            code.len() / 1024
+        );
     }
 
     // Apply edits back-to-front so earlier offsets stay valid.
