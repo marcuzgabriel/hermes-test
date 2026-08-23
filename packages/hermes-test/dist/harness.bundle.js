@@ -332,84 +332,12 @@ if (typeof globalThis.MessageChannel === 'undefined') {
   }
 })();
 
-// Web API polyfills — needed for RTK Query's fetchBaseQuery
+// Web API polyfills — the ones React Native's InitializeCore installs (Libraries/Core/setUpXHR.js).
+// Headers / Request / Response come from `whatwg-fetch` and AbortController / AbortSignal from
+// `abort-controller` — the exact packages RN requires — bundled into the harness by bundle.mjs
+// (see src/rn-globals.ts). The hand-written RN-shape mirrors below are for globals RN implements
+// in Flow files we cannot bundle (URL / URLSearchParams / FormData).
 (function () {
-  // AbortController / AbortSignal
-  if (typeof globalThis.AbortController === 'undefined') {
-    function AbortSignal() {
-      this.aborted = false;
-      this._listeners = [];
-    }
-    AbortSignal.prototype.addEventListener = function (type, fn) {
-      this._listeners.push(fn);
-    };
-    AbortSignal.prototype.removeEventListener = function (type, fn) {
-      this._listeners = this._listeners.filter(function (f) {
-        return f !== fn;
-      });
-    };
-
-    function AbortController() {
-      this.signal = new AbortSignal();
-    }
-    AbortController.prototype.abort = function () {
-      this.signal.aborted = true;
-      for (var i = 0; i < this.signal._listeners.length; i++) {
-        try {
-          this.signal._listeners[i]();
-        } catch (e) {}
-      }
-    };
-
-    globalThis.AbortController = AbortController;
-    globalThis.AbortSignal = AbortSignal;
-  }
-
-  // Headers
-  if (typeof globalThis.Headers === 'undefined') {
-    function Headers(init) {
-      this._map = {};
-      if (init) {
-        if (typeof init.forEach === 'function') {
-          init.forEach(
-            function (v, k) {
-              this._map[k.toLowerCase()] = v;
-            }.bind(this),
-          );
-        } else {
-          var keys = Object.keys(init);
-          for (var i = 0; i < keys.length; i++) {
-            this._map[keys[i].toLowerCase()] = init[keys[i]];
-          }
-        }
-      }
-    }
-    Headers.prototype.get = function (k) {
-      return this._map[k.toLowerCase()] || null;
-    };
-    Headers.prototype.has = function (k) {
-      return k.toLowerCase() in this._map;
-    };
-    Headers.prototype.set = function (k, v) {
-      this._map[k.toLowerCase()] = v;
-    };
-    Headers.prototype.append = function (k, v) {
-      k = k.toLowerCase();
-      this._map[k] = this._map[k] ? this._map[k] + ', ' + v : v;
-    };
-    Headers.prototype.delete = function (k) {
-      delete this._map[k.toLowerCase()];
-    };
-    Headers.prototype.forEach = function (fn) {
-      var keys = Object.keys(this._map);
-      for (var i = 0; i < keys.length; i++) fn(this._map[keys[i]], keys[i], this);
-    };
-    Headers.prototype.entries = function () {
-      return Object.entries(this._map);
-    };
-    globalThis.Headers = Headers;
-  }
-
   // URLSearchParams — always install BEFORE URL: native Hermes version may not parse correctly
   {
     function URLSearchParams(init) {
@@ -609,16 +537,6 @@ if (typeof globalThis.MessageChannel === 'undefined') {
     globalThis.FormData = FormData;
   }
 
-  // Request (minimal — RTK Query checks typeof Request)
-  if (typeof globalThis.Request === 'undefined') {
-    globalThis.Request = function Request(url, init) {
-      this.url = typeof url === 'string' ? url : url.href;
-      this.method = (init && init.method) || 'GET';
-      this.headers = new globalThis.Headers(init && init.headers);
-      this.body = init && init.body;
-    };
-  }
-
   // Stub fetch (mockFetch will override with handler-based implementation)
   if (typeof globalThis.fetch === 'undefined') {
     globalThis.fetch = function () {
@@ -628,29 +546,19 @@ if (typeof globalThis.MessageChannel === 'undefined') {
     };
   }
 
-  // Response (minimal)
-  if (typeof globalThis.Response === 'undefined') {
-    globalThis.Response = function Response(body, init) {
-      this.body = body;
-      this.status = (init && init.status) || 200;
-      this.ok = this.status >= 200 && this.status < 300;
-      this.headers = new globalThis.Headers(init && init.headers);
-    };
-    globalThis.Response.prototype.json = function () {
-      return Promise.resolve(JSON.parse(this.body));
-    };
-    globalThis.Response.prototype.text = function () {
-      return Promise.resolve(String(this.body));
-    };
-  }
 })();
 
 "use strict";
 var __metroTestHarness = (() => {
+  var __create = Object.create;
   var __defProp = Object.defineProperty;
   var __getOwnPropDesc = Object.getOwnPropertyDescriptor;
   var __getOwnPropNames = Object.getOwnPropertyNames;
+  var __getProtoOf = Object.getPrototypeOf;
   var __hasOwnProp = Object.prototype.hasOwnProperty;
+  var __commonJS = (cb, mod) => function __require() {
+    return mod || (0, cb[__getOwnPropNames(cb)[0]])((mod = { exports: {} }).exports, mod), mod.exports;
+  };
   var __export = (target, all) => {
     for (var name in all)
       __defProp(target, name, { get: all[name], enumerable: true, configurable: true });
@@ -666,7 +574,683 @@ var __metroTestHarness = (() => {
     }
     return to;
   };
+  var __toESM = (mod, isNodeMode, target) => (target = mod != null ? __create(__getProtoOf(mod)) : {}, __copyProps(
+    // If the importer is in node compatibility mode or this is not an ESM
+    // file that has been converted to a CommonJS file using a Babel-
+    // compatible transform (i.e. "__esModule" has not been set), then set
+    // "default" to the CommonJS "module.exports" for node compatibility.
+    isNodeMode || !mod || !mod.__esModule ? __defProp(target, "default", { value: mod, enumerable: true }) : target,
+    mod
+  ));
   var __toCommonJS = (mod) => __copyProps(__defProp({}, "__esModule", { value: true }), mod);
+
+  // ../../node_modules/.bun/event-target-shim@5.0.1/node_modules/event-target-shim/dist/event-target-shim.js
+  var require_event_target_shim = __commonJS({
+    "../../node_modules/.bun/event-target-shim@5.0.1/node_modules/event-target-shim/dist/event-target-shim.js"(exports, module) {
+      "use strict";
+      Object.defineProperty(exports, "__esModule", { value: true });
+      var privateData = /* @__PURE__ */ new WeakMap();
+      var wrappers = /* @__PURE__ */ new WeakMap();
+      function pd(event) {
+        const retv = privateData.get(event);
+        console.assert(
+          retv != null,
+          "'this' is expected an Event object, but got",
+          event
+        );
+        return retv;
+      }
+      function setCancelFlag(data) {
+        if (data.passiveListener != null) {
+          if (typeof console !== "undefined" && typeof console.error === "function") {
+            console.error(
+              "Unable to preventDefault inside passive event listener invocation.",
+              data.passiveListener
+            );
+          }
+          return;
+        }
+        if (!data.event.cancelable) {
+          return;
+        }
+        data.canceled = true;
+        if (typeof data.event.preventDefault === "function") {
+          data.event.preventDefault();
+        }
+      }
+      function Event(eventTarget, event) {
+        privateData.set(this, {
+          eventTarget,
+          event,
+          eventPhase: 2,
+          currentTarget: eventTarget,
+          canceled: false,
+          stopped: false,
+          immediateStopped: false,
+          passiveListener: null,
+          timeStamp: event.timeStamp || Date.now()
+        });
+        Object.defineProperty(this, "isTrusted", { value: false, enumerable: true });
+        const keys = Object.keys(event);
+        for (let i = 0; i < keys.length; ++i) {
+          const key = keys[i];
+          if (!(key in this)) {
+            Object.defineProperty(this, key, defineRedirectDescriptor(key));
+          }
+        }
+      }
+      Event.prototype = {
+        /**
+         * The type of this event.
+         * @type {string}
+         */
+        get type() {
+          return pd(this).event.type;
+        },
+        /**
+         * The target of this event.
+         * @type {EventTarget}
+         */
+        get target() {
+          return pd(this).eventTarget;
+        },
+        /**
+         * The target of this event.
+         * @type {EventTarget}
+         */
+        get currentTarget() {
+          return pd(this).currentTarget;
+        },
+        /**
+         * @returns {EventTarget[]} The composed path of this event.
+         */
+        composedPath() {
+          const currentTarget = pd(this).currentTarget;
+          if (currentTarget == null) {
+            return [];
+          }
+          return [currentTarget];
+        },
+        /**
+         * Constant of NONE.
+         * @type {number}
+         */
+        get NONE() {
+          return 0;
+        },
+        /**
+         * Constant of CAPTURING_PHASE.
+         * @type {number}
+         */
+        get CAPTURING_PHASE() {
+          return 1;
+        },
+        /**
+         * Constant of AT_TARGET.
+         * @type {number}
+         */
+        get AT_TARGET() {
+          return 2;
+        },
+        /**
+         * Constant of BUBBLING_PHASE.
+         * @type {number}
+         */
+        get BUBBLING_PHASE() {
+          return 3;
+        },
+        /**
+         * The target of this event.
+         * @type {number}
+         */
+        get eventPhase() {
+          return pd(this).eventPhase;
+        },
+        /**
+         * Stop event bubbling.
+         * @returns {void}
+         */
+        stopPropagation() {
+          const data = pd(this);
+          data.stopped = true;
+          if (typeof data.event.stopPropagation === "function") {
+            data.event.stopPropagation();
+          }
+        },
+        /**
+         * Stop event bubbling.
+         * @returns {void}
+         */
+        stopImmediatePropagation() {
+          const data = pd(this);
+          data.stopped = true;
+          data.immediateStopped = true;
+          if (typeof data.event.stopImmediatePropagation === "function") {
+            data.event.stopImmediatePropagation();
+          }
+        },
+        /**
+         * The flag to be bubbling.
+         * @type {boolean}
+         */
+        get bubbles() {
+          return Boolean(pd(this).event.bubbles);
+        },
+        /**
+         * The flag to be cancelable.
+         * @type {boolean}
+         */
+        get cancelable() {
+          return Boolean(pd(this).event.cancelable);
+        },
+        /**
+         * Cancel this event.
+         * @returns {void}
+         */
+        preventDefault() {
+          setCancelFlag(pd(this));
+        },
+        /**
+         * The flag to indicate cancellation state.
+         * @type {boolean}
+         */
+        get defaultPrevented() {
+          return pd(this).canceled;
+        },
+        /**
+         * The flag to be composed.
+         * @type {boolean}
+         */
+        get composed() {
+          return Boolean(pd(this).event.composed);
+        },
+        /**
+         * The unix time of this event.
+         * @type {number}
+         */
+        get timeStamp() {
+          return pd(this).timeStamp;
+        },
+        /**
+         * The target of this event.
+         * @type {EventTarget}
+         * @deprecated
+         */
+        get srcElement() {
+          return pd(this).eventTarget;
+        },
+        /**
+         * The flag to stop event bubbling.
+         * @type {boolean}
+         * @deprecated
+         */
+        get cancelBubble() {
+          return pd(this).stopped;
+        },
+        set cancelBubble(value) {
+          if (!value) {
+            return;
+          }
+          const data = pd(this);
+          data.stopped = true;
+          if (typeof data.event.cancelBubble === "boolean") {
+            data.event.cancelBubble = true;
+          }
+        },
+        /**
+         * The flag to indicate cancellation state.
+         * @type {boolean}
+         * @deprecated
+         */
+        get returnValue() {
+          return !pd(this).canceled;
+        },
+        set returnValue(value) {
+          if (!value) {
+            setCancelFlag(pd(this));
+          }
+        },
+        /**
+         * Initialize this event object. But do nothing under event dispatching.
+         * @param {string} type The event type.
+         * @param {boolean} [bubbles=false] The flag to be possible to bubble up.
+         * @param {boolean} [cancelable=false] The flag to be possible to cancel.
+         * @deprecated
+         */
+        initEvent() {
+        }
+      };
+      Object.defineProperty(Event.prototype, "constructor", {
+        value: Event,
+        configurable: true,
+        writable: true
+      });
+      if (typeof window !== "undefined" && typeof window.Event !== "undefined") {
+        Object.setPrototypeOf(Event.prototype, window.Event.prototype);
+        wrappers.set(window.Event.prototype, Event);
+      }
+      function defineRedirectDescriptor(key) {
+        return {
+          get() {
+            return pd(this).event[key];
+          },
+          set(value) {
+            pd(this).event[key] = value;
+          },
+          configurable: true,
+          enumerable: true
+        };
+      }
+      function defineCallDescriptor(key) {
+        return {
+          value() {
+            const event = pd(this).event;
+            return event[key].apply(event, arguments);
+          },
+          configurable: true,
+          enumerable: true
+        };
+      }
+      function defineWrapper(BaseEvent, proto) {
+        const keys = Object.keys(proto);
+        if (keys.length === 0) {
+          return BaseEvent;
+        }
+        function CustomEvent(eventTarget, event) {
+          BaseEvent.call(this, eventTarget, event);
+        }
+        CustomEvent.prototype = Object.create(BaseEvent.prototype, {
+          constructor: { value: CustomEvent, configurable: true, writable: true }
+        });
+        for (let i = 0; i < keys.length; ++i) {
+          const key = keys[i];
+          if (!(key in BaseEvent.prototype)) {
+            const descriptor = Object.getOwnPropertyDescriptor(proto, key);
+            const isFunc = typeof descriptor.value === "function";
+            Object.defineProperty(
+              CustomEvent.prototype,
+              key,
+              isFunc ? defineCallDescriptor(key) : defineRedirectDescriptor(key)
+            );
+          }
+        }
+        return CustomEvent;
+      }
+      function getWrapper(proto) {
+        if (proto == null || proto === Object.prototype) {
+          return Event;
+        }
+        let wrapper = wrappers.get(proto);
+        if (wrapper == null) {
+          wrapper = defineWrapper(getWrapper(Object.getPrototypeOf(proto)), proto);
+          wrappers.set(proto, wrapper);
+        }
+        return wrapper;
+      }
+      function wrapEvent(eventTarget, event) {
+        const Wrapper = getWrapper(Object.getPrototypeOf(event));
+        return new Wrapper(eventTarget, event);
+      }
+      function isStopped(event) {
+        return pd(event).immediateStopped;
+      }
+      function setEventPhase(event, eventPhase) {
+        pd(event).eventPhase = eventPhase;
+      }
+      function setCurrentTarget(event, currentTarget) {
+        pd(event).currentTarget = currentTarget;
+      }
+      function setPassiveListener(event, passiveListener) {
+        pd(event).passiveListener = passiveListener;
+      }
+      var listenersMap = /* @__PURE__ */ new WeakMap();
+      var CAPTURE = 1;
+      var BUBBLE = 2;
+      var ATTRIBUTE = 3;
+      function isObject(x) {
+        return x !== null && typeof x === "object";
+      }
+      function getListeners(eventTarget) {
+        const listeners = listenersMap.get(eventTarget);
+        if (listeners == null) {
+          throw new TypeError(
+            "'this' is expected an EventTarget object, but got another value."
+          );
+        }
+        return listeners;
+      }
+      function defineEventAttributeDescriptor(eventName) {
+        return {
+          get() {
+            const listeners = getListeners(this);
+            let node = listeners.get(eventName);
+            while (node != null) {
+              if (node.listenerType === ATTRIBUTE) {
+                return node.listener;
+              }
+              node = node.next;
+            }
+            return null;
+          },
+          set(listener) {
+            if (typeof listener !== "function" && !isObject(listener)) {
+              listener = null;
+            }
+            const listeners = getListeners(this);
+            let prev = null;
+            let node = listeners.get(eventName);
+            while (node != null) {
+              if (node.listenerType === ATTRIBUTE) {
+                if (prev !== null) {
+                  prev.next = node.next;
+                } else if (node.next !== null) {
+                  listeners.set(eventName, node.next);
+                } else {
+                  listeners.delete(eventName);
+                }
+              } else {
+                prev = node;
+              }
+              node = node.next;
+            }
+            if (listener !== null) {
+              const newNode = {
+                listener,
+                listenerType: ATTRIBUTE,
+                passive: false,
+                once: false,
+                next: null
+              };
+              if (prev === null) {
+                listeners.set(eventName, newNode);
+              } else {
+                prev.next = newNode;
+              }
+            }
+          },
+          configurable: true,
+          enumerable: true
+        };
+      }
+      function defineEventAttribute(eventTargetPrototype, eventName) {
+        Object.defineProperty(
+          eventTargetPrototype,
+          `on${eventName}`,
+          defineEventAttributeDescriptor(eventName)
+        );
+      }
+      function defineCustomEventTarget(eventNames) {
+        function CustomEventTarget() {
+          EventTarget.call(this);
+        }
+        CustomEventTarget.prototype = Object.create(EventTarget.prototype, {
+          constructor: {
+            value: CustomEventTarget,
+            configurable: true,
+            writable: true
+          }
+        });
+        for (let i = 0; i < eventNames.length; ++i) {
+          defineEventAttribute(CustomEventTarget.prototype, eventNames[i]);
+        }
+        return CustomEventTarget;
+      }
+      function EventTarget() {
+        if (this instanceof EventTarget) {
+          listenersMap.set(this, /* @__PURE__ */ new Map());
+          return;
+        }
+        if (arguments.length === 1 && Array.isArray(arguments[0])) {
+          return defineCustomEventTarget(arguments[0]);
+        }
+        if (arguments.length > 0) {
+          const types = new Array(arguments.length);
+          for (let i = 0; i < arguments.length; ++i) {
+            types[i] = arguments[i];
+          }
+          return defineCustomEventTarget(types);
+        }
+        throw new TypeError("Cannot call a class as a function");
+      }
+      EventTarget.prototype = {
+        /**
+         * Add a given listener to this event target.
+         * @param {string} eventName The event name to add.
+         * @param {Function} listener The listener to add.
+         * @param {boolean|{capture?:boolean,passive?:boolean,once?:boolean}} [options] The options for this listener.
+         * @returns {void}
+         */
+        addEventListener(eventName, listener, options) {
+          if (listener == null) {
+            return;
+          }
+          if (typeof listener !== "function" && !isObject(listener)) {
+            throw new TypeError("'listener' should be a function or an object.");
+          }
+          const listeners = getListeners(this);
+          const optionsIsObj = isObject(options);
+          const capture = optionsIsObj ? Boolean(options.capture) : Boolean(options);
+          const listenerType = capture ? CAPTURE : BUBBLE;
+          const newNode = {
+            listener,
+            listenerType,
+            passive: optionsIsObj && Boolean(options.passive),
+            once: optionsIsObj && Boolean(options.once),
+            next: null
+          };
+          let node = listeners.get(eventName);
+          if (node === void 0) {
+            listeners.set(eventName, newNode);
+            return;
+          }
+          let prev = null;
+          while (node != null) {
+            if (node.listener === listener && node.listenerType === listenerType) {
+              return;
+            }
+            prev = node;
+            node = node.next;
+          }
+          prev.next = newNode;
+        },
+        /**
+         * Remove a given listener from this event target.
+         * @param {string} eventName The event name to remove.
+         * @param {Function} listener The listener to remove.
+         * @param {boolean|{capture?:boolean,passive?:boolean,once?:boolean}} [options] The options for this listener.
+         * @returns {void}
+         */
+        removeEventListener(eventName, listener, options) {
+          if (listener == null) {
+            return;
+          }
+          const listeners = getListeners(this);
+          const capture = isObject(options) ? Boolean(options.capture) : Boolean(options);
+          const listenerType = capture ? CAPTURE : BUBBLE;
+          let prev = null;
+          let node = listeners.get(eventName);
+          while (node != null) {
+            if (node.listener === listener && node.listenerType === listenerType) {
+              if (prev !== null) {
+                prev.next = node.next;
+              } else if (node.next !== null) {
+                listeners.set(eventName, node.next);
+              } else {
+                listeners.delete(eventName);
+              }
+              return;
+            }
+            prev = node;
+            node = node.next;
+          }
+        },
+        /**
+         * Dispatch a given event.
+         * @param {Event|{type:string}} event The event to dispatch.
+         * @returns {boolean} `false` if canceled.
+         */
+        dispatchEvent(event) {
+          if (event == null || typeof event.type !== "string") {
+            throw new TypeError('"event.type" should be a string.');
+          }
+          const listeners = getListeners(this);
+          const eventName = event.type;
+          let node = listeners.get(eventName);
+          if (node == null) {
+            return true;
+          }
+          const wrappedEvent = wrapEvent(this, event);
+          let prev = null;
+          while (node != null) {
+            if (node.once) {
+              if (prev !== null) {
+                prev.next = node.next;
+              } else if (node.next !== null) {
+                listeners.set(eventName, node.next);
+              } else {
+                listeners.delete(eventName);
+              }
+            } else {
+              prev = node;
+            }
+            setPassiveListener(
+              wrappedEvent,
+              node.passive ? node.listener : null
+            );
+            if (typeof node.listener === "function") {
+              try {
+                node.listener.call(this, wrappedEvent);
+              } catch (err) {
+                if (typeof console !== "undefined" && typeof console.error === "function") {
+                  console.error(err);
+                }
+              }
+            } else if (node.listenerType !== ATTRIBUTE && typeof node.listener.handleEvent === "function") {
+              node.listener.handleEvent(wrappedEvent);
+            }
+            if (isStopped(wrappedEvent)) {
+              break;
+            }
+            node = node.next;
+          }
+          setPassiveListener(wrappedEvent, null);
+          setEventPhase(wrappedEvent, 0);
+          setCurrentTarget(wrappedEvent, null);
+          return !wrappedEvent.defaultPrevented;
+        }
+      };
+      Object.defineProperty(EventTarget.prototype, "constructor", {
+        value: EventTarget,
+        configurable: true,
+        writable: true
+      });
+      if (typeof window !== "undefined" && typeof window.EventTarget !== "undefined") {
+        Object.setPrototypeOf(EventTarget.prototype, window.EventTarget.prototype);
+      }
+      exports.defineEventAttribute = defineEventAttribute;
+      exports.EventTarget = EventTarget;
+      exports.default = EventTarget;
+      module.exports = EventTarget;
+      module.exports.EventTarget = module.exports["default"] = EventTarget;
+      module.exports.defineEventAttribute = defineEventAttribute;
+    }
+  });
+
+  // ../../node_modules/.bun/abort-controller@3.0.0/node_modules/abort-controller/dist/abort-controller.js
+  var require_abort_controller = __commonJS({
+    "../../node_modules/.bun/abort-controller@3.0.0/node_modules/abort-controller/dist/abort-controller.js"(exports, module) {
+      "use strict";
+      Object.defineProperty(exports, "__esModule", { value: true });
+      var eventTargetShim = require_event_target_shim();
+      var AbortSignal2 = class extends eventTargetShim.EventTarget {
+        /**
+         * AbortSignal cannot be constructed directly.
+         */
+        constructor() {
+          super();
+          throw new TypeError("AbortSignal cannot be constructed directly");
+        }
+        /**
+         * Returns `true` if this `AbortSignal`'s `AbortController` has signaled to abort, and `false` otherwise.
+         */
+        get aborted() {
+          const aborted = abortedFlags.get(this);
+          if (typeof aborted !== "boolean") {
+            throw new TypeError(`Expected 'this' to be an 'AbortSignal' object, but got ${this === null ? "null" : typeof this}`);
+          }
+          return aborted;
+        }
+      };
+      eventTargetShim.defineEventAttribute(AbortSignal2.prototype, "abort");
+      function createAbortSignal() {
+        const signal = Object.create(AbortSignal2.prototype);
+        eventTargetShim.EventTarget.call(signal);
+        abortedFlags.set(signal, false);
+        return signal;
+      }
+      function abortSignal(signal) {
+        if (abortedFlags.get(signal) !== false) {
+          return;
+        }
+        abortedFlags.set(signal, true);
+        signal.dispatchEvent({ type: "abort" });
+      }
+      var abortedFlags = /* @__PURE__ */ new WeakMap();
+      Object.defineProperties(AbortSignal2.prototype, {
+        aborted: { enumerable: true }
+      });
+      if (typeof Symbol === "function" && typeof Symbol.toStringTag === "symbol") {
+        Object.defineProperty(AbortSignal2.prototype, Symbol.toStringTag, {
+          configurable: true,
+          value: "AbortSignal"
+        });
+      }
+      var AbortController3 = class {
+        /**
+         * Initialize this controller.
+         */
+        constructor() {
+          signals.set(this, createAbortSignal());
+        }
+        /**
+         * Returns the `AbortSignal` object associated with this object.
+         */
+        get signal() {
+          return getSignal(this);
+        }
+        /**
+         * Abort and signal to any observers that the associated activity is to be aborted.
+         */
+        abort() {
+          abortSignal(getSignal(this));
+        }
+      };
+      var signals = /* @__PURE__ */ new WeakMap();
+      function getSignal(controller) {
+        const signal = signals.get(controller);
+        if (signal == null) {
+          throw new TypeError(`Expected 'this' to be an 'AbortController' object, but got ${controller === null ? "null" : typeof controller}`);
+        }
+        return signal;
+      }
+      Object.defineProperties(AbortController3.prototype, {
+        signal: { enumerable: true },
+        abort: { enumerable: true }
+      });
+      if (typeof Symbol === "function" && typeof Symbol.toStringTag === "symbol") {
+        Object.defineProperty(AbortController3.prototype, Symbol.toStringTag, {
+          configurable: true,
+          value: "AbortController"
+        });
+      }
+      exports.AbortController = AbortController3;
+      exports.AbortSignal = AbortSignal2;
+      exports.default = AbortController3;
+      module.exports = AbortController3;
+      module.exports.AbortController = module.exports["default"] = AbortController3;
+      module.exports.AbortSignal = AbortSignal2;
+    }
+  });
 
   // src/harness.ts
   var harness_exports = {};
@@ -698,6 +1282,541 @@ var __metroTestHarness = (() => {
     useRealTimers: () => useRealTimers,
     waitFor: () => waitFor
   });
+
+  // ../../node_modules/.bun/whatwg-fetch@3.6.20/node_modules/whatwg-fetch/fetch.js
+  var g = typeof globalThis !== "undefined" && globalThis || typeof self !== "undefined" && self || // eslint-disable-next-line no-undef
+  typeof global !== "undefined" && global || {};
+  var support = {
+    searchParams: "URLSearchParams" in g,
+    iterable: "Symbol" in g && "iterator" in Symbol,
+    blob: "FileReader" in g && "Blob" in g && (function() {
+      try {
+        new Blob();
+        return true;
+      } catch (e) {
+        return false;
+      }
+    })(),
+    formData: "FormData" in g,
+    arrayBuffer: "ArrayBuffer" in g
+  };
+  function isDataView(obj) {
+    return obj && DataView.prototype.isPrototypeOf(obj);
+  }
+  if (support.arrayBuffer) {
+    viewClasses = [
+      "[object Int8Array]",
+      "[object Uint8Array]",
+      "[object Uint8ClampedArray]",
+      "[object Int16Array]",
+      "[object Uint16Array]",
+      "[object Int32Array]",
+      "[object Uint32Array]",
+      "[object Float32Array]",
+      "[object Float64Array]"
+    ];
+    isArrayBufferView = ArrayBuffer.isView || function(obj) {
+      return obj && viewClasses.indexOf(Object.prototype.toString.call(obj)) > -1;
+    };
+  }
+  var viewClasses;
+  var isArrayBufferView;
+  function normalizeName(name) {
+    if (typeof name !== "string") {
+      name = String(name);
+    }
+    if (/[^a-z0-9\-#$%&'*+.^_`|~!]/i.test(name) || name === "") {
+      throw new TypeError('Invalid character in header field name: "' + name + '"');
+    }
+    return name.toLowerCase();
+  }
+  function normalizeValue(value) {
+    if (typeof value !== "string") {
+      value = String(value);
+    }
+    return value;
+  }
+  function iteratorFor(items) {
+    var iterator = {
+      next: function() {
+        var value = items.shift();
+        return { done: value === void 0, value };
+      }
+    };
+    if (support.iterable) {
+      iterator[Symbol.iterator] = function() {
+        return iterator;
+      };
+    }
+    return iterator;
+  }
+  function Headers(headers) {
+    this.map = {};
+    if (headers instanceof Headers) {
+      headers.forEach(function(value, name) {
+        this.append(name, value);
+      }, this);
+    } else if (Array.isArray(headers)) {
+      headers.forEach(function(header) {
+        if (header.length != 2) {
+          throw new TypeError("Headers constructor: expected name/value pair to be length 2, found" + header.length);
+        }
+        this.append(header[0], header[1]);
+      }, this);
+    } else if (headers) {
+      Object.getOwnPropertyNames(headers).forEach(function(name) {
+        this.append(name, headers[name]);
+      }, this);
+    }
+  }
+  Headers.prototype.append = function(name, value) {
+    name = normalizeName(name);
+    value = normalizeValue(value);
+    var oldValue = this.map[name];
+    this.map[name] = oldValue ? oldValue + ", " + value : value;
+  };
+  Headers.prototype["delete"] = function(name) {
+    delete this.map[normalizeName(name)];
+  };
+  Headers.prototype.get = function(name) {
+    name = normalizeName(name);
+    return this.has(name) ? this.map[name] : null;
+  };
+  Headers.prototype.has = function(name) {
+    return this.map.hasOwnProperty(normalizeName(name));
+  };
+  Headers.prototype.set = function(name, value) {
+    this.map[normalizeName(name)] = normalizeValue(value);
+  };
+  Headers.prototype.forEach = function(callback, thisArg) {
+    for (var name in this.map) {
+      if (this.map.hasOwnProperty(name)) {
+        callback.call(thisArg, this.map[name], name, this);
+      }
+    }
+  };
+  Headers.prototype.keys = function() {
+    var items = [];
+    this.forEach(function(value, name) {
+      items.push(name);
+    });
+    return iteratorFor(items);
+  };
+  Headers.prototype.values = function() {
+    var items = [];
+    this.forEach(function(value) {
+      items.push(value);
+    });
+    return iteratorFor(items);
+  };
+  Headers.prototype.entries = function() {
+    var items = [];
+    this.forEach(function(value, name) {
+      items.push([name, value]);
+    });
+    return iteratorFor(items);
+  };
+  if (support.iterable) {
+    Headers.prototype[Symbol.iterator] = Headers.prototype.entries;
+  }
+  function consumed(body) {
+    if (body._noBody) return;
+    if (body.bodyUsed) {
+      return Promise.reject(new TypeError("Already read"));
+    }
+    body.bodyUsed = true;
+  }
+  function fileReaderReady(reader) {
+    return new Promise(function(resolve, reject) {
+      reader.onload = function() {
+        resolve(reader.result);
+      };
+      reader.onerror = function() {
+        reject(reader.error);
+      };
+    });
+  }
+  function readBlobAsArrayBuffer(blob) {
+    var reader = new FileReader();
+    var promise = fileReaderReady(reader);
+    reader.readAsArrayBuffer(blob);
+    return promise;
+  }
+  function readBlobAsText(blob) {
+    var reader = new FileReader();
+    var promise = fileReaderReady(reader);
+    var match = /charset=([A-Za-z0-9_-]+)/.exec(blob.type);
+    var encoding = match ? match[1] : "utf-8";
+    reader.readAsText(blob, encoding);
+    return promise;
+  }
+  function readArrayBufferAsText(buf) {
+    var view = new Uint8Array(buf);
+    var chars = new Array(view.length);
+    for (var i = 0; i < view.length; i++) {
+      chars[i] = String.fromCharCode(view[i]);
+    }
+    return chars.join("");
+  }
+  function bufferClone(buf) {
+    if (buf.slice) {
+      return buf.slice(0);
+    } else {
+      var view = new Uint8Array(buf.byteLength);
+      view.set(new Uint8Array(buf));
+      return view.buffer;
+    }
+  }
+  function Body() {
+    this.bodyUsed = false;
+    this._initBody = function(body) {
+      this.bodyUsed = this.bodyUsed;
+      this._bodyInit = body;
+      if (!body) {
+        this._noBody = true;
+        this._bodyText = "";
+      } else if (typeof body === "string") {
+        this._bodyText = body;
+      } else if (support.blob && Blob.prototype.isPrototypeOf(body)) {
+        this._bodyBlob = body;
+      } else if (support.formData && FormData.prototype.isPrototypeOf(body)) {
+        this._bodyFormData = body;
+      } else if (support.searchParams && URLSearchParams.prototype.isPrototypeOf(body)) {
+        this._bodyText = body.toString();
+      } else if (support.arrayBuffer && support.blob && isDataView(body)) {
+        this._bodyArrayBuffer = bufferClone(body.buffer);
+        this._bodyInit = new Blob([this._bodyArrayBuffer]);
+      } else if (support.arrayBuffer && (ArrayBuffer.prototype.isPrototypeOf(body) || isArrayBufferView(body))) {
+        this._bodyArrayBuffer = bufferClone(body);
+      } else {
+        this._bodyText = body = Object.prototype.toString.call(body);
+      }
+      if (!this.headers.get("content-type")) {
+        if (typeof body === "string") {
+          this.headers.set("content-type", "text/plain;charset=UTF-8");
+        } else if (this._bodyBlob && this._bodyBlob.type) {
+          this.headers.set("content-type", this._bodyBlob.type);
+        } else if (support.searchParams && URLSearchParams.prototype.isPrototypeOf(body)) {
+          this.headers.set("content-type", "application/x-www-form-urlencoded;charset=UTF-8");
+        }
+      }
+    };
+    if (support.blob) {
+      this.blob = function() {
+        var rejected = consumed(this);
+        if (rejected) {
+          return rejected;
+        }
+        if (this._bodyBlob) {
+          return Promise.resolve(this._bodyBlob);
+        } else if (this._bodyArrayBuffer) {
+          return Promise.resolve(new Blob([this._bodyArrayBuffer]));
+        } else if (this._bodyFormData) {
+          throw new Error("could not read FormData body as blob");
+        } else {
+          return Promise.resolve(new Blob([this._bodyText]));
+        }
+      };
+    }
+    this.arrayBuffer = function() {
+      if (this._bodyArrayBuffer) {
+        var isConsumed = consumed(this);
+        if (isConsumed) {
+          return isConsumed;
+        } else if (ArrayBuffer.isView(this._bodyArrayBuffer)) {
+          return Promise.resolve(
+            this._bodyArrayBuffer.buffer.slice(
+              this._bodyArrayBuffer.byteOffset,
+              this._bodyArrayBuffer.byteOffset + this._bodyArrayBuffer.byteLength
+            )
+          );
+        } else {
+          return Promise.resolve(this._bodyArrayBuffer);
+        }
+      } else if (support.blob) {
+        return this.blob().then(readBlobAsArrayBuffer);
+      } else {
+        throw new Error("could not read as ArrayBuffer");
+      }
+    };
+    this.text = function() {
+      var rejected = consumed(this);
+      if (rejected) {
+        return rejected;
+      }
+      if (this._bodyBlob) {
+        return readBlobAsText(this._bodyBlob);
+      } else if (this._bodyArrayBuffer) {
+        return Promise.resolve(readArrayBufferAsText(this._bodyArrayBuffer));
+      } else if (this._bodyFormData) {
+        throw new Error("could not read FormData body as text");
+      } else {
+        return Promise.resolve(this._bodyText);
+      }
+    };
+    if (support.formData) {
+      this.formData = function() {
+        return this.text().then(decode);
+      };
+    }
+    this.json = function() {
+      return this.text().then(JSON.parse);
+    };
+    return this;
+  }
+  var methods = ["CONNECT", "DELETE", "GET", "HEAD", "OPTIONS", "PATCH", "POST", "PUT", "TRACE"];
+  function normalizeMethod(method) {
+    var upcased = method.toUpperCase();
+    return methods.indexOf(upcased) > -1 ? upcased : method;
+  }
+  function Request(input, options) {
+    if (!(this instanceof Request)) {
+      throw new TypeError('Please use the "new" operator, this DOM object constructor cannot be called as a function.');
+    }
+    options = options || {};
+    var body = options.body;
+    if (input instanceof Request) {
+      if (input.bodyUsed) {
+        throw new TypeError("Already read");
+      }
+      this.url = input.url;
+      this.credentials = input.credentials;
+      if (!options.headers) {
+        this.headers = new Headers(input.headers);
+      }
+      this.method = input.method;
+      this.mode = input.mode;
+      this.signal = input.signal;
+      if (!body && input._bodyInit != null) {
+        body = input._bodyInit;
+        input.bodyUsed = true;
+      }
+    } else {
+      this.url = String(input);
+    }
+    this.credentials = options.credentials || this.credentials || "same-origin";
+    if (options.headers || !this.headers) {
+      this.headers = new Headers(options.headers);
+    }
+    this.method = normalizeMethod(options.method || this.method || "GET");
+    this.mode = options.mode || this.mode || null;
+    this.signal = options.signal || this.signal || (function() {
+      if ("AbortController" in g) {
+        var ctrl = new AbortController();
+        return ctrl.signal;
+      }
+    })();
+    this.referrer = null;
+    if ((this.method === "GET" || this.method === "HEAD") && body) {
+      throw new TypeError("Body not allowed for GET or HEAD requests");
+    }
+    this._initBody(body);
+    if (this.method === "GET" || this.method === "HEAD") {
+      if (options.cache === "no-store" || options.cache === "no-cache") {
+        var reParamSearch = /([?&])_=[^&]*/;
+        if (reParamSearch.test(this.url)) {
+          this.url = this.url.replace(reParamSearch, "$1_=" + (/* @__PURE__ */ new Date()).getTime());
+        } else {
+          var reQueryString = /\?/;
+          this.url += (reQueryString.test(this.url) ? "&" : "?") + "_=" + (/* @__PURE__ */ new Date()).getTime();
+        }
+      }
+    }
+  }
+  Request.prototype.clone = function() {
+    return new Request(this, { body: this._bodyInit });
+  };
+  function decode(body) {
+    var form = new FormData();
+    body.trim().split("&").forEach(function(bytes) {
+      if (bytes) {
+        var split = bytes.split("=");
+        var name = split.shift().replace(/\+/g, " ");
+        var value = split.join("=").replace(/\+/g, " ");
+        form.append(decodeURIComponent(name), decodeURIComponent(value));
+      }
+    });
+    return form;
+  }
+  function parseHeaders(rawHeaders) {
+    var headers = new Headers();
+    var preProcessedHeaders = rawHeaders.replace(/\r?\n[\t ]+/g, " ");
+    preProcessedHeaders.split("\r").map(function(header) {
+      return header.indexOf("\n") === 0 ? header.substr(1, header.length) : header;
+    }).forEach(function(line) {
+      var parts = line.split(":");
+      var key = parts.shift().trim();
+      if (key) {
+        var value = parts.join(":").trim();
+        try {
+          headers.append(key, value);
+        } catch (error) {
+          console.warn("Response " + error.message);
+        }
+      }
+    });
+    return headers;
+  }
+  Body.call(Request.prototype);
+  function Response(bodyInit, options) {
+    if (!(this instanceof Response)) {
+      throw new TypeError('Please use the "new" operator, this DOM object constructor cannot be called as a function.');
+    }
+    if (!options) {
+      options = {};
+    }
+    this.type = "default";
+    this.status = options.status === void 0 ? 200 : options.status;
+    if (this.status < 200 || this.status > 599) {
+      throw new RangeError("Failed to construct 'Response': The status provided (0) is outside the range [200, 599].");
+    }
+    this.ok = this.status >= 200 && this.status < 300;
+    this.statusText = options.statusText === void 0 ? "" : "" + options.statusText;
+    this.headers = new Headers(options.headers);
+    this.url = options.url || "";
+    this._initBody(bodyInit);
+  }
+  Body.call(Response.prototype);
+  Response.prototype.clone = function() {
+    return new Response(this._bodyInit, {
+      status: this.status,
+      statusText: this.statusText,
+      headers: new Headers(this.headers),
+      url: this.url
+    });
+  };
+  Response.error = function() {
+    var response = new Response(null, { status: 200, statusText: "" });
+    response.ok = false;
+    response.status = 0;
+    response.type = "error";
+    return response;
+  };
+  var redirectStatuses = [301, 302, 303, 307, 308];
+  Response.redirect = function(url, status) {
+    if (redirectStatuses.indexOf(status) === -1) {
+      throw new RangeError("Invalid status code");
+    }
+    return new Response(null, { status, headers: { location: url } });
+  };
+  var DOMException = g.DOMException;
+  try {
+    new DOMException();
+  } catch (err) {
+    DOMException = function(message, name) {
+      this.message = message;
+      this.name = name;
+      var error = Error(message);
+      this.stack = error.stack;
+    };
+    DOMException.prototype = Object.create(Error.prototype);
+    DOMException.prototype.constructor = DOMException;
+  }
+  function fetch(input, init) {
+    return new Promise(function(resolve, reject) {
+      var request = new Request(input, init);
+      if (request.signal && request.signal.aborted) {
+        return reject(new DOMException("Aborted", "AbortError"));
+      }
+      var xhr = new XMLHttpRequest();
+      function abortXhr() {
+        xhr.abort();
+      }
+      xhr.onload = function() {
+        var options = {
+          statusText: xhr.statusText,
+          headers: parseHeaders(xhr.getAllResponseHeaders() || "")
+        };
+        if (request.url.indexOf("file://") === 0 && (xhr.status < 200 || xhr.status > 599)) {
+          options.status = 200;
+        } else {
+          options.status = xhr.status;
+        }
+        options.url = "responseURL" in xhr ? xhr.responseURL : options.headers.get("X-Request-URL");
+        var body = "response" in xhr ? xhr.response : xhr.responseText;
+        setTimeout(function() {
+          resolve(new Response(body, options));
+        }, 0);
+      };
+      xhr.onerror = function() {
+        setTimeout(function() {
+          reject(new TypeError("Network request failed"));
+        }, 0);
+      };
+      xhr.ontimeout = function() {
+        setTimeout(function() {
+          reject(new TypeError("Network request timed out"));
+        }, 0);
+      };
+      xhr.onabort = function() {
+        setTimeout(function() {
+          reject(new DOMException("Aborted", "AbortError"));
+        }, 0);
+      };
+      function fixUrl(url) {
+        try {
+          return url === "" && g.location.href ? g.location.href : url;
+        } catch (e) {
+          return url;
+        }
+      }
+      xhr.open(request.method, fixUrl(request.url), true);
+      if (request.credentials === "include") {
+        xhr.withCredentials = true;
+      } else if (request.credentials === "omit") {
+        xhr.withCredentials = false;
+      }
+      if ("responseType" in xhr) {
+        if (support.blob) {
+          xhr.responseType = "blob";
+        } else if (support.arrayBuffer) {
+          xhr.responseType = "arraybuffer";
+        }
+      }
+      if (init && typeof init.headers === "object" && !(init.headers instanceof Headers || g.Headers && init.headers instanceof g.Headers)) {
+        var names = [];
+        Object.getOwnPropertyNames(init.headers).forEach(function(name) {
+          names.push(normalizeName(name));
+          xhr.setRequestHeader(name, normalizeValue(init.headers[name]));
+        });
+        request.headers.forEach(function(value, name) {
+          if (names.indexOf(name) === -1) {
+            xhr.setRequestHeader(name, value);
+          }
+        });
+      } else {
+        request.headers.forEach(function(value, name) {
+          xhr.setRequestHeader(name, value);
+        });
+      }
+      if (request.signal) {
+        request.signal.addEventListener("abort", abortXhr);
+        xhr.onreadystatechange = function() {
+          if (xhr.readyState === 4) {
+            request.signal.removeEventListener("abort", abortXhr);
+          }
+        };
+      }
+      xhr.send(typeof request._bodyInit === "undefined" ? null : request._bodyInit);
+    });
+  }
+  fetch.polyfill = true;
+  if (!g.fetch) {
+    g.fetch = fetch;
+    g.Headers = Headers;
+    g.Request = Request;
+    g.Response = Response;
+  }
+
+  // src/rn-globals.ts
+  var import_abort_controller = __toESM(require_abort_controller());
+  function installReactNativeGlobals(g2 = globalThis) {
+    if (typeof g2.Headers === "undefined") g2.Headers = Headers;
+    if (typeof g2.Request === "undefined") g2.Request = Request;
+    if (typeof g2.Response === "undefined") g2.Response = Response;
+    if (typeof g2.AbortController === "undefined") g2.AbortController = import_abort_controller.AbortController;
+    if (typeof g2.AbortSignal === "undefined") g2.AbortSignal = import_abort_controller.AbortSignal;
+  }
 
   // src/expect.ts
   var _readFile = globalThis.__HT_readFile || (() => null);
@@ -2095,7 +3214,8 @@ ${pad}</${type}>`;
     } else if (input && typeof input === "object") {
       url = input.url || input.href || String(input);
       if (!init && input.method) {
-        init = { method: input.method, headers: input.headers, body: input.body };
+        const body2 = input._bodyInit !== void 0 ? input._bodyInit : input._bodyText !== void 0 ? input._bodyText : input.body;
+        init = { method: input.method, headers: input.headers, body: body2 };
       }
     } else {
       url = String(input);
@@ -2346,9 +3466,37 @@ ${pad}</${type}>`;
         if (msg.includes("Expected host context to exist")) return;
         if (msg.includes("An unhandled error occurred processing a request for the endpoint")) return;
         p("\x1B[31m\u2717 " + msg + "\x1B[0m");
+      },
+      // The rest of the console surface React Native's console polyfill provides
+      // (@react-native/js-polyfills/console.js). Libraries call these (event-target-shim uses
+      // console.assert); missing methods were a TypeError, not a no-op.
+      assert: (cond, ...args) => {
+        if (!cond) p("\x1B[31m\u2717 Assertion failed" + (args.length ? ": " + fmt(...args) : "") + "\x1B[0m");
+      },
+      trace: (...args) => p(fmt(...args)),
+      dir: (...args) => p(fmt(...args)),
+      table: (...args) => p(fmt(...args)),
+      group: (...args) => {
+        if (args.length) p(fmt(...args));
+      },
+      groupCollapsed: (...args) => {
+        if (args.length) p(fmt(...args));
+      },
+      groupEnd: () => {
+      },
+      time: () => {
+      },
+      timeEnd: () => {
+      },
+      timeLog: () => {
+      },
+      count: () => {
+      },
+      countReset: () => {
       }
     };
   })();
+  installReactNativeGlobals();
   var tests = [];
   var beforeEachHooks = [];
   var afterEachHooks = [];
