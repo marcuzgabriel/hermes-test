@@ -525,7 +525,9 @@ configure on your side:
 | `AbortController`, `AbortSignal` | `abort-controller` — the package RN requires (bundled into the harness) |
 | `fetch` | hermes-test's handler-based mock (`ht.mock.fetch`) — whatwg-fetch's XHR fetch is not installed |
 | `FormData`, `URL`, `URLSearchParams` | small mirrors of RN's own Flow implementations (`Libraries/Network/FormData.js`, `Libraries/Blob/URL.js`; userinfo stripped from `host`, no host for non-http schemes) |
+| `Blob`, `File` | RN-shaped mirrors (`Libraries/Blob`) |
 | `console` | full RN surface (`assert`, `group`, `table`, `time`, …) |
+| **Expo projects**: `TextDecoder`, WHATWG `URL`, `structuredClone`, spec `FormData` | the project's own `expo/src/winter/runtime.native.ts` is run before tests — same as `expo/src/Expo.fx` at app start; any SDK; `"expoRuntime": false` to disable |
 
 Deliberately nothing RN lacks (for example `TextDecoder`), so code that would throw on a device
 throws in your tests too. If your app installs its own polyfills at startup, they win — the

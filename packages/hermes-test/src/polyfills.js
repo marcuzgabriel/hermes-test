@@ -502,6 +502,43 @@ if (typeof globalThis.MessageChannel === 'undefined') {
     globalThis.URL = URL;
   }
 
+  // Blob / File — React Native installs these (Libraries/Blob/Blob.js, File.js) backed by a native
+  // blob store. Here: the same public shape (parts of strings/Blobs, size, type, slice, close) with
+  // the data kept in JS. Like RN's iOS implementation, typed arrays / ArrayBuffers are rejected as
+  // parts — code relying on that passing here would fail on a device.
+  if (typeof globalThis.Blob === 'undefined') {
+    function Blob(parts, options) {
+      parts = parts || [];
+      var text = '';
+      for (var i = 0; i < parts.length; i++) {
+        var part = parts[i];
+        if (typeof part === 'string') text += part;
+        else if (part instanceof Blob) text += part._text;
+        else throw new Error('Cannot create Blob from parts of type ' + Object.prototype.toString.call(part) + ' (React Native accepts strings and Blobs only)');
+      }
+      this._text = text;
+      this._type = (options && options.type) || '';
+    }
+    Object.defineProperty(Blob.prototype, 'size', { get: function () { return this._text.length; } });
+    Object.defineProperty(Blob.prototype, 'type', { get: function () { return this._type; } });
+    Object.defineProperty(Blob.prototype, 'data', { get: function () { return { size: this._text.length, type: this._type, blobId: 'ht-blob' }; } });
+    Blob.prototype.slice = function (start, end, contentType) {
+      return new Blob([this._text.slice(start, end)], { type: contentType || '' });
+    };
+    Blob.prototype.text = function () { return Promise.resolve(this._text); };
+    Blob.prototype.close = function () { this._text = ''; };
+    globalThis.Blob = Blob;
+
+    function File(parts, name, options) {
+      Blob.call(this, parts, options);
+      this.name = name;
+      this.lastModified = (options && options.lastModified) || Date.now();
+    }
+    File.prototype = Object.create(Blob.prototype);
+    File.prototype.constructor = File;
+    globalThis.File = File;
+  }
+
   // FormData — React Native installs its own (Libraries/Network/FormData.js) in InitializeCore;
   // Hermes has none. Same API as RN: append / getAll / getParts. Installed only if absent so a
   // project-level polyfill wins.

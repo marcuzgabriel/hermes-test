@@ -72,6 +72,9 @@ group('React Native globals', () => {
     });
 
     test('fetch itself stays hermes-test\'s mock (whatwg-fetch\'s XHR fetch is not installed)', async () => {
+      // Installing any handler activates hermes-test's mock fetch for this file.
+      const { http, HttpResponse } = await import('hermes-test');
+      ht.mock.fetch(http.get('https://example.com/activate', () => HttpResponse.json({})));
       const res = await fetch('https://example.com/unmocked');
       expect(res.ok).toBe(false);
       expect(res.status).toBe(500);
@@ -125,6 +128,22 @@ group('React Native globals', () => {
     });
   });
 
+  group('Blob / File (Libraries/Blob shape)', () => {
+    test('strings and Blobs as parts; size, type, slice, File name', async () => {
+      const b = new Blob(['hello ', new Blob(['world'])], { type: 'text/plain' });
+      expect(b.size).toBe(11);
+      expect(b.type).toBe('text/plain');
+      expect(await b.slice(6).text()).toBe('world');
+      const f = new File(['x'], 'x.txt', { type: 'text/plain' });
+      expect(f instanceof Blob).toBe(true);
+      expect(f.name).toBe('x.txt');
+    });
+
+    test('typed-array parts are rejected like RN on iOS', () => {
+      expect(() => new Blob([new Uint8Array([1, 2, 3])])).toThrow('Cannot create Blob');
+    });
+  });
+
   group('URL (Libraries/Blob/URL.js shape)', () => {
     test('strips userinfo from host like RN', () => {
       const u = new URL('https://user:secret@files.example.com:8443/path?x=1#frag');
@@ -140,17 +159,20 @@ group('React Native globals', () => {
       expect(u.searchParams.get('x')).toBe('1');
     });
 
-    test('non-http schemes expose protocol but no host — same as RN on device', () => {
+    // Bare React Native (RN CLI, no `expo` package) vs Expo differ here. hermes-test installs
+    // Expo's winter runtime when the project depends on `expo` (this example does), so both
+    // branches are documented; see expo-runtime-globals.test.ts for the Expo side.
+    const isExpoProject = typeof (globalThis as any).__ExpoImportMetaRegistry !== 'undefined';
+
+    test('non-http schemes: no host on bare RN, WHATWG host on Expo', () => {
       const u = new URL('s3://bucket/key?X-Amz-Signature=secret');
       expect(u.protocol).toBe('s3:');
-      expect(u.host).toBe('');
+      expect(u.host).toBe(isExpoProject ? 'bucket' : '');
       expect(String(u)).toBe('s3://bucket/key?X-Amz-Signature=secret');
     });
 
-    test('does not invent globals React Native lacks', () => {
-      // RN 0.8x installs TextEncoder via Hermes but not TextDecoder; keep parity so code
-      // relying on TextDecoder fails in tests the same way it fails on a phone.
-      expect(typeof (globalThis as any).TextDecoder).toBe('undefined');
+    test('TextDecoder: absent on bare RN, present on Expo — never invented by the harness', () => {
+      expect(typeof (globalThis as any).TextDecoder).toBe(isExpoProject ? 'function' : 'undefined');
     });
   });
 });

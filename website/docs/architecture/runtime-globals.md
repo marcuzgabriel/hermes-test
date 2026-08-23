@@ -15,9 +15,30 @@ what the phone sees. Users install and configure nothing.
 | `AbortController`, `AbortSignal` | `abort-controller` (bundled into the harness) | `abort-controller` |
 | `fetch` | hermes-test's handler-based mock — see [mock.fetch](../api/mock) | `whatwg-fetch` over XMLHttpRequest |
 | `FormData` | mirror of RN's `Libraries/Network/FormData.js` (`append`, `getAll`, `getParts`) | Flow file, cannot be bundled |
+| `Blob`, `File` | RN-shaped (`Libraries/Blob/Blob.js`): string/Blob parts, `size`, `type`, `slice`, `close`; typed-array parts rejected like RN on iOS | native blob store |
 | `URL`, `URLSearchParams` | mirror of RN's `Libraries/Blob/URL.js` — userinfo stripped from `host`, `protocol` for any scheme, **no host for non-http schemes** (same as RN) | Flow file importing a native module |
 | `console` | full RN surface (`log/info/warn/error`, `assert`, `group*`, `table`, `time*`, `count*`) | `@react-native/js-polyfills/console.js` |
 | `setTimeout`, `setImmediate`, `MessageChannel`, `queueMicrotask` | harness polyfills (drained deterministically by the test loop) | native |
+
+## Expo projects
+
+When the project depends on `expo`, hermes-test additionally runs the project's **own**
+`expo/src/winter/runtime.native.ts` before any test — exactly what `expo/src/Expo.fx` does at
+app start. Nothing is pinned: whatever Expo SDK is installed is what runs. That installs Expo's
+WinterCG globals on top of React Native's:
+
+| Global | Notes |
+|---|---|
+| `TextDecoder`, `TextDecoderStream`, `TextEncoderStream` | present on Expo, absent on bare RN |
+| `URL`, `URLSearchParams` | full WHATWG (`whatwg-url-minimum`) — replaces RN's minimal URL, so e.g. `new URL('s3://bucket/key').host === 'bucket'` |
+| `structuredClone` | `@ungap/structured-clone` |
+| `FormData` | spec methods patched in (`get`, `has`, `entries`, `delete`, …) |
+| `fetch` | **stays hermes-test's mock** — Expo's native `expo/fetch` is skipped via Expo's own `EXPO_PUBLIC_USE_RN_FETCH=1` opt-out |
+
+Bare React Native projects (RN CLI, no `expo` package) get React Native's set only. Disable the
+Expo runtime with `"expoRuntime": false` in `hermes-test.config.json`.
+`examples/expo-app/src/examples/expo-runtime-globals.test.ts` pins this; `rn-globals.test.ts`
+documents where the two differ.
 
 ## What is deliberately *not* installed
 

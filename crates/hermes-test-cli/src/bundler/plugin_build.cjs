@@ -100,6 +100,17 @@ const assetPlugin = {
   },
 };
 
+// `react-native/<subpath>` is always external (Flow syntax, native). When `react-native` itself is
+// shimmed via an esbuild alias (built-in wrapper shim), the alias would also rewrite subpaths to
+// `<shim-file>/<subpath>` and fail resolution — e.g. expo/src/winter/runtime.native.ts imports
+// `react-native/Libraries/Core/InitializeCore`. Plugins see the raw specifier before aliasing.
+const rnSubpathPlugin = {
+  name: 'ht-rn-subpaths',
+  setup(build) {
+    build.onResolve({ filter: /^react-native\// }, (args) => ({ path: args.path, external: true }));
+  },
+};
+
 const mockPlugin = {
   name: 'ht-mocks',
   setup(build) {
@@ -145,7 +156,7 @@ const mockPlugin = {
 // No mocked targets → no interception needed → skip the plugin entirely so no
 // import pays a Go→JS round trip.
 // The asset catch-all is cheap (onResolve filter is a plain extension regex) and always on.
-opts.plugins = [assetPlugin];
+opts.plugins = [rnSubpathPlugin, assetPlugin];
 if (Object.keys(wrappers).length > 0 || Object.keys(textWrappers).length > 0) opts.plugins.push(mockPlugin);
 
 esbuild
