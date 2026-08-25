@@ -46,7 +46,7 @@ jobs:
             sleep 5
           done
           cd vendor/hermes
-          git checkout hermes-v250829098.0.14
+          git checkout hermes-v250829098.0.17
           sed -i.bak 's/FATAL_ERROR "Host compiler/WARNING "Host compiler/g' external/llvh/cmake/modules/CheckAtomic.cmake
           # GCC needs explicit <cstdint> for std::uint8_t (Clang includes it transitively)
           sed -i.bak '1s/^/#include <cstdint>\n/' lib/Platform/Intl/impl_icu/IntlUtils.cpp
