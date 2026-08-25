@@ -427,10 +427,10 @@ fn run_tests_single(
             // Coverage: use sourcemap-aware bundling
             let esbuild_path = match bundler::find_esbuild_pub(root) {
                 Ok(p) => p,
-                Err(_) => {
+                Err(msg) => {
                     let _ = std::fs::remove_file(&entry_path);
                     if let Some(ref d) = wrapper_shim_dir { let _ = std::fs::remove_dir_all(d); }
-                    eprintln!("esbuild not found. Install it: bun add -d esbuild");
+                    eprintln!("{msg}");
                     std::process::exit(1);
                 }
             };

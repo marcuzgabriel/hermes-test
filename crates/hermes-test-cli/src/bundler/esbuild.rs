@@ -59,23 +59,93 @@ fn find_react_reconciler(project_dir: &Path, config_root: Option<&Path>, test_fi
     None
 }
 
-pub fn find_esbuild(project_root: &Path) -> Result<PathBuf, ()> {
-    let local = project_root.join("node_modules/.bin/esbuild");
-    if local.exists() {
-        return Ok(local);
+/// The `@esbuild/<platform>` package that carries the native binary for this build.
+fn esbuild_platform_pkg() -> Option<&'static str> {
+    match (std::env::consts::OS, std::env::consts::ARCH) {
+        ("macos", "aarch64") => Some("@esbuild/darwin-arm64"),
+        ("macos", "x86_64") => Some("@esbuild/darwin-x64"),
+        ("linux", "x86_64") => Some("@esbuild/linux-x64"),
+        ("linux", "aarch64") => Some("@esbuild/linux-arm64"),
+        _ => None,
     }
-    let mut dir = project_root.parent();
+}
+
+/// True if `path` starts with a Mach-O or ELF magic number. esbuild's JS shim
+/// (`esbuild/bin/esbuild`) starts with `#!/usr/bin/env node` and fails this.
+fn is_native_executable(path: &Path) -> bool {
+    let Ok(mut f) = std::fs::File::open(path) else { return false };
+    let mut magic = [0u8; 4];
+    if std::io::Read::read_exact(&mut f, &mut magic).is_err() {
+        return false;
+    }
+    matches!(
+        magic,
+        [0x7F, b'E', b'L', b'F']
+            | [0xFE, 0xED, 0xFA, 0xCE]
+            | [0xFE, 0xED, 0xFA, 0xCF]
+            | [0xCE, 0xFA, 0xED, 0xFE]
+            | [0xCF, 0xFA, 0xED, 0xFE]
+            | [0xCA, 0xFE, 0xBA, 0xBE]
+    )
+}
+
+/// Resolve the native esbuild binary under `node_modules`, or `None` if only a
+/// JS shim (or nothing) is there. Returns the canonical path so callers never
+/// hand a symlink to `ESBUILD_BINARY_PATH`.
+fn native_esbuild_in(node_modules: &Path) -> Option<PathBuf> {
+    let mut candidates = Vec::new();
+    if let Some(pkg) = esbuild_platform_pkg() {
+        candidates.push(node_modules.join(pkg).join("bin/esbuild"));
+    }
+    candidates.push(node_modules.join(".bin/esbuild"));
+    candidates.push(node_modules.join("esbuild/bin/esbuild"));
+    candidates.into_iter().find_map(|c| {
+        let real = std::fs::canonicalize(&c).ok()?;
+        is_native_executable(&real).then_some(real)
+    })
+}
+
+/// Locate the native esbuild binary. Refuses esbuild's JS shim: the plugin
+/// resolver exports the result as `ESBUILD_BINARY_PATH`, and a shim that sees
+/// that variable pointing at itself re-execs forever (`--service --ping`
+/// fork loop) instead of failing. Broken installs now fail with a message.
+pub fn find_esbuild(project_root: &Path) -> Result<PathBuf, String> {
+    let mut shim_seen: Option<PathBuf> = None;
+    let mut dir = Some(project_root);
     while let Some(d) = dir {
-        let candidate = d.join("node_modules/.bin/esbuild");
-        if candidate.exists() {
-            return Ok(candidate);
+        let nm = d.join("node_modules");
+        if let Some(bin) = native_esbuild_in(&nm) {
+            return Ok(bin);
+        }
+        let shim = nm.join(".bin/esbuild");
+        if shim_seen.is_none() && shim.exists() {
+            shim_seen = Some(shim);
         }
         dir = d.parent();
     }
-    if Command::new("esbuild").arg("--version").output().is_ok() {
-        return Ok(PathBuf::from("esbuild"));
+
+    if let Some(bin) = native_esbuild_on_path() {
+        return Ok(bin);
     }
-    Err(())
+
+    Err(match shim_seen {
+        Some(shim) => format!(
+            "esbuild native binary not found: {} is esbuild's JS shim and {} is missing. \
+             The install was incomplete (optional dependency not downloaded, or node/bun \
+             architecture mismatch). Run: rm -rf node_modules && bun install",
+            shim.display(),
+            esbuild_platform_pkg().unwrap_or("the platform package"),
+        ),
+        None => "esbuild not found. Install it: bun add -d esbuild".to_string(),
+    })
+}
+
+fn native_esbuild_on_path() -> Option<PathBuf> {
+    let path = std::env::var_os("PATH")?;
+    std::env::split_paths(&path).find_map(|p| {
+        let real = std::fs::canonicalize(p.join("esbuild")).ok()?;
+        is_native_executable(&real).then_some(real)
+    })
 }
 
 /// Extract inline source map from bundle, returning (code_without_map, parsed_map).
@@ -398,13 +468,12 @@ fn bundle_via_plugin_inner(
     if file_wrappers.is_empty() && text_wrappers.is_empty() && std::env::var("HT_PLUGIN_FORCE").is_err() {
         return bundle_esbuild_with_config_inner(
             entry_file,
-            &find_esbuild(project_root).map_err(|_| "esbuild not found. Install it: bun add -d esbuild".to_string())?,
+            &find_esbuild(project_root)?,
             external_modules, cfg, false, sourcemap_inline, skip_patches,
         );
     }
 
-    let esbuild_bin = find_esbuild(project_root)
-        .map_err(|_| "esbuild not found. Install it: bun add -d esbuild".to_string())?;
+    let esbuild_bin = find_esbuild(project_root)?;
     let esbuild_lib = find_esbuild_lib(project_root)
         .ok_or_else(|| "esbuild JS API (node_modules/esbuild/lib/main.js) not found".to_string())?;
     let runtime = find_js_runtime()
@@ -640,8 +709,7 @@ pub fn bundle_with_depgraph(
     test_files: &[PathBuf],
     external_modules: &[String],
 ) -> Result<(String, DepGraph), String> {
-    let esbuild_path = find_esbuild(project_root)
-        .map_err(|_| "esbuild not found".to_string())?;
+    let esbuild_path = find_esbuild(project_root)?;
 
     let metafile_path = project_root.join(".hermes-test-meta.json");
     let outfile_path = project_root.join(".hermes-test-bundle.js");
@@ -766,6 +834,75 @@ fn parse_depgraph(
 }
 
 // Public wrappers for persistent watch mode
-pub fn find_esbuild_pub(project_root: &Path) -> Result<PathBuf, ()> {
+pub fn find_esbuild_pub(project_root: &Path) -> Result<PathBuf, String> {
     find_esbuild(project_root)
+}
+
+#[cfg(test)]
+mod find_esbuild_tests {
+    use super::*;
+
+    fn tmp(name: &str) -> PathBuf {
+        let d = std::env::temp_dir().join(format!("ht-find-esbuild-{name}-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&d);
+        std::fs::create_dir_all(&d).unwrap();
+        d
+    }
+
+    fn write(p: &Path, bytes: &[u8]) {
+        std::fs::create_dir_all(p.parent().unwrap()).unwrap();
+        std::fs::write(p, bytes).unwrap();
+    }
+
+    const MACHO64: &[u8] = &[0xCF, 0xFA, 0xED, 0xFE, 0, 0, 0, 0];
+    const SHIM: &[u8] = b"#!/usr/bin/env node\nrequire('child_process').execFileSync(process.env.ESBUILD_BINARY_PATH)\n";
+
+    #[test]
+    fn detects_native_vs_shim() {
+        let d = tmp("magic");
+        write(&d.join("native"), MACHO64);
+        write(&d.join("elf"), &[0x7F, b'E', b'L', b'F', 0, 0, 0, 0]);
+        write(&d.join("shim"), SHIM);
+        write(&d.join("empty"), b"");
+        assert!(is_native_executable(&d.join("native")));
+        assert!(is_native_executable(&d.join("elf")));
+        assert!(!is_native_executable(&d.join("shim")));
+        assert!(!is_native_executable(&d.join("empty")));
+        assert!(!is_native_executable(&d.join("missing")));
+    }
+
+    #[test]
+    fn refuses_js_shim_with_actionable_error() {
+        let d = tmp("shim-only");
+        write(&d.join("node_modules/.bin/esbuild"), SHIM);
+        write(&d.join("node_modules/esbuild/bin/esbuild"), SHIM);
+        let saved = std::env::var_os("PATH");
+        std::env::set_var("PATH", "");
+        let err = find_esbuild(&d).unwrap_err();
+        if let Some(p) = saved { std::env::set_var("PATH", p); }
+        assert!(err.contains("JS shim"), "{err}");
+        assert!(err.contains("rm -rf node_modules"), "{err}");
+    }
+
+    #[test]
+    fn prefers_platform_package_over_bin_shim() {
+        let Some(pkg) = esbuild_platform_pkg() else { return };
+        let d = tmp("platform-pkg");
+        write(&d.join("node_modules/.bin/esbuild"), SHIM);
+        let native = d.join("node_modules").join(pkg).join("bin/esbuild");
+        write(&native, MACHO64);
+        let found = find_esbuild(&d).unwrap();
+        assert_eq!(found, std::fs::canonicalize(&native).unwrap());
+    }
+
+    #[test]
+    fn walks_up_to_parent_node_modules() {
+        let Some(pkg) = esbuild_platform_pkg() else { return };
+        let root = tmp("monorepo");
+        let native = root.join("node_modules").join(pkg).join("bin/esbuild");
+        write(&native, MACHO64);
+        let app = root.join("apps/app");
+        std::fs::create_dir_all(&app).unwrap();
+        assert_eq!(find_esbuild(&app).unwrap(), std::fs::canonicalize(&native).unwrap());
+    }
 }
